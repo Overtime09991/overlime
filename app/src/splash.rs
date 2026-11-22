@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Kurze Rückmeldung nach dem Streamen (gut / schlecht)",
-    "„Problem melden“ direkt bei Verbindungsfehlern",
-    "Neue Diagnose-Seite und Screenshots mit F12",
-    "Ein einziges Setup für alle, Updates automatisch",
+    "Ton: Ausgabegerät wählbar, Lautstärke, Stumm (M)",
+    "Ton-Diagnose in der Statusanzeige (F10)",
+    "Statusanzeige ohne Kästchen-Symbol",
+    "Rückmeldung nach dem Streamen und Problem melden",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

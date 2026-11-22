@@ -20,9 +20,10 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Aus dem Ruhemodus aufwecken.** Ein Klick, und die Konsole startet, ohne dass du aufstehen musst.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
-- **Ton inklusive.** Spielton direkt auf deinem Standard-Wiedergabegerät.
+- **Ton inklusive.** Ausgabegerät und Lautstärke frei wählbar, Stumm per Taste M, bestes Audioformat automatisch (32-Bit, 48 kHz).
 - **Diagnose und Hilfe.** Eine Diagnose-Seite prüft Netzwerk, Konsole, Konto und Controller und erklärt bei Problemen, woran es liegt. „Problem melden“ kopiert einen Bericht ohne IP-Adressen.
 - **Komfort.** Auf Wunsch verbindet sich OVERLIME beim Start automatisch mit deiner Konsole (und weckt sie auf). Screenshots im Stream mit F12.
+- **Menü im Stream.** Bewegst du die Maus, gleitet eine Leiste mit Verbindungsstatus, Lautstärke, Screenshot und Vollbild herein und verschwindet von selbst wieder.
 - **Dein Look.** Fünf Farbschemata (von Ozean bis reines Schwarz) und eigene Themes als einfache Textdatei, dazu sanfte Animationen.
 - **Sauber im Fenster.** Eigene Kopfleiste mit Status-Chips, die Fensterleiste passt sich deinem Farbschema an.
 - **Discord-Status (optional).** Auf Wunsch zeigt Discord „Spielt OVERLIME“ mit Spiel und Spielzeit. Standardmäßig aus, ohne IP-Adressen oder Konsolennamen.

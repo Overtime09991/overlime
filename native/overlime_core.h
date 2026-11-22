@@ -37,6 +37,7 @@ typedef struct {
 	int width, height;
 	uint32_t audio_rate, audio_channels;
 	int32_t frames_lost;
+	uint64_t audio_total;     // empfangene Ton-Samples (pro Kanal)
 } OlStatus;
 
 typedef struct OlStream OlStream;

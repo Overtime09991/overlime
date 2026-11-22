@@ -32,7 +32,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.15";
+const VERSION: &str = "0.16";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -78,7 +78,7 @@ struct PairDialog {
 
 struct Session {
     stream: Arc<Stream>,
-    _audio: Option<audio::Audio>,
+    audio: Option<audio::Audio>,
     audio_err: Option<String>,
     tex: Option<TextureHandle>,
     buf: Vec<u8>,
@@ -151,6 +151,9 @@ struct App {
     pad_name_cache: String,
     shot_requested: bool,
     feedback: Option<bool>,
+    audio_devices: Vec<String>,
+    audio_test: Option<(audio::Audio, f64)>,
+    muted: bool,
     close_hint: bool,
     fullscreen: bool,
     status: String,
@@ -234,6 +237,9 @@ impl App {
             pad_name_cache: String::new(),
             shot_requested: false,
             feedback: None,
+            audio_devices: audio::list_devices(),
+            audio_test: None,
+            muted: false,
             close_hint: false,
             fullscreen: false,
             status: String::new(),
@@ -526,13 +532,20 @@ impl App {
                 Msg::StreamStarted(stream, name) => {
                     self.starting = None;
                     let stream = Arc::new(stream);
-                    let (audio, audio_err) = match audio::start(stream.clone()) {
-                        Ok(a) => (Some(a), None),
-                        Err(e) => (None, Some(e)),
+                    let (audio, audio_err) = match audio::start(stream.clone(), &self.settings.audio_device, self.settings.volume) {
+                        Ok(a) => {
+                            let info = a.shared.info.lock().map(|g| g.clone()).unwrap_or_default();
+                            self.log.push_str(&format!("[I] Audio: {info}\n"));
+                            (Some(a), None)
+                        }
+                        Err(e) => {
+                            self.log.push_str(&format!("[E] Audio: {e}\n"));
+                            (None, Some(e))
+                        }
                     };
                     self.session = Some(Session {
                         stream,
-                        _audio: audio,
+                        audio,
                         audio_err,
                         tex: None,
                         buf: Vec::new(),
@@ -735,6 +748,89 @@ fn save_screenshot(buf: &[u8], w: usize, h: usize) -> Result<String, String> {
     let mut wr = enc.write_header().map_err(|e| e.to_string())?;
     wr.write_image_data(&buf[..w * h * 4]).map_err(|e| e.to_string())?;
     Ok(name)
+}
+
+/// Leiser Testton (440 Hz) für die Geräteauswahl.
+fn tone_pull() -> audio::Pull {
+    let n = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    Arc::new(move |buf: &mut [i16]| {
+        let frames = buf.len() / 2;
+        let start = n.fetch_add(frames as u64, std::sync::atomic::Ordering::Relaxed);
+        for i in 0..frames {
+            let v = ((2.0 * std::f64::consts::PI * 440.0 * (start + i as u64) as f64 / 48000.0).sin() * 6000.0) as i16;
+            buf[i * 2] = v;
+            buf[i * 2 + 1] = v;
+        }
+        frames * 2
+    })
+}
+
+#[derive(Default)]
+struct BarFlags {
+    menu: bool,
+    fullscreen: bool,
+    keys: bool,
+    shot: bool,
+    mute: bool,
+}
+
+/// Elegante Leiste im Stream: Verbindungsstatus links, Schnellzugriffe rechts.
+fn draw_stream_bar(ctx: &egui::Context, anim: f32, t: f64, ps5: bool, game: &str, quality: &str, no_audio: Option<&str>, muted: bool, volume: &mut f32) -> BarFlags {
+    let mut fl = BarFlags::default();
+    let w = ctx.screen_rect().width();
+    let console_txt = if ps5 { "PlayStation 5" } else { "PlayStation 4" };
+    let pulse = 0.6 + 0.4 * (t * 2.2).sin().abs() as f32;
+    egui::Area::new(egui::Id::new("bar")).order(egui::Order::Foreground).fixed_pos(Pos2::new(0.0, -(1.0 - anim) * 60.0)).show(ctx, |ui| {
+        ui.set_opacity(anim);
+        egui::Frame::none()
+            .fill(Color32::from_rgba_unmultiplied(8, 11, 22, 228))
+            .inner_margin(egui::Margin::symmetric(18.0, 9.0))
+            .show(ui, |ui| {
+                ui.set_width(w - 36.0);
+                ui.horizontal_centered(|ui| {
+                    let (r, _) = ui.allocate_exact_size(Vec2::splat(14.0), egui::Sense::hover());
+                    ui.painter().circle_filled(r.center(), 7.0 * pulse, GREEN.gamma_multiply(0.25));
+                    ui.painter().circle_filled(r.center(), 4.0, GREEN);
+                    ui.label(RichText::new("Verbunden").size(14.0).strong().color(GREEN));
+                    ui.label(RichText::new(console_txt).size(14.0));
+                    if !game.is_empty() && w >= 1000.0 {
+                        ui.label(RichText::new(format!("•  {game}")).size(13.0).color(TEXT_DIM));
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        ui.spacing_mut().button_padding = Vec2::new(4.0, 3.0);
+                        ui.spacing_mut().item_spacing.x = 8.0;
+                        let ib = |icon: &str| egui::Button::new(RichText::new(icon.to_string()).size(17.0)).fill(Color32::from_white_alpha(14)).rounding(9.0).min_size(Vec2::new(36.0, 30.0));
+                        if ui.add(ib(ic::POWER)).on_hover_text("Menü / Beenden (Esc)").clicked() {
+                            fl.menu = true;
+                        }
+                        if ui.add(ib(ic::CORNERS_OUT)).on_hover_text("Vollbild (F11)").clicked() {
+                            fl.fullscreen = true;
+                        }
+                        if ui.add(ib(ic::KEYBOARD)).on_hover_text("Tastenbelegung (F1)").clicked() {
+                            fl.keys = true;
+                        }
+                        if ui.add(ib(ic::CAMERA)).on_hover_text("Screenshot (F12)").clicked() {
+                            fl.shot = true;
+                        }
+                        ui.scope(|ui| {
+                            ui.spacing_mut().slider_width = 96.0;
+                            ui.add(egui::Slider::new(volume, 0.0..=1.5).show_value(false));
+                        });
+                        let mute_icon = if muted { ic::SPEAKER_X } else { ic::SPEAKER_HIGH };
+                        if ui.add(ib(mute_icon)).on_hover_text("Ton an/aus (M)").clicked() {
+                            fl.mute = true;
+                        }
+                        if let Some(why) = no_audio {
+                            ui.label(RichText::new("Kein Ton").size(12.5).color(YELLOW)).on_hover_text(why.to_string());
+                        }
+                        if w >= 860.0 {
+                            ui.label(RichText::new(quality).size(12.5).color(TEXT_DIM));
+                        }
+                    });
+                });
+            });
+    });
+    fl
 }
 
 fn ease_out_t(x: f32) -> f32 {
@@ -1064,13 +1160,50 @@ impl App {
                 });
             });
             ui.add_space(6.0);
+            section(ui, &format!("{}  Ton", ic::SPEAKER_HIGH), |ui| {
+                ui.label(RichText::new("Ausgabegerät und Lautstärke für den Ton aus dem Spiel. Ein anderes Gerät gilt ab dem nächsten Stream.").color(TEXT_DIM).size(12.5));
+                ui.add_space(4.0);
+                let std_name = audio::default_device_name();
+                let sel_text = if st.audio_device.is_empty() { format!("Standardgerät ({std_name})") } else { st.audio_device.clone() };
+                egui::ComboBox::from_id_source("adev").width(360.0).selected_text(sel_text).show_ui(ui, |ui| {
+                    ui.selectable_value(&mut st.audio_device, String::new(), format!("Standardgerät ({std_name})"));
+                    for d in self.audio_devices.iter() {
+                        ui.selectable_value(&mut st.audio_device, d.clone(), d);
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    ui.label("Lautstärke");
+                    ui.add(egui::Slider::new(&mut st.volume, 0.0..=1.5).custom_formatter(|v, _| format!("{} %", (v * 100.0).round() as i32)));
+                });
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(format!("{} Ton testen", ic::SPEAKER_HIGH)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                        match audio::start_with(tone_pull(), &st.audio_device, 0.6 * st.volume.max(0.2)) {
+                            Ok(a) => {
+                                self.audio_test = Some((a, ui.ctx().input(|i| i.time)));
+                                self.toasts.push(("Du solltest jetzt kurz einen leisen Ton hören.".to_string(), 0, self.now));
+                            }
+                            Err(e) => self.toasts.push((format!("Ton nicht möglich: {e}"), 1, self.now)),
+                        }
+                    }
+                    if ui.add(egui::Button::new("Geräte neu laden").fill(th_card_hover()).rounding(10.0)).clicked() {
+                        self.audio_devices = audio::list_devices();
+                    }
+                });
+            });
+            ui.add_space(6.0);
             section(ui, &format!("{}  Steuerung", ic::GAME_CONTROLLER), |ui| {
                 ui.checkbox(&mut st.rumble, "Controller-Vibration");
                 ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt. Die Tastatur stellst du weiter unten ein.").color(TEXT_DIM).size(12.5));
             });
             ui.add_space(6.0);
             section(ui, &format!("{}  Tastatur", ic::KEYBOARD), |ui| {
-                ui.label(RichText::new("Alle Tasten sind frei belegbar: Auf eine Taste klicken, dann die neue Taste drücken (Esc bricht ab).").color(TEXT_DIM).size(12.5));
+                ui.label(RichText::new("Die Tastatur steuert das Spiel nur, wenn du sie brauchst. Die Kurztasten (Esc, F1, F10, F11, F12, M) funktionieren immer.").color(TEXT_DIM).size(12.5));
+                ui.add_space(4.0);
+                segmented(ui, &mut st.kb_mode, &["Automatisch (nur ohne Controller)", "Immer", "Aus"]);
+                ui.add_space(6.0);
+                egui::CollapsingHeader::new(RichText::new("Tasten anpassen").size(14.0).strong()).default_open(false).show(ui, |ui| {
+                ui.label(RichText::new("Auf eine Taste klicken, dann die neue Taste drücken (Esc bricht ab).").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
                 egui::Grid::new("kbgrid").num_columns(2).spacing([20.0, 6.0]).show(ui, |ui| {
                     for (i, act) in keys::ACTIONS.iter().enumerate() {
@@ -1097,6 +1230,7 @@ impl App {
                     self.capturing = None;
                     self.key_note.clear();
                 }
+                });
             });
             ui.add_space(6.0);
             section(ui, &format!("{}  Discord", ic::DISCORD_LOGO), |ui| {
@@ -1380,6 +1514,12 @@ impl App {
                         shot = true;
                     }
                     ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{}  Lautstärke", ic::SPEAKER_HIGH)).size(14.0));
+                        ui.add(egui::Slider::new(&mut self.settings.volume, 0.0..=1.5).show_value(false));
+                        ui.checkbox(&mut self.muted, "Stumm (M)");
+                    });
+                    ui.add_space(4.0);
                     if ui.add(big_button("Stream beenden", RED.gamma_multiply(0.55)).min_size(Vec2::new(360.0, 42.0))).clicked() {
                         stop = true;
                     }
@@ -1655,9 +1795,10 @@ impl App {
         }
     }
 
-    fn keyboard_input(&self, ctx: &egui::Context) -> pad::Input {
+    fn keyboard_input(&self, ctx: &egui::Context, pad_connected: bool) -> pad::Input {
         let neutral = pad::Input { buttons: 0, l2: 0, r2: 0, lx: 0, ly: 0, rx: 0, ry: 0 };
-        if self.stream_menu || self.show_keys || ctx.wants_keyboard_input() || !ctx.input(|i| i.focused) {
+        let off = self.settings.kb_mode == 2 || (self.settings.kb_mode == 0 && pad_connected);
+        if off || self.stream_menu || self.show_keys || ctx.wants_keyboard_input() || !ctx.input(|i| i.focused) {
             return neutral;
         }
         ctx.input(|i| keys::eval(i, &self.settings.keys))
@@ -1666,7 +1807,10 @@ impl App {
     fn stream_ui(&mut self, ctx: &egui::Context) {
         let mut stop = false;
         let mut open_menu = false;
+        let mut bar_shot = false;
+        let mut bar_keys = false;
         let show_hud = self.show_hud;
+        let muted_now = self.muted;
         let mut toggle_fs = false;
         let mut copy_log = false;
         let mut report = false;
@@ -1676,7 +1820,8 @@ impl App {
         };
         // Eingabe sammeln (Controller + Tastatur)
         let pad_in = self.pad.poll();
-        let kb = self.keyboard_input(ctx);
+        let pad_connected_now = self.pad.connected();
+        let kb = self.keyboard_input(ctx, pad_connected_now);
         let input = pad::Input {
             buttons: pad_in.buttons | kb.buttons,
             l2: pad_in.l2.max(kb.l2),
@@ -1690,6 +1835,7 @@ impl App {
         let pad_connected = self.pad.connected();
         let log_tail: String = self.log.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
 
+        let con_info = self.session.as_ref().and_then(|s| self.consoles.iter().find(|c| c.name == s.name).map(|c| (c.is_ps5, c.running_app.clone())));
         let Some(s) = self.session.as_mut() else { return };
         s.stream.set_input(input.buttons, input.l2, input.r2, input.lx, input.ly, input.rx, input.ry);
         if let Some((l, r)) = s.stream.take_rumble() {
@@ -1722,11 +1868,19 @@ impl App {
             s.fps_t = Instant::now();
         }
 
-        let mouse_moved = ctx.input(|i| i.pointer.delta() != Vec2::ZERO);
-        if mouse_moved {
+        let activity = ctx.input(|i| {
+            i.pointer.delta() != Vec2::ZERO
+                || i.pointer.any_down()
+                || i.events.iter().any(|e| matches!(e, egui::Event::Key { pressed: true, .. }))
+                || i.pointer.hover_pos().map(|p| p.y < 64.0).unwrap_or(false)
+        });
+        if activity {
             s.last_input = Instant::now();
         }
-        let show_ui = s.last_input.elapsed() < Duration::from_secs(3) || s.state != 1;
+        let show_ui = s.last_input.elapsed() < Duration::from_secs(3) || s.state != 1 || self.stream_menu || self.show_keys;
+        if !show_ui && s.state == 1 {
+            ctx.set_cursor_icon(egui::CursorIcon::None);
+        }
 
         egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |ui| {
             let full = ui.max_rect();
@@ -1793,34 +1947,79 @@ impl App {
 
             // HUD + Steuerleiste
             if s.state == 1 && s.tex.is_some() {
+                let atotal = s.stream.audio_total();
+                let atxt = if muted_now {
+                    "  •  Ton aus".to_string()
+                } else {
+                    match &s.audio {
+                        None => "  •  Ton: kein Gerät".to_string(),
+                        Some(a) => {
+                            let err = a.shared.error.lock().map(|g| g.clone()).unwrap_or_default();
+                            if !err.is_empty() {
+                                "  •  Ton: Gerätefehler".to_string()
+                            } else if atotal == 0 && s.started.elapsed() > Duration::from_secs(6) {
+                                "  •  Ton: keine Daten von der Konsole".to_string()
+                            } else {
+                                "  •  Ton ok".to_string()
+                            }
+                        }
+                    }
+                };
                 let hud = format!(
-                    "{}x{}  •  {} FPS{}{}",
+                    "{}x{}  •  {} FPS{}{}{}",
                     s.size.0,
                     s.size.1,
                     s.fps,
                     if s.lost > 0 { format!("  •  {} Pakete verloren", s.lost) } else { String::new() },
-                    if pad_connected { format!("  •  {}", ic::GAME_CONTROLLER) } else { String::new() }
+                    if pad_connected { "  •  Controller".to_string() } else { String::new() },
+                    atxt
                 );
                 if show_hud {
                     ui.painter().text(full.left_top() + Vec2::new(14.0, 12.0), Align2::LEFT_TOP, hud, FontId::monospace(12.0), Color32::from_white_alpha(150));
                 }
-                if show_ui {
-                    egui::Area::new(egui::Id::new("bar")).order(egui::Order::Foreground).anchor(Align2::RIGHT_TOP, [-14.0, 10.0]).show(ctx, |ui| {
-                        ui.horizontal(|ui| {
-                            if ui.add(egui::Button::new("Vollbild (F11)").fill(th_card()).rounding(10.0)).clicked() {
-                                toggle_fs = true;
-                            }
-                            if ui.add(egui::Button::new("Menü (Esc)").fill(th_card()).rounding(10.0)).clicked() {
-                                open_menu = true;
-                            }
-                        });
-                    });
+                let anim = ctx.animate_bool_with_time(egui::Id::new("bar_anim"), show_ui, 0.25);
+                if anim > 0.01 {
+                    let (ps5, game) = con_info.clone().unwrap_or((true, String::new()));
+                    let no_audio = !muted_now && (atotal == 0 && s.started.elapsed() > Duration::from_secs(6) || s.audio.is_none());
+                    let quality = format!("{}p • {} FPS", s.size.1, s.fps);
+                    let fl = draw_stream_bar(ctx, anim, self.now, ps5, &game, &quality, if no_audio { Some(atxt.trim_start_matches("  •  ")) } else { None }, self.muted, &mut self.settings.volume);
+                    if fl.menu {
+                        open_menu = true;
+                    }
+                    if fl.fullscreen {
+                        toggle_fs = true;
+                    }
+                    if fl.keys {
+                        bar_keys = true;
+                    }
+                    if fl.shot {
+                        bar_shot = true;
+                    }
+                    if fl.mute {
+                        self.muted = !self.muted;
+                    }
                 }
             }
         });
 
+        if bar_shot {
+            self.shot_requested = true;
+        }
+        if bar_keys {
+            self.show_keys = !self.show_keys;
+        }
         if ctx.input(|i| i.key_pressed(Key::F11)) {
             toggle_fs = true;
+        }
+        if ctx.input(|i| i.key_pressed(Key::M)) && !self.stream_menu && !ctx.wants_keyboard_input() {
+            self.muted = !self.muted;
+            self.toasts.push((if self.muted { "Ton aus (M)".to_string() } else { "Ton an".to_string() }, 0, self.now));
+        }
+        let gain = if self.muted { 0.0 } else { self.settings.volume };
+        if let Some(s) = self.session.as_ref() {
+            if let Some(a) = &s.audio {
+                a.shared.set_gain(gain);
+            }
         }
         let want_shot = ctx.input(|i| i.key_pressed(Key::F12)) || self.shot_requested;
         self.shot_requested = false;
@@ -1949,6 +2148,11 @@ impl eframe::App for App {
         self.handle_messages(ctx);
         self.pump_log();
         self.process_capture(ctx, t);
+        if let Some((_, t0)) = &self.audio_test {
+            if t - *t0 > 1.6 {
+                self.audio_test = None;
+            }
+        }
         if self.session.is_none() && self.dialog.is_none() && self.capturing.is_none() && !ctx.wants_keyboard_input() {
             let (f5, c1, c2, c3, c4, c5) = ctx.input(|i| {
                 let c = i.modifiers.ctrl;
@@ -1987,6 +2191,13 @@ impl eframe::App for App {
         }
 
         self.update_discord();
+        if std::env::args().any(|a| a == "--demo-bar") {
+            egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |_| {});
+            let mut vol = 1.0f32;
+            draw_stream_bar(ctx, 1.0, t, true, "EA SPORTS FC 26", "1080p • 60 FPS", Some("Ton: keine Daten von der Konsole"), false, &mut vol);
+            ctx.request_repaint();
+            return;
+        }
         // Update-Animation
         if self.update_busy && self.update.is_some() {
             ctx.request_repaint();
@@ -2260,8 +2471,31 @@ fn discord_test() {
     std::thread::sleep(Duration::from_secs(2));
 }
 
+fn audio_test() {
+    use std::io::Write;
+    let out = std::env::temp_dir().join("overlime-audio-test.txt");
+    let mut f = std::fs::File::create(&out).unwrap();
+    let devs = audio::list_devices();
+    let _ = writeln!(f, "Geräte: {:?}", devs);
+    let _ = writeln!(f, "Standard: {}", audio::default_device_name());
+    match audio::start_with(tone_pull(), "", 0.5) {
+        Ok(a) => {
+            let _ = writeln!(f, "Start ok: {}", a.shared.info.lock().unwrap().clone());
+            std::thread::sleep(Duration::from_millis(1500));
+            let _ = writeln!(f, "Frames gespielt: {}  Unterbrechungen: {}  Fehler: '{}'", a.shared.frames_played.load(std::sync::atomic::Ordering::Relaxed), a.shared.underruns.load(std::sync::atomic::Ordering::Relaxed), a.shared.error.lock().unwrap().clone());
+        }
+        Err(e) => {
+            let _ = writeln!(f, "Start Fehler: {e}");
+        }
+    }
+}
+
 fn main() -> eframe::Result<()> {
     ffi::init();
+    if std::env::args().any(|a| a == "--audio-test") {
+        audio_test();
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--discord-test") {
         discord_test();
         return Ok(());

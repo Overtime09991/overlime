@@ -37,6 +37,7 @@ pub struct OlStatus {
     pub audio_rate: u32,
     pub audio_channels: u32,
     pub frames_lost: i32,
+    pub audio_total: u64,
 }
 
 #[repr(C)]
@@ -197,6 +198,13 @@ impl Stream {
     }
 
     /// Neues Bild als RGBA, falls verfügbar.
+    /// Anzahl der bisher empfangenen Ton-Samples (pro Kanal).
+    pub fn audio_total(&self) -> u64 {
+        let mut st: OlStatus = unsafe { std::mem::zeroed() };
+        unsafe { ol_stream_status(self.ptr, &mut st) };
+        st.audio_total
+    }
+
     pub fn take_frame(&self, buf: &mut Vec<u8>) -> Option<(usize, usize)> {
         if buf.len() < 3840 * 2160 * 4 {
             buf.resize(3840 * 2160 * 4, 0);

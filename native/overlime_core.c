@@ -174,6 +174,7 @@ struct OlStream {
 	int16_t audio[AUDIO_RING_SAMPLES];
 	size_t a_read, a_write; // monoton steigend
 	uint32_t audio_rate, audio_channels;
+	uint64_t audio_total;
 };
 
 static void frame_available(ChiakiFfmpegDecoder *decoder, void *user)
@@ -246,6 +247,7 @@ static void opus_frame_cb(int16_t *buf, size_t samples_count, void *user)
 	OlStream *s = user;
 	size_t total = samples_count * (s->audio_channels ? s->audio_channels : 2);
 	chiaki_mutex_lock(&s->mtx);
+	s->audio_total += samples_count;
 	for(size_t i = 0; i < total; i++)
 	{
 		s->audio[s->a_write % AUDIO_RING_SAMPLES] = buf[i];
@@ -377,6 +379,7 @@ void ol_stream_status(OlStream *s, OlStatus *out)
 	out->audio_rate = s->audio_rate;
 	out->audio_channels = s->audio_channels;
 	out->frames_lost = s->frames_lost;
+	out->audio_total = s->audio_total;
 	chiaki_mutex_unlock(&s->mtx);
 }
 

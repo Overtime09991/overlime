@@ -22,6 +22,9 @@ pub struct Settings {
     pub discord_id: String,
     pub autoconnect: bool,
     pub ask_feedback: bool,
+    pub volume: f32,
+    pub kb_mode: usize,
+    pub audio_device: String,
     pub welcome_anim: bool,
 }
 
@@ -47,6 +50,9 @@ impl Default for Settings {
             discord_id: String::new(),
             autoconnect: false,
             ask_feedback: true,
+            volume: 1.0,
+            kb_mode: 0,
+            audio_device: String::new(),
             welcome_anim: true,
         }
     }
@@ -93,6 +99,9 @@ impl Settings {
                 "discord_id" => s.discord_id = v.trim().to_string(),
                 "autoconnect" => s.autoconnect = v.trim() == "true",
                 "ask_feedback" => s.ask_feedback = v.trim() != "false",
+                "kb_mode" => s.kb_mode = v.trim().parse().unwrap_or(0usize).min(2),
+                "volume" => s.volume = v.trim().parse().unwrap_or(1.0f32).clamp(0.0, 1.5),
+                "audio_device" => s.audio_device = v.trim().to_string(),
                 "welcome_anim" => s.welcome_anim = v.trim() != "false",
                 k if k.starts_with("key_") => {
                     if let Ok(i) = k[4..].parse::<usize>() {
@@ -122,6 +131,8 @@ impl Settings {
         text.push_str(&format!("welcome_anim={}\n", self.welcome_anim));
         text.push_str(&format!("autoconnect={}\n", self.autoconnect));
         text.push_str(&format!("ask_feedback={}\n", self.ask_feedback));
+        text.push_str(&format!("volume={}\naudio_device={}\n", self.volume, self.audio_device));
+        text.push_str(&format!("kb_mode={}\n", self.kb_mode));
         for (i, k) in self.keys.iter().enumerate() {
             text.push_str(&format!("key_{i}={k}\n"));
         }
