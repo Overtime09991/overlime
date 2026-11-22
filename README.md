@@ -20,6 +20,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Aus dem Ruhemodus aufwecken.** Ein Klick, und die Konsole startet, ohne dass du aufstehen musst.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
+- **Flüssiges Bild.** Die Grafikkarte rechnet das Bild um und skaliert es hoch, mit echtem Schärfefilter (CAS) für „Scharf“ und „Ultra“. Das spart Rechenzeit und Verzögerung.
 - **Ton inklusive.** Ausgabegerät und Lautstärke frei wählbar, Stumm per Taste M, bestes Audioformat automatisch (32-Bit, 48 kHz).
 - **Diagnose und Hilfe.** Eine Diagnose-Seite prüft Netzwerk, Konsole, Konto und Controller und erklärt bei Problemen, woran es liegt. „Problem melden“ kopiert einen Bericht ohne IP-Adressen.
 - **Komfort.** Auf Wunsch verbindet sich OVERLIME beim Start automatisch mit deiner Konsole (und weckt sie auf). Screenshots im Stream mit F12.
@@ -59,7 +60,7 @@ Alternativ gibt es auf der [Release-Seite](https://github.com/Overtime09991/over
 | Bildrate | 30 oder 60 FPS |
 | Bitrate | 2 bis 50 Mbit/s |
 | Codec | Automatisch · H.264 · HEVC |
-| Darstellung | Hochskalierung für große Monitore, Vollbild (F11) |
+| Darstellung | Hochskalierung auf der Grafikkarte (Aus, Weich, Scharf, Ultra), Vollbild (F11) |
 
 Mit **⚡ Maximale Qualität** stellst du alles auf einmal auf das Beste.
 *Tipp für das beste Ergebnis:* Konsole per LAN-Kabel anschließen, PC per Kabel oder 5-GHz-WLAN.

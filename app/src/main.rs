@@ -13,6 +13,7 @@ mod store;
 mod winui;
 mod theme;
 mod update;
+mod video;
 
 use discovery::{Console, State};
 use eframe::egui::{
@@ -32,7 +33,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.16";
+const VERSION: &str = "0.17";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -82,6 +83,11 @@ struct Session {
     audio_err: Option<String>,
     tex: Option<TextureHandle>,
     buf: Vec<u8>,
+    gpu: Arc<video::VideoGpu>,
+    use_gpu: bool,
+    has_video: bool,
+    vsize: (usize, usize),
+    nv12: Vec<u8>,
     name: String,
     started: Instant,
     fps_count: u32,
@@ -154,6 +160,8 @@ struct App {
     audio_devices: Vec<String>,
     audio_test: Option<(audio::Audio, f64)>,
     muted: bool,
+    gl_ok: bool,
+    demo_gpu: Option<Arc<video::VideoGpu>>,
     close_hint: bool,
     fullscreen: bool,
     status: String,
@@ -240,6 +248,8 @@ impl App {
             audio_devices: audio::list_devices(),
             audio_test: None,
             muted: false,
+            gl_ok: false,
+            demo_gpu: None,
             close_hint: false,
             fullscreen: false,
             status: String::new(),
@@ -531,6 +541,9 @@ impl App {
                 }
                 Msg::StreamStarted(stream, name) => {
                     self.starting = None;
+                    if !self.gl_ok {
+                        stream.set_rgba(true);
+                    }
                     let stream = Arc::new(stream);
                     let (audio, audio_err) = match audio::start(stream.clone(), &self.settings.audio_device, self.settings.volume) {
                         Ok(a) => {
@@ -549,6 +562,11 @@ impl App {
                         audio_err,
                         tex: None,
                         buf: Vec::new(),
+                        gpu: video::VideoGpu::new(),
+                        use_gpu: self.gl_ok,
+                        has_video: false,
+                        vsize: (0, 0),
+                        nv12: Vec::new(),
                         name,
                         started: Instant::now(),
                         fps_count: 0,
@@ -1119,7 +1137,7 @@ impl App {
             });
             ui.add_space(6.0);
             section(ui, &format!("{}  Darstellung", ic::MONITOR), |ui| {
-                label(ui, "Hochskalierung auf 4K", "Die Konsole sendet max. 1080p. „Aus“ zeigt harte Pixel, „Weich“ glättet.");
+                label(ui, "Hochskalierung auf 4K", "Die Konsole sendet max. 1080p. Die Grafikkarte rechnet hoch: „Aus“ = harte Pixel, „Weich“ = glatt, „Scharf“ und „Ultra“ = Schärfefilter (CAS).");
                 segmented(ui, &mut st.upscale, &["Aus", "Weich", "Scharf", "Ultra"]);
                 ui.add_space(6.0);
                 ui.checkbox(&mut st.fullscreen, "Vollbild beim Streamen");
@@ -1835,6 +1853,9 @@ impl App {
         let pad_connected = self.pad.connected();
         let log_tail: String = self.log.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
 
+        let up = self.settings.upscale.min(3);
+        let sharp = [0.0f32, 0.0, 0.55, 0.9][up];
+        let nearest = up == 0;
         let con_info = self.session.as_ref().and_then(|s| self.consoles.iter().find(|c| c.name == s.name).map(|c| (c.is_ps5, c.running_app.clone())));
         let Some(s) = self.session.as_mut() else { return };
         s.stream.set_input(input.buttons, input.l2, input.r2, input.lx, input.ly, input.rx, input.ry);
@@ -1854,12 +1875,34 @@ impl App {
         if frames != s.frames_total {
             s.frames_total = frames;
         }
-        if let Some((fw, fh)) = s.stream.take_frame(&mut s.buf) {
+        if s.use_gpu && s.gpu.failed() {
+            // Rückfall auf den alten Weg (CPU), falls die Grafikkarte den Shader ablehnt
+            s.use_gpu = false;
+            s.stream.set_rgba(true);
+        }
+        if s.use_gpu {
+            if let Some((fw, fh)) = s.stream.take_nv12(&mut s.nv12) {
+                {
+                    let mut f = s.gpu.frame.lock().unwrap();
+                    std::mem::swap(&mut f.nv12, &mut s.nv12);
+                    f.w = fw;
+                    f.h = fh;
+                    f.dirty = true;
+                    f.sharp = sharp;
+                    f.nearest = nearest;
+                }
+                s.has_video = true;
+                s.vsize = (fw, fh);
+                s.fps_count += 1;
+            }
+        } else if let Some((fw, fh)) = s.stream.take_frame(&mut s.buf) {
             let img = egui::ColorImage::from_rgba_unmultiplied([fw, fh], &s.buf[..fw * fh * 4]);
             match s.tex.as_mut() {
                 Some(t) => t.set(img, opts),
                 None => s.tex = Some(ctx.load_texture("video", img, opts)),
             }
+            s.has_video = true;
+            s.vsize = (fw, fh);
             s.fps_count += 1;
         }
         if s.fps_t.elapsed() >= Duration::from_secs(1) {
@@ -1884,7 +1927,12 @@ impl App {
 
         egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |ui| {
             let full = ui.max_rect();
-            if let Some(tex) = &s.tex {
+            if s.use_gpu && s.has_video {
+                let (iw, ih) = (s.vsize.0 as f32, s.vsize.1 as f32);
+                let scale = (full.width() / iw).min(full.height() / ih);
+                let r = Rect::from_center_size(full.center(), Vec2::new(iw * scale, ih * scale));
+                s.gpu.paint(ui.painter(), r);
+            } else if let Some(tex) = &s.tex {
                 let (iw, ih) = (tex.size()[0] as f32, tex.size()[1] as f32);
                 let scale = (full.width() / iw).min(full.height() / ih);
                 let r = Rect::from_center_size(full.center(), Vec2::new(iw * scale, ih * scale));
@@ -1892,7 +1940,7 @@ impl App {
             }
 
             // Verbindungs-/Fehler-Overlay
-            if s.state == 0 || s.state == 2 || s.tex.is_none() {
+            if s.state == 0 || s.state == 2 || !s.has_video {
                 let ended = s.state == 2;
                 egui::Area::new(egui::Id::new("overlay")).order(egui::Order::Foreground).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
                     egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, if ended && s.ended_error { RED.gamma_multiply(0.6) } else { th_blue().gamma_multiply(0.5) })).inner_margin(egui::Margin::same(28.0)).show(ui, |ui| {
@@ -1930,7 +1978,7 @@ impl App {
                                 ui.add_space(8.0);
                                 ui.label(RichText::new(format!("Verbinde mit {} …", s.name)).size(20.0).strong());
                                 let secs = s.started.elapsed().as_secs();
-                                let sub = if s.tex.is_none() && s.state == 1 { "Warte auf das erste Bild" } else { "Handshake mit der Konsole" };
+                                let sub = if !s.has_video && s.state == 1 { "Warte auf das erste Bild" } else { "Handshake mit der Konsole" };
                                 ui.label(RichText::new(format!("{sub}  •  {secs}s")).color(TEXT_DIM));
                                 if let Some(a) = &s.audio_err {
                                     ui.label(RichText::new(format!("Ton nicht verfügbar: {a}")).color(YELLOW).size(12.0));
@@ -1946,7 +1994,7 @@ impl App {
             }
 
             // HUD + Steuerleiste
-            if s.state == 1 && s.tex.is_some() {
+            if s.state == 1 && s.has_video {
                 let atotal = s.stream.audio_total();
                 let atxt = if muted_now {
                     "  •  Ton aus".to_string()
@@ -2025,6 +2073,11 @@ impl App {
         self.shot_requested = false;
         if want_shot {
             let msg = match self.session.as_ref() {
+                Some(s) if s.use_gpu && s.has_video => {
+                    let f = s.gpu.frame.lock().unwrap();
+                    let rgba = video::nv12_to_rgba(&f.nv12, f.w, f.h);
+                    save_screenshot(&rgba, f.w, f.h)
+                }
                 Some(s) => match &s.tex {
                     Some(tex) => save_screenshot(&s.buf, tex.size()[0], tex.size()[1]),
                     None => Err("Noch kein Bild vorhanden".to_string()),
@@ -2116,7 +2169,8 @@ impl eframe::App for App {
         if pressed & (1 << 8) != 0 && self.dialog.is_none() { self.page = pages[(idx + 4) % 5]; }
     }
 
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        self.gl_ok = frame.gl().is_some();
         let t = ctx.input(|i| i.time);
         self.now = t;
         if (t * 2.0) as u64 % 4 == 0 {
@@ -2191,6 +2245,38 @@ impl eframe::App for App {
         }
 
         self.update_discord();
+        if std::env::args().any(|a| a == "--demo-video") {
+            // Testbild über denselben Grafikkarten-Weg wie der Stream
+            let mode: usize = std::env::args().find_map(|a| a.strip_prefix("--mode=").and_then(|v| v.parse().ok())).unwrap_or(2);
+            let gpu = self.demo_gpu.get_or_insert_with(|| {
+                let g = video::VideoGpu::new();
+                {
+                    let mut f = g.frame.lock().unwrap();
+                    f.w = 1280;
+                    f.h = 720;
+                    f.nv12 = video::test_pattern_nv12(1280, 720);
+                    f.dirty = true;
+                }
+                g
+            }).clone();
+            {
+                let mut f = gpu.frame.lock().unwrap();
+                f.sharp = [0.0, 0.0, 0.55, 0.9][mode.min(3)];
+                f.nearest = mode == 0;
+            }
+            let failed = gpu.failed();
+            egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |ui| {
+                let full = ui.max_rect();
+                let scale = (full.width() / 1280.0).min(full.height() / 720.0);
+                let r = Rect::from_center_size(full.center(), Vec2::new(1280.0 * scale, 720.0 * scale));
+                gpu.paint(ui.painter(), r);
+                if failed {
+                    ui.painter().text(full.center(), Align2::CENTER_CENTER, format!("GPU-Fehler: {}", gpu.error.lock().unwrap()), FontId::proportional(16.0), RED);
+                }
+            });
+            ctx.request_repaint();
+            return;
+        }
         if std::env::args().any(|a| a == "--demo-bar") {
             egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |_| {});
             let mut vol = 1.0f32;

@@ -164,6 +164,12 @@ struct OlStream {
 	uint64_t frames_decoded;
 	int32_t frames_lost;
 	struct SwsContext *sws;
+	struct SwsContext *sws12;
+	int sws12_w, sws12_h, sws12_fmt;
+	uint8_t *nv12;
+	size_t nv12_cap;
+	int nv12_ready;
+	int want_rgba;
 	int sws_w, sws_h, sws_fmt;
 
 	// Vibration
@@ -200,30 +206,100 @@ static void frame_available(ChiakiFfmpegDecoder *decoder, void *user)
 
 	int w = frame->width, h = frame->height;
 	chiaki_mutex_lock(&s->mtx);
-	size_t need = (size_t)w * h * 4;
-	if(s->rgba_cap < need)
+
+	// --- NV12 direkt fuer die Grafikkarte (kein CPU-Umrechnen) ---
 	{
-		free(s->rgba);
-		s->rgba = malloc(need);
-		s->rgba_cap = s->rgba ? need : 0;
-	}
-	if(s->rgba)
-	{
-		if(!s->sws || s->sws_w != w || s->sws_h != h || s->sws_fmt != frame->format)
+		size_t cw = ((size_t)w + 1) / 2, chh = ((size_t)h + 1) / 2;
+		size_t ysz = (size_t)w * h;
+		size_t need12 = ysz + cw * 2 * chh;
+		if(s->nv12_cap < need12)
 		{
-			sws_freeContext(s->sws);
-			s->sws = sws_getContext(w, h, frame->format, w, h, AV_PIX_FMT_RGBA, SWS_FAST_BILINEAR, NULL, NULL, NULL);
-			s->sws_w = w; s->sws_h = h; s->sws_fmt = frame->format;
+			free(s->nv12);
+			s->nv12 = malloc(need12);
+			s->nv12_cap = s->nv12 ? need12 : 0;
 		}
-		if(s->sws)
+		if(s->nv12)
 		{
-			uint8_t *dst[4] = { s->rgba, NULL, NULL, NULL };
-			int dst_stride[4] = { w * 4, 0, 0, 0 };
-			sws_scale(s->sws, (const uint8_t *const *)frame->data, frame->linesize, 0, h, dst, dst_stride);
-			s->width = w;
-			s->height = h;
-			s->frame_ready = 1;
-			s->frames_decoded++;
+			int done = 0;
+			if(frame->format == AV_PIX_FMT_NV12)
+			{
+				for(int y = 0; y < h; y++)
+					memcpy(s->nv12 + (size_t)y * w, frame->data[0] + (size_t)y * frame->linesize[0], (size_t)w);
+				for(size_t y = 0; y < chh; y++)
+					memcpy(s->nv12 + ysz + y * cw * 2, frame->data[1] + y * frame->linesize[1], cw * 2);
+				done = 1;
+			}
+			else if(frame->format == AV_PIX_FMT_YUV420P || frame->format == AV_PIX_FMT_YUVJ420P)
+			{
+				for(int y = 0; y < h; y++)
+					memcpy(s->nv12 + (size_t)y * w, frame->data[0] + (size_t)y * frame->linesize[0], (size_t)w);
+				for(size_t y = 0; y < chh; y++)
+				{
+					const uint8_t *u = frame->data[1] + y * frame->linesize[1];
+					const uint8_t *v = frame->data[2] + y * frame->linesize[2];
+					uint8_t *dst = s->nv12 + ysz + y * cw * 2;
+					for(size_t x = 0; x < cw; x++)
+					{
+						dst[x * 2] = u[x];
+						dst[x * 2 + 1] = v[x];
+					}
+				}
+				done = 1;
+			}
+			else
+			{
+				// anderes Format (z. B. 10 Bit): ueber swscale nach NV12
+				if(!s->sws12 || s->sws12_w != w || s->sws12_h != h || s->sws12_fmt != frame->format)
+				{
+					sws_freeContext(s->sws12);
+					s->sws12 = sws_getContext(w, h, frame->format, w, h, AV_PIX_FMT_NV12, SWS_FAST_BILINEAR, NULL, NULL, NULL);
+					s->sws12_w = w; s->sws12_h = h; s->sws12_fmt = frame->format;
+				}
+				if(s->sws12)
+				{
+					uint8_t *dst[4] = { s->nv12, s->nv12 + ysz, NULL, NULL };
+					int dst_stride[4] = { w, (int)(cw * 2), 0, 0 };
+					sws_scale(s->sws12, (const uint8_t *const *)frame->data, frame->linesize, 0, h, dst, dst_stride);
+					done = 1;
+				}
+			}
+			if(done)
+			{
+				s->width = w;
+				s->height = h;
+				s->nv12_ready = 1;
+				s->frames_decoded++;
+			}
+		}
+	}
+
+	// --- RGBA (alter Weg, nur auf Wunsch) ---
+	if(s->want_rgba)
+	{
+		size_t need = (size_t)w * h * 4;
+		if(s->rgba_cap < need)
+		{
+			free(s->rgba);
+			s->rgba = malloc(need);
+			s->rgba_cap = s->rgba ? need : 0;
+		}
+		if(s->rgba)
+		{
+			if(!s->sws || s->sws_w != w || s->sws_h != h || s->sws_fmt != frame->format)
+			{
+				sws_freeContext(s->sws);
+				s->sws = sws_getContext(w, h, frame->format, w, h, AV_PIX_FMT_RGBA, SWS_FAST_BILINEAR, NULL, NULL, NULL);
+				s->sws_w = w; s->sws_h = h; s->sws_fmt = frame->format;
+			}
+			if(s->sws)
+			{
+				uint8_t *dst[4] = { s->rgba, NULL, NULL, NULL };
+				int dst_stride[4] = { w * 4, 0, 0, 0 };
+				sws_scale(s->sws, (const uint8_t *const *)frame->data, frame->linesize, 0, h, dst, dst_stride);
+				s->width = w;
+				s->height = h;
+				s->frame_ready = 1;
+			}
 		}
 	}
 	s->frames_lost += lost;
@@ -403,6 +479,34 @@ int ol_stream_take_frame(OlStream *s, uint8_t *buf, size_t buf_size, int *width,
 	return got;
 }
 
+int ol_stream_take_nv12(OlStream *s, uint8_t *buf, size_t buf_size, int *width, int *height)
+{
+	int got = 0;
+	chiaki_mutex_lock(&s->mtx);
+	if(s->nv12_ready && s->nv12)
+	{
+		size_t cw = ((size_t)s->width + 1) / 2, chh = ((size_t)s->height + 1) / 2;
+		size_t need = (size_t)s->width * s->height + cw * 2 * chh;
+		if(need <= buf_size)
+		{
+			memcpy(buf, s->nv12, need);
+			*width = s->width;
+			*height = s->height;
+			s->nv12_ready = 0;
+			got = 1;
+		}
+	}
+	chiaki_mutex_unlock(&s->mtx);
+	return got;
+}
+
+void ol_stream_set_rgba(OlStream *s, int on)
+{
+	chiaki_mutex_lock(&s->mtx);
+	s->want_rgba = on;
+	chiaki_mutex_unlock(&s->mtx);
+}
+
 size_t ol_stream_take_audio(OlStream *s, int16_t *buf, size_t max_samples)
 {
 	chiaki_mutex_lock(&s->mtx);
@@ -455,6 +559,8 @@ void ol_stream_stop(OlStream *s)
 	chiaki_ffmpeg_decoder_fini(&s->decoder);
 	chiaki_session_fini(&s->session);
 	sws_freeContext(s->sws);
+	sws_freeContext(s->sws12);
+	free(s->nv12);
 	free(s->rgba);
 	chiaki_mutex_fini(&s->mtx);
 	free(s);

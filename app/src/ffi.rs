@@ -63,6 +63,8 @@ extern "C" {
     pub fn ol_stream_start(p: *const OlStreamParams, err: *mut c_char, err_size: usize) -> *mut OlStream;
     pub fn ol_stream_status(s: *mut OlStream, out: *mut OlStatus);
     pub fn ol_stream_take_frame(s: *mut OlStream, buf: *mut u8, size: usize, w: *mut c_int, h: *mut c_int) -> c_int;
+    pub fn ol_stream_take_nv12(s: *mut OlStream, buf: *mut u8, size: usize, w: *mut c_int, h: *mut c_int) -> c_int;
+    pub fn ol_stream_set_rgba(s: *mut OlStream, on: c_int);
     pub fn ol_stream_take_audio(s: *mut OlStream, buf: *mut i16, max: usize) -> usize;
     pub fn ol_stream_set_input(s: *mut OlStream, buttons: u32, l2: u8, r2: u8, lx: i16, ly: i16, rx: i16, ry: i16);
     pub fn ol_stream_take_rumble(s: *mut OlStream, left: *mut u8, right: *mut u8) -> c_int;
@@ -216,6 +218,24 @@ impl Stream {
         } else {
             None
         }
+    }
+
+    /// Neues Bild als NV12 (Y-Ebene, dann UV-Ebene), falls verfügbar.
+    pub fn take_nv12(&self, buf: &mut Vec<u8>) -> Option<(usize, usize)> {
+        if buf.len() < 3840 * 2160 * 3 / 2 {
+            buf.resize(3840 * 2160 * 3 / 2, 0);
+        }
+        let (mut w, mut h) = (0 as c_int, 0 as c_int);
+        let got = unsafe { ol_stream_take_nv12(self.ptr, buf.as_mut_ptr(), buf.len(), &mut w, &mut h) };
+        if got != 0 {
+            Some((w as usize, h as usize))
+        } else {
+            None
+        }
+    }
+
+    pub fn set_rgba(&self, on: bool) {
+        unsafe { ol_stream_set_rgba(self.ptr, on as c_int) }
     }
 
     pub fn take_audio(&self, buf: &mut [i16]) -> usize {

@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Ton: Ausgabegerät wählbar, Lautstärke, Stumm (M)",
-    "Ton-Diagnose in der Statusanzeige (F10)",
-    "Statusanzeige ohne Kästchen-Symbol",
-    "Rückmeldung nach dem Streamen und Problem melden",
+    "Bild wird auf der Grafikkarte umgerechnet: flüssiger",
+    "Echter Schärfefilter für „Scharf“ und „Ultra“",
+    "Ton-Fix, Geräteauswahl und Lautstärke",
+    "Elegante Leiste im Stream",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

@@ -55,6 +55,10 @@ OlStream *ol_stream_start(const OlStreamParams *params, char *err, size_t err_si
 void ol_stream_status(OlStream *s, OlStatus *out);
 // 1 wenn ein neues Bild geholt wurde (RGBA, width*height*4). buf muss gross genug sein.
 int ol_stream_take_frame(OlStream *s, uint8_t *buf, size_t buf_size, int *width, int *height);
+// NV12-Bild (Y-Ebene w*h, danach UV-Ebene ((w+1)/2*2) * ((h+1)/2)). Kein CPU-Umrechnen. 1 wenn neues Bild.
+int ol_stream_take_nv12(OlStream *s, uint8_t *buf, size_t buf_size, int *width, int *height);
+// RGBA-Weg (alt) ein-/ausschalten. Standard: aus.
+void ol_stream_set_rgba(OlStream *s, int on);
 // Interleaved int16 PCM; Rueckgabe: Anzahl int16-Samples
 size_t ol_stream_take_audio(OlStream *s, int16_t *buf, size_t max_samples);
 void ol_stream_set_input(OlStream *s, uint32_t buttons, uint8_t l2, uint8_t r2,
