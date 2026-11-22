@@ -836,7 +836,7 @@ impl App {
                     });
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    let w = if self.login_step > 0 { 190.0 } else { 110.0 };
+                    let w = if self.login_step > 0 { 330.0 } else { 250.0 };
                     ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
                     if self.login_step > 0 && ui.add(egui::Button::new(RichText::new("Zurück").color(TEXT_DIM)).frame(false)).clicked() {
                         self.login_step -= 1;
@@ -844,6 +844,11 @@ impl App {
                     }
                     if ui.add(egui::Button::new(RichText::new("Später anmelden").color(TEXT_DIM)).frame(false)).clicked() {
                         self.skip_login = true;
+                    }
+                    if ui.add(egui::Button::new(RichText::new("Demo ausprobieren").color(th_blue_light())).frame(false)).clicked() {
+                        self.skip_login = true;
+                        self.enter_demo();
+                        self.page = Page::Consoles;
                     }
                 });
             });

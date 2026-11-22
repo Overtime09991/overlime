@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.37";
+const VERSION: &str = "0.38";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -254,6 +254,8 @@ struct App {
     demo_gpu: Option<Arc<video::VideoGpu>>,
     demo_base: Vec<u8>,
     demo_step: usize,
+    demo_mode: bool,
+    demo_stream: bool,
     close_hint: bool,
     fullscreen: bool,
     status: String,
@@ -397,6 +399,8 @@ impl App {
             demo_gpu: None,
             demo_base: Vec::new(),
             demo_step: usize::MAX,
+            demo_mode: false,
+            demo_stream: false,
             close_hint: false,
             fullscreen: false,
             status: String::new(),
@@ -405,6 +409,11 @@ impl App {
             tx,
             rx,
         };
+        if std::env::args().any(|a| a == "--demo-enter") {
+            app.enter_demo();
+            app.skip_login = true;
+            app.demo_stream = std::env::args().any(|a| a == "--demo-enter-stream");
+        }
         if std::env::args().any(|a| a == "--demo") {
             app.local_ip = "192.168.0.10".into();
             if std::env::args().any(|a| a == "--demo-welcome") {
@@ -441,19 +450,7 @@ impl App {
                     }
                 });
             }
-            let mk = |name: &str, ps5: bool, state: State, ip: &str, a: &str| Console {
-                addr: ip.into(),
-                name: name.into(),
-                id: ip.into(),
-                is_ps5: ps5,
-                state,
-                system_version: "09000000".into(),
-                running_app: a.into(),
-            };
-            app.consoles = vec![
-                mk("PS5-Wohnzimmer", true, State::Ready, "192.168.178.40", "EA SPORTS FC 26"),
-                mk("PS4-Zimmer", false, State::Standby, "192.168.178.41", ""),
-            ];
+            app.enter_demo();
             app.last_scan = Instant::now() + Duration::from_secs(100_000);
             if std::env::args().any(|a| a == "--settings") {
                 app.page = Page::Settings;
@@ -569,12 +566,82 @@ impl App {
         });
     }
 
+    /// Demo-Modus: Fantasie-Konsolen und ein Testbild, ohne Konto und ohne echte Verbindung.
+    fn enter_demo(&mut self) {
+        self.demo_mode = true;
+        self.local_ip = "192.168.0.10".into();
+            let mk = |name: &str, ps5: bool, state: State, ip: &str, a: &str| Console {
+                addr: ip.into(),
+                name: name.into(),
+                id: ip.into(),
+                is_ps5: ps5,
+                state,
+                system_version: "09000000".into(),
+                running_app: a.into(),
+            };
+            self.consoles = vec![
+                mk("PS5-Wohnzimmer", true, State::Ready, "192.168.178.40", "EA SPORTS FC 26"),
+                mk("PS4-Zimmer", false, State::Standby, "192.168.178.41", ""),
+            ];
+        self.last_scan = Instant::now() + Duration::from_secs(100_000);
+    }
+
+    /// Teststream im Demo-Modus: ein bewegtes Testbild über denselben Grafikkarten-Weg wie der echte Stream.
+    fn demo_stream_ui(&mut self, ctx: &egui::Context) {
+        let gpu = self.demo_gpu.get_or_insert_with(|| {
+            let g = video::VideoGpu::new();
+            {
+                let mut f = g.frame.lock().unwrap();
+                let (sw, sh) = (1280usize, 720usize);
+                f.w = sw;
+                f.h = sh;
+                f.nv12 = video::test_pattern_nv12(sw, sh);
+                f.dirty = true;
+            }
+            g
+        }).clone();
+        if self.demo_base.is_empty() {
+            self.demo_base = video::test_pattern_nv12(1280, 720);
+        }
+        let step = (self.now * 20.0) as usize;
+        if step != self.demo_step {
+            self.demo_step = step;
+            let mut f = gpu.frame.lock().unwrap();
+            f.nv12 = video::shift_nv12(&self.demo_base, 1280, 720, (step * 8) % 1280);
+            f.dirty = true;
+        }
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |ui| {
+            let full = ui.max_rect();
+            let scale = (full.width() / 1280.0).min(full.height() / 720.0);
+            let r = Rect::from_center_size(full.center(), Vec2::new(1280.0 * scale, 720.0 * scale));
+            gpu.paint(ui.painter(), r);
+        });
+        let top = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("demo_hud")));
+        let parts = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll"];
+        let hud: Vec<String> = parts.iter().enumerate().filter(|(i, _)| self.settings.hud_items & (1 << i) != 0).map(|(_, p)| lang::tr(p)).collect();
+        paint_hud(&top, ctx.screen_rect(), hud.join("  •  "), &self.settings, 0.0);
+        let sc = ctx.screen_rect();
+        top.text(Pos2::new(sc.center().x, sc.bottom() - 26.0), Align2::CENTER_CENTER, lang::tr("DEMO – Testbild. Esc beendet die Demo."), FontId::proportional(14.0), Color32::from_white_alpha(200));
+        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+            self.demo_stream = false;
+        }
+        ctx.request_repaint();
+    }
+
     fn open_dialog(&mut self, c: &Console) {
+        if self.demo_mode {
+            self.demo_stream = true;
+            return;
+        }
         let step = if psn::id_from_b64(&self.settings.psn_account).is_some() { Step::Pin } else { Step::Psn };
         self.dialog = Some(PairDialog { console: c.clone(), step, pasted: String::new(), pin: String::new(), message: String::new() });
     }
 
     fn connect(&mut self, c: &Console, p: &Paired) {
+        if self.demo_mode {
+            self.demo_stream = true;
+            return;
+        }
         if self.starting.is_some() || self.session.is_some() {
             return;
         }
@@ -1772,7 +1839,7 @@ impl App {
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| match &paired {
                                 None => {
-                                    if ui.add(big_button("Koppeln", th_blue())).clicked() {
+                                    if ui.add(big_button(if self.demo_mode { "Demo starten" } else { "Koppeln" }, th_blue())).clicked() {
                                         self.open_dialog(&c);
                                     }
                                 }
@@ -3744,6 +3811,10 @@ impl eframe::App for App {
             ctx.request_repaint();
             return;
         }
+        if self.demo_stream && !std::env::args().any(|a| a == "--demo-video") {
+            self.demo_stream_ui(ctx);
+            return;
+        }
         if std::env::args().any(|a| a == "--demo-video") {
             // Testbild über denselben Grafikkarten-Weg wie der Stream
             let mode: usize = std::env::args().find_map(|a| a.strip_prefix("--mode=").and_then(|v| v.parse().ok())).unwrap_or(2);
@@ -3962,6 +4033,26 @@ impl eframe::App for App {
             p.circle_filled(Pos2::new(r.width() * (0.35 + 0.07 * (a * 0.8).cos()), r.height() * (0.85 + 0.05 * a.sin())), 300.0, Color32::from_rgb(90, 60, 220).gamma_multiply(0.05));
         }
 
+        if self.demo_mode && !std::env::args().any(|a| a == "--demo") {
+            egui::TopBottomPanel::top("demo_banner")
+                .exact_height(34.0)
+                .frame(egui::Frame::none().fill(Color32::from_rgb(70, 52, 10)).inner_margin(egui::Margin::symmetric(20.0, 0.0)))
+                .show(ctx, |ui| {
+                    ui.horizontal_centered(|ui| {
+                        ui.label(RichText::new("DEMO").strong().color(YELLOW).size(13.0));
+                        ui.label(RichText::new("Fantasie-Konsolen, keine echte Verbindung. Zum Ausprobieren der Oberfläche.").color(Color32::from_rgb(235, 215, 160)).size(12.5));
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.add(egui::Button::new(RichText::new("Demo beenden").color(YELLOW).size(12.5)).frame(false)).clicked() {
+                                self.demo_mode = false;
+                                self.demo_stream = false;
+                                self.skip_login = false;
+                                self.consoles.clear();
+                                self.last_scan = Instant::now() - Duration::from_secs(60);
+                            }
+                        });
+                    });
+                });
+        }
         egui::TopBottomPanel::top("topbar")
             .exact_height(46.0)
             .frame(egui::Frame::none().fill(th_sidebar()).inner_margin(egui::Margin::symmetric(20.0, 0.0)))
