@@ -22,6 +22,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
 - **Ton inklusive.** Spielton direkt auf deinem Standard-Wiedergabegerät.
 - **Dein Look.** Fünf Farbschemata (von Ozean bis reines Schwarz) und eigene Themes als einfache Textdatei, dazu sanfte Animationen.
+- **Sauber im Fenster.** Eigene Kopfleiste mit Status-Chips, die Fensterleiste passt sich deinem Farbschema an.
 - **Discord-Status (optional).** Auf Wunsch zeigt Discord „Spielt OVERLIME“ mit Spiel und Spielzeit. Standardmäßig aus, ohne IP-Adressen oder Konsolennamen.
 - **Nichts aus Versehen.** Esc öffnet nur ein Pause-Menü, und das Schließen des Fensters mitten im Stream fragt nach.
 - **Bleibt aktuell.** Neue Versionen lädt die App selbst, prüft sie und startet neu, mit einer eigenen Update-Animation und einem Willkommensbild danach.

@@ -10,6 +10,7 @@ mod psn;
 mod settings;
 mod splash;
 mod store;
+mod winui;
 mod theme;
 mod update;
 
@@ -31,7 +32,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.12";
+const VERSION: &str = "0.13";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -132,6 +133,8 @@ struct App {
     key_note: String,
     allow_close: bool,
     themes: Vec<theme::Preset>,
+    titlebar_dirty: bool,
+    title_tries: u8,
     discord: discord::Handle,
     applied_theme: String,
     toasts: Vec<(String, u8, f64)>,
@@ -162,6 +165,7 @@ impl App {
         let (tx, rx) = channel();
         let settings0 = Settings::load();
         let prev_version = settings0.last_version.clone();
+        let show_welcome = settings0.welcome_anim;
         let mut settings = settings0.clone();
         settings.last_version = VERSION.to_string();
         let mut app = Self {
@@ -181,7 +185,7 @@ impl App {
             update_busy: false,
             upd_progress: Arc::new(std::sync::Mutex::new(update::Progress::default())),
             upd_shown: 0.0,
-            welcome: if !prev_version.is_empty() && prev_version != VERSION { Some((prev_version.clone(), VERSION.to_string())) } else { None },
+            welcome: if show_welcome && !prev_version.is_empty() && prev_version != VERSION { Some((prev_version.clone(), VERSION.to_string())) } else { None },
             welcome_start: None,
             update_checked: false,
             update_msg: String::new(),
@@ -202,6 +206,8 @@ impl App {
             key_note: String::new(),
             allow_close: false,
             themes,
+            titlebar_dirty: true,
+            title_tries: 0,
             discord: discord::spawn(),
             applied_theme: String::new(),
             toasts: Vec::new(),
@@ -727,6 +733,19 @@ fn skeleton_card(ui: &mut egui::Ui, t: f64, phase: f32) {
     }
 }
 
+/// Kleiner Status-Chip für die Kopfleiste.
+fn top_chip(ui: &mut egui::Ui, icon: &str, text: &str, color: Color32) {
+    let g_icon = ui.painter().layout_no_wrap(icon.to_string(), FontId::proportional(14.0), color);
+    let g_text = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(12.5), Color32::from_rgb(220, 228, 245));
+    let size = Vec2::new(g_icon.size().x + g_text.size().x + 32.0, 28.0);
+    let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+    ui.painter().rect_filled(rect, Rounding::same(14.0), color.gamma_multiply(0.13));
+    ui.painter().rect_stroke(rect, Rounding::same(14.0), Stroke::new(1.0, color.gamma_multiply(0.35)));
+    let cy = rect.center().y;
+    ui.painter().galley(Pos2::new(rect.min.x + 11.0, cy - g_icon.size().y / 2.0), g_icon.clone(), color);
+    ui.painter().galley(Pos2::new(rect.min.x + 11.0 + g_icon.size().x + 6.0, cy - g_text.size().y / 2.0), g_text, Color32::WHITE);
+}
+
 fn pill(ui: &mut egui::Ui, text: &str, color: Color32) {
     let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(13.0), color);
     let size = galley.size() + Vec2::new(28.0, 10.0);
@@ -1035,6 +1054,7 @@ impl App {
                 ui.add(egui::TextEdit::singleline(&mut st.manual_ip).hint_text("IP-Adresse der Konsole").desired_width(260.0));
                 ui.add_space(6.0);
                 ui.checkbox(&mut st.auto_update, "Updates automatisch installieren");
+                ui.checkbox(&mut st.welcome_anim, "Willkommensbild nach einem Update zeigen");
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new("Nach Updates suchen").fill(th_card_hover()).rounding(10.0)).clicked() {
                         self.update_msg = "Suche …".into();
@@ -1626,12 +1646,22 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let t = ctx.input(|i| i.time);
         self.now = t;
+        if self.titlebar_dirty && self.title_tries < 30 {
+            self.title_tries += 1;
+            let th = theme::get();
+            winui::style_titlebar("OVERLIME Remote Play", th.sidebar, th.accent);
+            if self.title_tries >= 3 {
+                self.titlebar_dirty = false;
+                self.title_tries = 0;
+            }
+        }
         if self.applied_theme != self.settings.theme {
             if let Some(p) = self.themes.iter().find(|p| p.name == self.settings.theme) {
                 theme::set(p.theme);
             }
             setup_style(ctx);
             self.applied_theme = self.settings.theme.clone();
+            self.titlebar_dirty = true;
         }
         // Nie aus Versehen mitten im Stream schließen (X-Knopf, Alt+F4)
         if self.session.is_some() && !self.allow_close && ctx.input(|i| i.viewport().close_requested()) {
@@ -1739,6 +1769,38 @@ impl eframe::App for App {
             p.circle_filled(Pos2::new(r.width() * (0.75 + 0.08 * a.sin()), r.height() * (0.2 + 0.06 * (a * 1.3).cos())), 260.0, th_blue().gamma_multiply(0.07));
             p.circle_filled(Pos2::new(r.width() * (0.35 + 0.07 * (a * 0.8).cos()), r.height() * (0.85 + 0.05 * a.sin())), 300.0, Color32::from_rgb(90, 60, 220).gamma_multiply(0.05));
         }
+
+        egui::TopBottomPanel::top("topbar")
+            .exact_height(46.0)
+            .frame(egui::Frame::none().fill(th_sidebar()).inner_margin(egui::Margin::symmetric(20.0, 0.0)))
+            .show(ctx, |ui| {
+                let (page_icon, page_title) = match self.page {
+                    Page::Home => (ic::HOUSE, "Übersicht"),
+                    Page::Consoles => (ic::GAME_CONTROLLER, "Konsolen"),
+                    Page::Settings => (ic::GEAR_SIX, "Einstellungen"),
+                    Page::Help => (ic::QUESTION, "Hilfe"),
+                };
+                let found = self.consoles.len();
+                let pad_ok = self.pad.connected();
+                let pad_txt = if pad_ok { let n = self.pad.name(); if n.is_empty() { "Controller".to_string() } else { n.chars().take(22).collect() } } else { "Kein Controller".to_string() };
+                let logged = psn::id_from_b64(&self.settings.psn_account).is_some();
+                let acc_txt = if logged { if self.settings.psn_name.is_empty() { "Angemeldet".to_string() } else { self.settings.psn_name.clone() } } else { "Nicht angemeldet".to_string() };
+                let searching = self.searching;
+                ui.horizontal_centered(|ui| {
+                    ui.label(RichText::new("OVERLIME").size(13.0).strong().color(TEXT_DIM));
+                    ui.label(RichText::new("/").size(13.0).color(TEXT_DIM.gamma_multiply(0.6)));
+                    ui.label(RichText::new(page_icon).size(16.0).color(th_blue_light()));
+                    ui.label(RichText::new(page_title).size(15.0).strong());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        top_chip(ui, ic::USER_CIRCLE, &acc_txt, if logged { GREEN } else { YELLOW });
+                        top_chip(ui, ic::GAME_CONTROLLER, &pad_txt, if pad_ok { GREEN } else { TEXT_DIM });
+                        let (ctxt, ccol) = if searching && found == 0 { ("Suche …".to_string(), th_blue_light()) } else if found == 0 { ("Keine Konsole".to_string(), TEXT_DIM) } else if found == 1 { ("1 Konsole".to_string(), GREEN) } else { (format!("{found} Konsolen"), GREEN) };
+                        top_chip(ui, ic::WIFI_HIGH, &ctxt, ccol);
+                    });
+                });
+                let r = ui.max_rect();
+                ui.painter().hline(r.x_range(), r.bottom(), Stroke::new(1.0, Color32::from_white_alpha(14)));
+            });
 
         egui::SidePanel::left("nav")
             .exact_width(210.0)
@@ -1912,7 +1974,8 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 620.0])
             .with_min_inner_size([760.0, 480.0])
-            .with_title("OVERLIME Remote Play"),
+            .with_title("OVERLIME Remote Play")
+            .with_icon(std::sync::Arc::new(winui::app_icon())),
         ..Default::default()
     };
     eframe::run_native("OVERLIME Remote Play", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))

@@ -4,9 +4,9 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Neues Design mit einheitlichen Symbolen",
-    "Farbschemata und eigene Themes",
-    "Sanfte Animationen und Einblend-Hinweise",
+    "Neue Kopfleiste mit Seitentitel und Status-Chips",
+    "Fensterleiste passt sich dem Farbschema an",
+    "Eigenes App-Symbol statt des Standard-Symbols",
     "Discord-Status: „Spielt OVERLIME“ (optional)",
 ];
 
@@ -270,7 +270,8 @@ pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> boo
                 }
             });
         }
-        if ts > 14.0 {
+        // Nach 8 Sekunden von selbst weiter; Esc, Eingabe oder Leertaste beenden sofort
+        if ts > 8.0 || (ts > 0.4 && ctx.input(|i| i.key_pressed(Key::Escape) || i.key_pressed(Key::Enter) || i.key_pressed(Key::Space))) {
             done = true;
         }
     });

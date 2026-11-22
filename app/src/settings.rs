@@ -20,6 +20,7 @@ pub struct Settings {
     pub discord: bool,
     pub discord_game: bool,
     pub discord_id: String,
+    pub welcome_anim: bool,
 }
 
 impl Default for Settings {
@@ -42,6 +43,7 @@ impl Default for Settings {
             discord: false,
             discord_game: true,
             discord_id: String::new(),
+            welcome_anim: true,
         }
     }
 }
@@ -85,6 +87,7 @@ impl Settings {
                 "discord" => s.discord = v.trim() == "true",
                 "discord_game" => s.discord_game = v.trim() != "false",
                 "discord_id" => s.discord_id = v.trim().to_string(),
+                "welcome_anim" => s.welcome_anim = v.trim() != "false",
                 k if k.starts_with("key_") => {
                     if let Ok(i) = k[4..].parse::<usize>() {
                         if i < s.keys.len() {
@@ -110,6 +113,7 @@ impl Settings {
         let mut text = text;
         text.push_str(&format!("last_version={}\ntheme={}\n", self.last_version, self.theme));
         text.push_str(&format!("discord={}\ndiscord_game={}\ndiscord_id={}\n", self.discord, self.discord_game, self.discord_id));
+        text.push_str(&format!("welcome_anim={}\n", self.welcome_anim));
         for (i, k) in self.keys.iter().enumerate() {
             text.push_str(&format!("key_{i}={k}\n"));
         }
