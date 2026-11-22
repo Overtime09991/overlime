@@ -33,7 +33,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.19";
+const VERSION: &str = "0.20";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -173,6 +173,7 @@ struct App {
     pending_reconnect: Option<(Console, Paired, Instant)>,
     reconnecting: bool,
     update_click: bool,
+    app_start: Instant,
     check_click: bool,
     update_checking: bool,
     update_checked_at: Option<Instant>,
@@ -270,6 +271,7 @@ impl App {
             pending_reconnect: None,
             reconnecting: false,
             update_click: false,
+            app_start: Instant::now(),
             check_click: false,
             update_checking: false,
             update_checked_at: None,
@@ -638,9 +640,15 @@ impl App {
                     self.update_checking = false;
                     self.update_checked_at = Some(Instant::now());
                     if self.update.as_ref().map(|u| u.version != r.version).unwrap_or(true) {
-                        self.toasts.push((format!("Update {} verfügbar", r.version), 0, self.now));
+                        let during_game = self.session.is_some();
+                        let text = if during_game {
+                            format!("Update {} verfügbar – nach dem Spiel installieren", r.version)
+                        } else {
+                            format!("Update {} verfügbar", r.version)
+                        };
+                        self.toasts.push((text, 0, self.now));
                     }
-                    if self.settings.auto_update && !self.update_busy && self.session.is_none() {
+                    if self.settings.auto_update && !self.update_busy && self.session.is_none() && self.app_start.elapsed() < Duration::from_secs(90) {
                         self.update_busy = true;
                         let tx = self.tx.clone();
                         let rr = r.clone();
@@ -839,6 +847,7 @@ fn tone_pull() -> audio::Pull {
 }
 
 struct BarStats {
+    update: Option<String>,
     ping: f32,
     dec: f32,
     mbit: f32,
@@ -910,6 +919,12 @@ fn draw_stream_bar(ctx: &egui::Context, anim: f32, t: f64, ps5: bool, game: &str
                         }
                         if w >= 860.0 {
                             ui.label(RichText::new(quality).size(12.5).color(TEXT_DIM));
+                        }
+                        if let Some(v) = &stats.update {
+                            if w >= 900.0 {
+                                ui.label(RichText::new(format!("{}  Update {v} bereit", ic::ARROW_CIRCLE_UP)).size(12.5).color(YELLOW))
+                                    .on_hover_text("Es wird nie während des Spiels installiert. Nach dem Spiel in den Einstellungen unter „Updates“ aktualisieren.");
+                            }
                         }
                         if stats.ping >= 0.0 && w >= 760.0 {
                             let qcol = if stats.ping < 40.0 && stats.loss < 0.5 { GREEN } else if stats.ping < 90.0 && stats.loss < 3.0 { YELLOW } else { RED };
@@ -1264,7 +1279,7 @@ impl App {
                     }
                 });
                 ui.add_space(4.0);
-                ui.checkbox(&mut st.auto_update, "Updates automatisch installieren (nie während eines Streams)");
+                ui.checkbox(&mut st.auto_update, "Beim Start automatisch installieren (während der App-Nutzung nur Hinweis, nie während eines Spiels)");
             });
             ui.add_space(6.0);
             section(ui, &format!("{}  Videoqualität", ic::FILM_STRIP), |ui| {
@@ -2026,6 +2041,10 @@ impl App {
         if self.update_busy {
             return;
         }
+        if self.session.is_some() {
+            self.toasts.push(("Während eines Spiels wird nichts installiert. Bitte danach aktualisieren.".to_string(), 1, self.now));
+            return;
+        }
         self.update_busy = true;
         self.update_err.clear();
         *self.upd_progress.lock().unwrap() = update::Progress::default();
@@ -2305,7 +2324,7 @@ impl App {
                     let (ps5, game) = con_info.clone().unwrap_or((true, String::new()));
                     let no_audio = !muted_now && (atotal == 0 && s.started.elapsed() > Duration::from_secs(6) || s.audio.is_none());
                     let quality = format!("{}p • {} FPS", s.size.1, s.fps);
-                    let stats = BarStats { ping: s.ping, dec: s.dec_ms, mbit: s.kbps as f32 / 1000.0, loss: s.loss_rate, pad: pad_chip.clone() };
+                    let stats = BarStats { update: self.update.as_ref().map(|r| r.version.clone()), ping: s.ping, dec: s.dec_ms, mbit: s.kbps as f32 / 1000.0, loss: s.loss_rate, pad: pad_chip.clone() };
                     let fl = draw_stream_bar(ctx, anim, self.now, ps5, &game, &quality, if no_audio { Some(atxt.trim_start_matches("  •  ")) } else { None }, self.muted, &mut self.settings.volume, &stats);
                     if fl.menu {
                         open_menu = true;
@@ -2590,7 +2609,7 @@ impl eframe::App for App {
         if std::env::args().any(|a| a == "--demo-bar") {
             egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |_| {});
             let mut vol = 1.0f32;
-            draw_stream_bar(ctx, 1.0, t, true, "EA SPORTS FC 26", "1080p • 60 FPS", Some("Ton: keine Daten von der Konsole"), false, &mut vol, &BarStats { ping: 11.0, dec: 3.2, mbit: 27.4, loss: 0.0, pad: "DualSense • Akku voll".to_string() });
+            draw_stream_bar(ctx, 1.0, t, true, "EA SPORTS FC 26", "1080p • 60 FPS", Some("Ton: keine Daten von der Konsole"), false, &mut vol, &BarStats { update: Some("0.20".to_string()), ping: 11.0, dec: 3.2, mbit: 27.4, loss: 0.0, pad: "DualSense • Akku voll".to_string() });
             if std::env::args().any(|a| a == "--demo-quick") {
                 self.quick = true;
                 self.quick_panel(ctx);
@@ -2606,7 +2625,7 @@ impl eframe::App for App {
             self.check_click = false;
             self.check_updates();
         }
-        if self.session.is_none() && self.last_update_check.elapsed() > Duration::from_secs(20 * 60) {
+        if self.last_update_check.elapsed() > Duration::from_secs(20 * 60) {
             self.check_updates();
         }
         // Qualität angewendet: kurz neu verbinden

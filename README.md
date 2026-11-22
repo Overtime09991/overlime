@@ -34,7 +34,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Sauber im Fenster.** Eigene Kopfleiste mit Status-Chips, die Fensterleiste passt sich deinem Farbschema an.
 - **Discord-Status (optional).** Auf Wunsch zeigt Discord „Spielt OVERLIME“ mit Spiel und Spielzeit. Standardmäßig aus, ohne IP-Adressen oder Konsolennamen.
 - **Nichts aus Versehen.** Esc öffnet nur ein Pause-Menü, und das Schließen des Fensters mitten im Stream fragt nach.
-- **Bleibt aktuell.** Neue Versionen lädt die App selbst, prüft sie und startet neu, mit einer eigenen Update-Animation und einem Willkommensbild danach.
+- **Bleibt aktuell, ohne zu stören.** Direkt beim Start installiert OVERLIME Updates selbst, danach zeigt es neue Versionen nur an. Während eines Spiels wird nie installiert, nur ein Hinweis eingeblendet.
 
 ## In drei Schritten loslegen
 

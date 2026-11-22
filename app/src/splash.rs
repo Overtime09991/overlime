@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Update-Bereich in den Einstellungen mit Neuerungen",
-    "Update-Knopf oben und Hinweis an „Einstellungen“",
-    "Prüft auch während des Betriebs auf neue Versionen",
-    "Latenz, PS5-Controller-Funktionen, Schnell-Menü im Stream",
+    "Updates während der App offen ist: nur Hinweis, kein Überraschen",
+    "Während eines Spiels wird nie installiert",
+    "Update-Hinweis auch im Stream-Menü",
+    "Update-Bereich, Controller-Diagnose und mehr",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {
