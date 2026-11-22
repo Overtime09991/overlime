@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Neuer Update-Bildschirm im Launcher-Stil",
+    "Animierte Schritte: GitHub, Download, Prüfung, Installation",
+    "Tempo und Restzeit beim Download",
     "Englisch als zweite Sprache",
-    "Sprache in den Einstellungen wählbar",
-    "Englische Neuigkeiten und README",
-    "Update-Hinweise und Aufnahmen auch im Spiel",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {
@@ -94,85 +94,498 @@ fn tick(p: &egui::Painter, c: Pos2, s: f32, col: Color32, frac: f32) {
 }
 
 const STAGES: [&str; 5] = ["Verbindung zu GitHub", "Update herunterladen", "Prüfsumme prüfen", "Installieren", "OVERLIME neu starten"];
+const STAGE_TITLES: [(&str, &str); 5] = [
+    ("Verbinde mit GitHub …", "Wir suchen die neue Version"),
+    ("Update wird heruntergeladen …", "Gleich ist alles da"),
+    ("Prüfe Echtheit und Prüfsumme …", "Sicherheit geht vor"),
+    ("Update wird installiert …", "Fast geschafft"),
+    ("OVERLIME startet neu …", "Bis gleich!"),
+];
+
+const VIOLET: Color32 = Color32::from_rgb(170, 120, 255);
+
+fn lerp_col(a: Color32, b: Color32, t: f32) -> Color32 {
+    let t = t.clamp(0.0, 1.0);
+    let f = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color32::from_rgb(f(a.r(), b.r()), f(a.g(), b.g()), f(a.b(), b.b()))
+}
+
+/// Farbverlauf des Fortschritts: blau, violett, grün.
+fn grad(f: f32) -> Color32 {
+    let f = f.clamp(0.0, 1.0);
+    if f < 0.55 {
+        lerp_col(th_blue_light(), VIOLET, f / 0.55)
+    } else {
+        lerp_col(VIOLET, GREEN, (f - 0.55) / 0.45)
+    }
+}
+
+fn qbez(a: Pos2, c: Pos2, b: Pos2, t: f32) -> Pos2 {
+    let u = 1.0 - t;
+    Pos2::new(u * u * a.x + 2.0 * u * t * c.x + t * t * b.x, u * u * a.y + 2.0 * u * t * c.y + t * t * b.y)
+}
+
+/// Weicher, runder Lichtschein (Verlauf von der Mitte nach außen, ohne sichtbare Stufen).
+fn radial(p: &egui::Painter, c: Pos2, r: f32, col: Color32, a: f32) {
+    let n = 48;
+    let mut m = egui::epaint::Mesh::default();
+    let cc = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), (a.clamp(0.0, 1.0) * 255.0) as u8);
+    let oc = Color32::from_rgba_unmultiplied(col.r(), col.g(), col.b(), 0);
+    m.colored_vertex(c, cc);
+    for i in 0..=n {
+        let ang = 2.0 * PI * i as f32 / n as f32;
+        m.colored_vertex(Pos2::new(c.x + r * ang.cos(), c.y + r * ang.sin()), oc);
+    }
+    for i in 0..n {
+        m.add_triangle(0, 1 + i as u32, 2 + i as u32);
+    }
+    p.add(Shape::mesh(m));
+}
+
+/// Ruhiger Hintergrund: dunkel mit weichen, langsam wandernden Farbschleiern und leichter Abdunkelung am Rand.
+fn background_v2(p: &egui::Painter, r: Rect, t: f64, shown: f32, err: bool) {
+    p.rect_filled(r, Rounding::ZERO, th_bg());
+    let a = t as f32 * 0.18;
+    let accent = if err { RED } else { grad(shown) };
+    radial(p, Pos2::new(r.left() + r.width() * (0.22 + 0.05 * a.sin()), r.top() + r.height() * 0.25), r.width() * 0.55, th_blue(), 0.16);
+    radial(p, Pos2::new(r.left() + r.width() * (0.82 + 0.04 * (a * 0.8).cos()), r.top() + r.height() * 0.78), r.width() * 0.6, Color32::from_rgb(110, 60, 235), 0.14);
+    radial(p, Pos2::new(r.center().x, r.top() + r.height() * 0.42), r.width() * 0.42, accent, 0.07);
+    // wenige, sehr dezente Lichtpunkte
+    for i in 0..16u32 {
+        let x = r.left() + rnd(i, 1) * r.width();
+        let speed = 6.0 + rnd(i, 2) * 14.0;
+        let y = r.bottom() - ((t as f32 * speed + rnd(i, 3) * r.height()) % (r.height() + 30.0)) + 15.0;
+        let tw = 0.25 + 0.75 * (t as f32 * (0.4 + rnd(i, 5)) + rnd(i, 6) * 6.0).sin().abs();
+        p.circle_filled(Pos2::new(x, y), 1.0 + rnd(i, 4) * 1.4, Color32::WHITE.gamma_multiply(0.10 * tw));
+    }
+}
+
+/// Glas-Karte mit weichem Schatten.
+fn glass(p: &egui::Painter, rc: Rect) {
+    for i in 0..7 {
+        let g = rc.expand(2.0 + i as f32 * 5.0).translate(Vec2::new(0.0, 8.0));
+        p.rect_filled(g, Rounding::same(22.0 + i as f32 * 5.0), Color32::from_black_alpha(9));
+    }
+    p.rect_filled(rc, Rounding::same(22.0), Color32::from_rgba_unmultiplied(20, 26, 48, 205));
+    // heller Verlauf oben
+    p.rect_stroke(rc, Rounding::same(22.0), Stroke::new(1.0, Color32::from_white_alpha(30)));
+}
+
+/// Breiter Fortschrittsbalken mit Farbverlauf, Leuchten an der Spitze und wanderndem Glanz.
+fn progress_bar(p: &egui::Painter, rc: Rect, frac: f32, t: f32, color_scale: f32) {
+    let h = rc.height();
+    p.rect_filled(rc, Rounding::same(h / 2.0), Color32::from_white_alpha(16));
+    p.rect_stroke(rc, Rounding::same(h / 2.0), Stroke::new(1.0, Color32::from_white_alpha(14)));
+    let frac = frac.clamp(0.0, 1.0);
+    if frac < 0.004 {
+        return;
+    }
+    let w = (rc.width() * frac).max(h);
+    let k = 48;
+    let mut m = egui::epaint::Mesh::default();
+    let (y0, y1) = (rc.top() + 1.5, rc.bottom() - 1.5);
+    for i in 0..=k {
+        let f = i as f32 / k as f32;
+        let x = rc.left() + h / 2.0 + (w - h) * f;
+        let col = grad(f * frac * color_scale + (1.0 - color_scale) * 0.0);
+        m.colored_vertex(Pos2::new(x, y0), col);
+        m.colored_vertex(Pos2::new(x, y1), col);
+    }
+    for i in 0..k as u32 {
+        let a = i * 2;
+        m.add_triangle(a, a + 1, a + 2);
+        m.add_triangle(a + 1, a + 3, a + 2);
+    }
+    let (c0, c1) = (grad(0.0), grad(frac * color_scale));
+    p.circle_filled(Pos2::new(rc.left() + h / 2.0, rc.center().y), (h - 3.0) / 2.0, c0);
+    p.add(Shape::mesh(m));
+    let tip = Pos2::new(rc.left() + w - h / 2.0, rc.center().y);
+    p.circle_filled(tip, (h - 3.0) / 2.0, c1);
+    radial(p, tip, 30.0, c1, 0.30);
+    // Glanz
+    let sx = rc.left() + h / 2.0 + (w - h) * ((t * 0.45) % 1.4).min(1.0);
+    radial(p, Pos2::new(sx, rc.center().y), h * 1.4, Color32::WHITE, 0.10);
+}
+
+/// Symbol in einer abgerundeten Kachel (Computer, Server, Paket).
+fn icon_tile(p: &egui::Painter, c: Pos2, label: &str, kind: u8, col: Color32, a: f32, t: f32) {
+    let s = 46.0;
+    let rc = Rect::from_center_size(c, Vec2::splat(s * 2.0));
+    radial(p, c, 74.0, col, 0.07 * a);
+    p.rect_filled(rc, Rounding::same(20.0), Color32::from_rgba_unmultiplied(255, 255, 255, (10.0 * a) as u8));
+    p.rect_stroke(rc, Rounding::same(20.0), Stroke::new(1.2, col.gamma_multiply(0.55 * a)));
+    let st = Stroke::new(2.2, col.gamma_multiply(0.95 * a));
+    match kind {
+        0 => {
+            // Computer
+            let scr = Rect::from_center_size(c + Vec2::new(0.0, -6.0), Vec2::new(46.0, 30.0));
+            p.rect_filled(scr, Rounding::same(5.0), col.gamma_multiply(0.22 * a));
+            p.rect_stroke(scr, Rounding::same(5.0), st);
+            p.line_segment([c + Vec2::new(0.0, 10.0), c + Vec2::new(0.0, 17.0)], st);
+            p.line_segment([c + Vec2::new(-13.0, 18.0), c + Vec2::new(13.0, 18.0)], Stroke::new(2.6, col.gamma_multiply(0.95 * a)));
+            if ((t * 2.0) as i32) % 2 == 0 {
+                p.line_segment([c + Vec2::new(-11.0, -6.0), c + Vec2::new(-3.0, -6.0)], Stroke::new(1.8, Color32::WHITE.gamma_multiply(0.8 * a)));
+            }
+        }
+        1 => {
+            // Server
+            for k in 0..3 {
+                let r = Rect::from_center_size(c + Vec2::new(0.0, -17.0 + k as f32 * 17.0), Vec2::new(50.0, 13.0));
+                p.rect_filled(r, Rounding::same(4.0), col.gamma_multiply(0.22 * a));
+                p.rect_stroke(r, Rounding::same(4.0), st);
+                let blink = 0.35 + 0.65 * ((t * 3.0 + k as f32 * 1.7).sin() * 0.5 + 0.5);
+                p.circle_filled(r.right_center() - Vec2::new(8.0, 0.0), 2.4, GREEN.gamma_multiply(blink * a));
+            }
+        }
+        _ => {
+            // Paket (Würfel)
+            let f = Rect::from_center_size(c + Vec2::new(-3.0, 6.0), Vec2::new(36.0, 30.0));
+            let top = vec![f.left_top(), f.left_top() + Vec2::new(9.0, -11.0), f.right_top() + Vec2::new(9.0, -11.0), f.right_top()];
+            let side = vec![f.right_top(), f.right_top() + Vec2::new(9.0, -11.0), f.right_bottom() + Vec2::new(9.0, -11.0), f.right_bottom()];
+            p.add(Shape::convex_polygon(top, col.gamma_multiply(0.38 * a), st));
+            p.add(Shape::convex_polygon(side, col.gamma_multiply(0.30 * a), st));
+            p.rect_filled(f, Rounding::same(2.0), col.gamma_multiply(0.22 * a));
+            p.rect_stroke(f, Rounding::same(2.0), st);
+            p.line_segment([f.center_top(), f.center_bottom()], Stroke::new(1.6, col.gamma_multiply(0.7 * a)));
+        }
+    }
+    p.text(c + Vec2::new(0.0, s + 12.0), Align2::CENTER_TOP, label, FontId::proportional(13.0), Color32::from_rgb(205, 216, 238).gamma_multiply(a));
+}
+
+/// Leuchtende Datenkapsel auf einer Bahn.
+fn pill(p: &egui::Painter, pos: Pos2, col: Color32, a: f32) {
+    radial(p, pos, 20.0, col, 0.45 * a);
+    let r = Rect::from_center_size(pos, Vec2::new(24.0, 8.0));
+    p.rect_filled(r, Rounding::same(4.0), col.gamma_multiply(0.95 * a));
+    p.rect_filled(Rect::from_center_size(pos + Vec2::new(4.0, 0.0), Vec2::new(10.0, 3.0)), Rounding::same(2.0), Color32::WHITE.gamma_multiply(0.7 * a));
+}
+
+/// Kleine Statuskapsel ("DNS", "TLS", "API" und so weiter).
+fn status_pill(p: &egui::Painter, c: Pos2, text: &str, ok: bool, t: f32, a: f32) {
+    let col = if ok { GREEN } else { th_blue_light() };
+    let rc = Rect::from_center_size(c, Vec2::new(70.0, 24.0));
+    p.rect_filled(rc, Rounding::same(12.0), col.gamma_multiply(0.14 * a));
+    p.rect_stroke(rc, Rounding::same(12.0), Stroke::new(1.0, col.gamma_multiply(0.6 * a)));
+    p.text(c + Vec2::new(6.0, 0.0), Align2::CENTER_CENTER, text, FontId::monospace(12.0), Color32::from_rgb(215, 224, 240).gamma_multiply(a));
+    let ic = Pos2::new(rc.left() + 13.0, c.y);
+    if ok {
+        tick(p, ic, 10.0, GREEN.gamma_multiply(a), 1.0);
+    } else {
+        let a0 = (t * 6.0) % (2.0 * PI);
+        p.add(Shape::line(arc(ic, 5.0, a0, PI * 1.2), Stroke::new(1.8, col.gamma_multiply(a))));
+    }
+}
+
+/// Ein Ordner-Symbol. `open` (0..1) hebt den Deckel an, `fill` (0..1) füllt ihn von unten.
+fn folder(p: &egui::Painter, c: Pos2, open: f32, fill: f32, col: Color32, alpha: f32, label: &str) {
+    let (w, h) = (76.0, 52.0);
+    let body = Rect::from_center_size(c + Vec2::new(0.0, 4.0), Vec2::new(w, h));
+    let a = alpha.clamp(0.0, 1.0);
+    radial(p, c, 62.0, col, (0.07 + 0.14 * open) * a);
+    let tab = Rect::from_min_size(Pos2::new(body.min.x, body.min.y - 8.0), Vec2::new(w * 0.42, 13.0));
+    p.rect_filled(tab, Rounding { nw: 6.0, ne: 6.0, sw: 0.0, se: 0.0 }, col.gamma_multiply(0.6 * a));
+    p.rect_filled(body, Rounding::same(8.0), col.gamma_multiply(0.30 * a));
+    if fill > 0.0 {
+        let fh = (h - 12.0) * fill.clamp(0.0, 1.0);
+        let fr = Rect::from_min_max(Pos2::new(body.min.x + 6.0, body.max.y - 6.0 - fh), Pos2::new(body.max.x - 6.0, body.max.y - 6.0));
+        p.rect_filled(fr, Rounding::same(4.0), col.gamma_multiply(0.55 * a));
+    }
+    let lift = 9.0 * open;
+    let front = [Pos2::new(body.min.x, body.min.y + 13.0), Pos2::new(body.max.x, body.min.y + 13.0 - lift * 0.4), Pos2::new(body.max.x, body.max.y), Pos2::new(body.min.x, body.max.y)];
+    p.add(Shape::convex_polygon(front.to_vec(), col.gamma_multiply(0.42 * a), Stroke::new(1.2, col.gamma_multiply(0.9 * a))));
+    p.text(Pos2::new(c.x, body.max.y + 8.0), Align2::CENTER_TOP, label, FontId::proportional(12.0), Color32::from_rgb(205, 216, 238).gamma_multiply(a));
+}
+
+/// Eine kleine Dateikarte, die durchs Bild fliegt.
+fn file_card(p: &egui::Painter, pos: Pos2, rot: f32, scale: f32, col: Color32, alpha: f32) {
+    let (w, h) = (20.0 * scale, 26.0 * scale);
+    let (sn, cs) = (rot.sin(), rot.cos());
+    let tf = |x: f32, y: f32| Pos2::new(pos.x + x * cs - y * sn, pos.y + x * sn + y * cs);
+    let pts = vec![tf(-w / 2.0, -h / 2.0), tf(w / 2.0 - 5.0 * scale, -h / 2.0), tf(w / 2.0, -h / 2.0 + 5.0 * scale), tf(w / 2.0, h / 2.0), tf(-w / 2.0, h / 2.0)];
+    p.add(Shape::convex_polygon(pts, col.gamma_multiply(0.9 * alpha), Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.5 * alpha))));
+    for k in 0..3 {
+        let y = -h / 2.0 + (11.0 + k as f32 * 5.0) * scale * 0.7;
+        p.line_segment([tf(-w / 2.0 + 4.0 * scale, y), tf(w / 2.0 - 4.0 * scale, y)], Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.55 * alpha)));
+    }
+}
+
+/// Prüfsumme setzt sich aus wirbelnden Zeichen zusammen (echter SHA-256-Wert, wenn bekannt).
+fn hash_reveal(p: &egui::Painter, cx: f32, y: f32, hash: &str, since: f32, alpha: f32) {
+    let a = alpha.clamp(0.0, 1.0);
+    let hex: Vec<char> = if hash.len() == 64 { hash.chars().collect() } else { "9716ead1f3a7e319052df3798585d72bfa59fcf966198de96dc70fefe3390899".chars().collect() };
+    let q = ease_out(since / 2.4);
+    let shown = (q * 64.0) as usize;
+    let frame = (since * 18.0) as u32;
+    for line in 0..2usize {
+        let mut job = egui::text::LayoutJob::default();
+        for i in 0..32usize {
+            let idx = line * 32 + i;
+            let (ch, col) = if idx < shown {
+                (hex[idx], GREEN.gamma_multiply(0.95 * a))
+            } else {
+                let r = (rnd(idx as u32, frame) * 16.0) as usize % 16;
+                ("0123456789abcdef".chars().nth(r).unwrap(), th_blue_light().gamma_multiply(0.5 * a))
+            };
+            job.append(&ch.to_string(), 0.0, egui::TextFormat { font_id: FontId::monospace(12.5), color: col, ..Default::default() });
+        }
+        let g = p.layout_job(job);
+        p.galley(Pos2::new(cx - g.size().x / 2.0, y + line as f32 * 17.0), g, Color32::WHITE);
+    }
+}
+
+fn fmt_mb(b: u64) -> String {
+    format!("{:.1}", b as f64 / 1_048_576.0)
+}
+
+/// Die Szene in der Glas-Karte, je nach Stufe.
+fn scene(p: &egui::Painter, card: Rect, stage: u8, since: f32, t: f32, prog: &update::Progress, err: Option<&str>) {
+    let c = card.center();
+    let half = card.width() * 0.5;
+    let lx = c.x - (half - 108.0);
+    let rx = c.x + (half - 108.0);
+    let fade = ease_out(since / 0.45);
+    if let Some(e) = err {
+        // großer Fehler-Schild
+        radial(p, c + Vec2::new(0.0, -20.0), 110.0, RED, 0.18);
+        let pts = vec![c + Vec2::new(0.0, -78.0), c + Vec2::new(40.0, -62.0), c + Vec2::new(36.0, -18.0), c + Vec2::new(0.0, 10.0), c + Vec2::new(-36.0, -18.0), c + Vec2::new(-40.0, -62.0)];
+        p.add(Shape::convex_polygon(pts, RED.gamma_multiply(0.22), Stroke::new(2.2, RED)));
+        p.text(c + Vec2::new(0.0, -38.0), Align2::CENTER_CENTER, "!", FontId::proportional(40.0), RED);
+        p.text(c + Vec2::new(0.0, 34.0), Align2::CENTER_TOP, "Update nicht möglich", FontId::proportional(20.0), Color32::WHITE);
+        p.text(c + Vec2::new(0.0, 62.0), Align2::CENTER_TOP, e, FontId::proportional(12.5), RED.gamma_multiply(0.95));
+        return;
+    }
+    match stage {
+        0 => {
+            icon_tile(p, Pos2::new(lx, c.y - 8.0), "Dein PC", 0, th_blue_light(), fade, t);
+            icon_tile(p, Pos2::new(rx, c.y - 8.0), "GitHub", 1, th_blue_light(), fade, t);
+            let (x0, x1) = (lx + 66.0, rx - 66.0);
+            for (dy, rev) in [(-8.0, false), (9.0, true)] {
+                p.line_segment([Pos2::new(x0, c.y - 8.0 + dy), Pos2::new(x1, c.y - 8.0 + dy)], Stroke::new(2.0, Color32::from_white_alpha(22)));
+                for k in 0..4 {
+                    let ph = (t * 0.45 + k as f32 * 0.25 + if rev { 0.125 } else { 0.0 }) % 1.0;
+                    let x = if rev { x1 - (x1 - x0) * ph } else { x0 + (x1 - x0) * ph };
+                    let edge = (ph.min(1.0 - ph) * 6.0).clamp(0.0, 1.0);
+                    pill(p, Pos2::new(x, c.y - 8.0 + dy), if rev { GREEN } else { th_blue_light() }, edge * fade);
+                }
+            }
+            for (i, (name, due)) in [("DNS", 0.6), ("TLS", 1.3), ("API", 2.0)].iter().enumerate() {
+                status_pill(p, Pos2::new(c.x + (i as f32 - 1.0) * 80.0, c.y - 62.0), name, since > *due, t, fade);
+            }
+            let ping = 17 + ((t * 3.0).sin() * 4.0 + 5.0) as i32 + (rnd((t * 3.0) as u32, 9) * 3.0) as i32;
+            p.text(Pos2::new(c.x, c.y + 28.0), Align2::CENTER_TOP, format!("api.github.com  •  {} ms", ping), FontId::monospace(12.5), Color32::from_rgb(190, 205, 235).gamma_multiply(0.9 * fade));
+        }
+        1 => {
+            icon_tile(p, Pos2::new(lx, c.y - 8.0), "GitHub", 1, th_blue_light(), fade, t);
+            icon_tile(p, Pos2::new(rx, c.y - 8.0), "Dein PC", 0, GREEN, fade, t);
+            let (x0, x1) = (lx + 66.0, rx - 66.0);
+            let ly = c.y - 8.0;
+            p.line_segment([Pos2::new(x0, ly), Pos2::new(x1, ly)], Stroke::new(3.0, Color32::from_white_alpha(20)));
+            let fr = (prog.pct / 100.0).clamp(0.0, 1.0);
+            p.line_segment([Pos2::new(x0, ly), Pos2::new(x0 + (x1 - x0) * fr, ly)], Stroke::new(3.0, grad(fr)));
+            let mbs = prog.speed / 1_048_576.0;
+            let sp = 0.5 + (mbs / 12.0).clamp(0.0, 0.9);
+            for k in 0..7 {
+                let ph = (t * sp + k as f32 / 7.0) % 1.0;
+                let edge = (ph.min(1.0 - ph) * 6.0).clamp(0.0, 1.0);
+                pill(p, Pos2::new(x0 + (x1 - x0) * ph, ly), grad(ph), edge * fade);
+            }
+            let big = if prog.speed > 1.0 { format!("{:.1} MB/s", mbs) } else { "…".to_string() };
+            p.text(Pos2::new(c.x, c.y - 70.0), Align2::CENTER_CENTER, big, FontId::proportional(34.0), Color32::WHITE.gamma_multiply(fade));
+            if prog.total > 0 {
+                let eta = if prog.speed > 1.0 { ((prog.total.saturating_sub(prog.bytes)) as f32 / prog.speed).ceil() as u32 } else { 0 };
+                let mut s = format!("{} von {} MB", fmt_mb(prog.bytes), fmt_mb(prog.total));
+                if eta > 0 {
+                    s.push_str(&format!("  •  noch {} s", eta));
+                }
+                p.text(Pos2::new(c.x, c.y + 26.0), Align2::CENTER_TOP, s, FontId::proportional(13.5), TEXT_DIM.gamma_multiply(fade));
+            }
+        }
+        2 => {
+            // Schild mit Prüflinie
+            let sc = Pos2::new(c.x, c.y - 36.0);
+            let k = 1.5;
+            let col = if since > 3.2 { GREEN } else { th_blue_light() };
+            radial(p, sc, 100.0, col, 0.16 * fade);
+            let pts: Vec<Pos2> = [(0.0, -30.0), (24.0, -20.0), (22.0, 8.0), (0.0, 28.0), (-22.0, 8.0), (-24.0, -20.0)].iter().map(|(x, y)| sc + Vec2::new(x * k, y * k)).collect();
+            p.add(Shape::convex_polygon(pts, col.gamma_multiply(0.20 * fade), Stroke::new(2.2, col.gamma_multiply(fade))));
+            if since > 3.2 {
+                tick(p, sc + Vec2::new(0.0, -2.0), 40.0, GREEN.gamma_multiply(fade), ease_out((since - 3.2) / 0.4));
+            } else {
+                let tri = ((t * 0.9) % 2.0 - 1.0).abs();
+                let y = sc.y - 30.0 * k + 58.0 * k * tri;
+                let wdt = 22.0 * k * (1.0 - ((tri - 0.5).abs() * 0.4));
+                p.line_segment([Pos2::new(sc.x - wdt, y), Pos2::new(sc.x + wdt, y)], Stroke::new(2.4, Color32::WHITE.gamma_multiply(0.85 * fade)));
+                radial(p, Pos2::new(sc.x, y), 34.0, th_blue_light(), 0.25 * fade);
+            }
+            let chips = [("SHA-256", c.x - half + 108.0, 2.6), ("Ed25519", c.x + half - 108.0, 3.2)];
+            for (name, x, due) in chips {
+                status_pill(p, Pos2::new(x, c.y - 36.0), name, since > due, t, fade);
+            }
+            hash_reveal(p, c.x, c.y + 38.0, &prog.hash, since, fade);
+        }
+        3 => {
+            let src = Pos2::new(lx + 10.0, c.y - 8.0);
+            icon_tile(p, src, "Update", 2, th_blue_light(), fade, t);
+            let spots = [(c.x + 100.0, c.y - 62.0), (c.x + 222.0, c.y - 62.0), (c.x + 100.0, c.y + 46.0), (c.x + 222.0, c.y + 46.0)];
+            let spots = if card.width() < 600.0 { [(c.x + 70.0, c.y - 62.0), (c.x + 170.0, c.y - 62.0), (c.x + 70.0, c.y + 46.0), (c.x + 170.0, c.y + 46.0)] } else { spots };
+            let labels = ["Programm", "Daten", "Sprachen", "Verknüpfungen"];
+            let palette = [th_blue_light(), VIOLET, GREEN, Color32::from_rgb(255, 200, 90)];
+            const N: usize = 12;
+            let mut arrived = [0usize; 4];
+            let mut flights: Vec<(usize, f32)> = Vec::new();
+            for k in 0..N {
+                let x = (since - (0.5 + k as f32 * 0.2)) / 0.7;
+                if x >= 1.0 {
+                    arrived[k % 4] += 1;
+                } else if x > 0.0 {
+                    flights.push((k, x));
+                }
+            }
+            for (i, (fx, fy)) in spots.iter().enumerate() {
+                let fill = arrived[i] as f32 / (N / 4) as f32;
+                let near = flights.iter().any(|(k, f)| k % 4 == i && *f > 0.55);
+                let open: f32 = (if near { 0.85f32 } else { 0.0 } + if fill > 0.0 && fill < 1.0 { 0.2f32 } else { 0.0 }).min(1.0);
+                folder(p, Pos2::new(*fx, *fy), open, fill, lerp_col(palette[i], GREEN, fill), fade, labels[i]);
+                if fill >= 1.0 {
+                    let ic = Pos2::new(*fx + 30.0, *fy - 26.0);
+                    p.circle_filled(ic, 10.0, GREEN);
+                    tick(p, ic, 11.0, Color32::WHITE, 1.0);
+                }
+            }
+            for (k, f) in flights {
+                let (tx, ty) = spots[k % 4];
+                let target = Pos2::new(tx, ty);
+                let ctrl = Pos2::new((src.x + target.x) / 2.0, src.y.min(target.y) - 70.0 - (k % 3) as f32 * 12.0);
+                let e = ease_out(f);
+                let pos = qbez(src, ctrl, target, e);
+                for s in 1..4 {
+                    let q = qbez(src, ctrl, target, ease_out((f - s as f32 * 0.05).max(0.0)));
+                    radial(p, q, 11.0, palette[(k / 4) % 4], 0.22 / s as f32);
+                }
+                let a = (f * 6.0).min(1.0) * (1.0 - ((f - 0.85) / 0.15).clamp(0.0, 1.0) * 0.5);
+                file_card(p, pos, (k as f32 * 0.9 + f * 5.0).sin() * 0.5, 1.2 - 0.5 * e, palette[(k / 4) % 4], a);
+            }
+        }
+        _ => {
+            // Fertig: großes Häkchen mit Wellen
+            radial(p, c, 130.0, GREEN, 0.18 * fade);
+            for i in 0..3 {
+                let ph = ((since * 0.7 + i as f32 / 3.0) % 1.0).max(0.0);
+                p.circle_stroke(c, 46.0 + 90.0 * ph, Stroke::new(1.6, GREEN.gamma_multiply(0.45 * (1.0 - ph))));
+            }
+            p.circle_filled(c, 50.0, GREEN.gamma_multiply(0.20));
+            p.circle_stroke(c, 50.0, Stroke::new(3.0, GREEN));
+            tick(p, c, 56.0, GREEN, ease_out(since / 0.6));
+        }
+    }
+}
 
 /// Zeigt die Update-Animation. Gibt true zurück, wenn bei einem Fehler auf "Zurück" geklickt wurde.
-pub fn update_screen(ctx: &egui::Context, t: f64, stage: u8, pct: f32, shown: f32, from: &str, to: &str, err: Option<&str>) -> bool {
+pub fn update_screen(ctx: &egui::Context, t: f64, prog: &update::Progress, shown: f32, from: &str, to: &str) -> bool {
+    let (stage, err) = (prog.stage, prog.error.as_deref());
     let mut back = false;
+    let stage_t0 = ctx.data_mut(|d| {
+        let mut st = d.get_temp::<(u8, f64)>(egui::Id::new("upd_stage_t")).unwrap_or((stage, t));
+        if st.0 != stage {
+            st = (stage, t);
+        }
+        d.insert_temp(egui::Id::new("upd_stage_t"), st);
+        st.1
+    });
     egui::CentralPanel::default().frame(egui::Frame::none().fill(th_bg())).show(ctx, |ui| {
         let r = ui.max_rect();
         let p = ui.painter().clone();
-        background(&p, r, t);
+        let tf = t as f32;
+        let since = (t - stage_t0) as f32;
+        background_v2(&p, r, t, shown, err.is_some());
         let cx = r.center().x;
-        let top = r.top() + (r.height() * 0.5 - 285.0).max(16.0);
-        let pulse = 0.5 + 0.5 * (t as f32 * 2.0).sin();
+        let pulse = 0.5 + 0.5 * (tf * 2.0).sin();
 
-        p.text(Pos2::new(cx, top), Align2::CENTER_TOP, "OVERLIME", FontId::proportional(40.0), Color32::WHITE);
-        p.text(Pos2::new(cx, top + 48.0), Align2::CENTER_TOP, "UPDATE", FontId::proportional(13.0), th_blue_light());
+        // Kopfzeile: Name links, Versionen rechts
+        p.text(Pos2::new(r.left() + 30.0, r.top() + 24.0), Align2::LEFT_TOP, "OVERLIME", FontId::proportional(24.0), Color32::WHITE);
+        let tag = Rect::from_min_size(Pos2::new(r.left() + 142.0, r.top() + 29.0), Vec2::new(64.0, 20.0));
+        p.rect_filled(tag, Rounding::same(10.0), th_blue().gamma_multiply(0.30));
+        p.text(tag.center(), Align2::CENTER_CENTER, "UPDATE", FontId::proportional(10.5), th_blue_light());
+        let wf = p.layout_no_wrap(from.to_string(), FontId::monospace(16.0), TEXT_DIM).size().x + 30.0;
+        let wt = p.layout_no_wrap(to.to_string(), FontId::monospace(16.0), GREEN).size().x + 30.0;
+        let gap = 56.0;
+        let left = r.right() - 30.0 - (wf + gap + wt);
+        chip(&p, Pos2::new(left + wf / 2.0, r.top() + 40.0), from, false, 1.0);
+        chevrons(&p, Pos2::new(left + wf + gap / 2.0, r.top() + 40.0), t, grad(shown));
+        chip(&p, Pos2::new(left + wf + gap + wt / 2.0, r.top() + 40.0), to, true, 0.8 + 0.2 * pulse);
 
-        let c = Pos2::new(cx, top + 170.0);
-        let col = if err.is_some() { RED } else { th_blue_light() };
-        p.circle_filled(c, 100.0 + 6.0 * pulse, col.gamma_multiply(0.07 + 0.05 * pulse));
-        p.circle_filled(c, 82.0, col.gamma_multiply(0.07));
-        ring(&p, c, 76.0, shown, 9.0, col);
-        let big = if err.is_some() { "!".to_string() } else { format!("{}", (shown * 100.0).round() as i32) };
-        p.text(c + Vec2::new(0.0, -4.0), Align2::CENTER_CENTER, big, FontId::proportional(46.0), Color32::WHITE);
+        // Aufbau von oben nach unten
+        let cw = (r.width() - 96.0).clamp(540.0, 720.0);
+        let ch = 232.0;
+        let total = ch + 22.0 + 36.0 + 34.0 + 60.0 + 52.0 + 18.0;
+        let top = (r.top() + 78.0).max(r.top() + (r.height() - total) / 2.0 + 24.0);
+        let card = Rect::from_min_size(Pos2::new(cx - cw / 2.0, top), Vec2::new(cw, ch));
+        glass(&p, card);
+        scene(&p, card, stage, since, tf, prog, err);
+
+        // Titel und Untertitel
+        let (title, sub) = STAGE_TITLES[(stage as usize).min(4)];
+        let ia = ease_out(since / 0.45);
+        let ty = card.bottom() + 22.0;
         if err.is_none() {
-            p.text(c + Vec2::new(0.0, 32.0), Align2::CENTER_CENTER, "PROZENT", FontId::proportional(11.0), TEXT_DIM);
+            p.text(Pos2::new(cx, ty + (1.0 - ia) * 10.0), Align2::CENTER_TOP, title, FontId::proportional(28.0), Color32::WHITE.gamma_multiply(ia));
+            p.text(Pos2::new(cx, ty + 38.0 + (1.0 - ia) * 6.0), Align2::CENTER_TOP, sub, FontId::proportional(13.5), TEXT_DIM.gamma_multiply(ia));
         }
 
-        // Versions-Chips
-        let y = top + 300.0;
-        let wf = p.layout_no_wrap(from.to_string(), FontId::monospace(17.0), TEXT_DIM).size().x + 30.0;
-        let wt = p.layout_no_wrap(to.to_string(), FontId::monospace(17.0), GREEN).size().x + 30.0;
-        let gap = 70.0;
-        let total = wf + gap + wt;
-        let left = cx - total / 2.0;
-        chip(&p, Pos2::new(left + wf / 2.0, y), from, false, 1.0);
-        chevrons(&p, Pos2::new(left + wf + gap / 2.0, y), t, th_blue_light());
-        let glow = 0.75 + 0.25 * pulse;
-        chip(&p, Pos2::new(left + wf + gap + wt / 2.0, y), to, true, glow);
+        // Fortschrittsbalken mit Prozentzahl
+        let by = ty + 76.0;
+        let bw = cw;
+        let bar = Rect::from_min_size(Pos2::new(cx - bw / 2.0, by), Vec2::new(bw, 12.0));
+        progress_bar(&p, bar, if err.is_some() { 0.0 } else { shown }, tf, 1.0);
+        if err.is_none() {
+            p.text(Pos2::new(bar.right(), by + 22.0), Align2::RIGHT_TOP, format!("{} %", (shown * 100.0).round() as i32), FontId::monospace(13.0), Color32::from_rgb(205, 216, 238));
+            p.text(Pos2::new(bar.left(), by + 22.0), Align2::LEFT_TOP, "Gesamtfortschritt", FontId::proportional(12.5), TEXT_DIM);
+        }
 
-        // Stufenliste
-        let list_x = cx - 170.0;
-        let mut ly = y + 48.0;
-        for (i, name) in STAGES.iter().enumerate() {
-            let i = i as u8;
-            let ic = Pos2::new(list_x + 11.0, ly + 11.0);
-            if err.is_some() && i == stage {
-                p.circle_filled(ic, 11.0, RED.gamma_multiply(0.25));
-                p.text(ic, Align2::CENTER_CENTER, "!", FontId::proportional(14.0), RED);
-            } else if i < stage {
-                p.circle_filled(ic, 11.0, GREEN.gamma_multiply(0.22));
-                tick(&p, ic, 14.0, GREEN, 1.0);
-            } else if i == stage {
-                p.circle_stroke(ic, 10.0, Stroke::new(2.0, Color32::from_white_alpha(25)));
-                let a0 = (t as f32 * 4.5) % (2.0 * PI);
-                p.add(Shape::line(arc(ic, 10.0, a0, PI * 1.1), Stroke::new(2.6, th_blue_light())));
-            } else {
-                p.circle_stroke(ic, 10.0, Stroke::new(1.5, Color32::from_white_alpha(28)));
+        // Zeitleiste der fünf Schritte
+        let ty2 = by + 76.0;
+        let step = ((bw - 40.0) / 4.0).clamp(80.0, 150.0);
+        let x0 = cx - step * 2.0;
+        let col = if err.is_some() { RED } else { grad(shown) };
+        for i in 0..4 {
+            let (a, b) = (x0 + step * i as f32 + 14.0, x0 + step * (i + 1) as f32 - 14.0);
+            p.line_segment([Pos2::new(a, ty2), Pos2::new(b, ty2)], Stroke::new(2.0, Color32::from_white_alpha(22)));
+            let fill = if (i as u8) < stage { 1.0 } else if i as u8 == stage { if stage == 1 { prog.pct / 100.0 } else { 0.5 } } else { 0.0 };
+            if fill > 0.0 && err.is_none() {
+                p.line_segment([Pos2::new(a, ty2), Pos2::new(a + (b - a) * fill.clamp(0.0, 1.0), ty2)], Stroke::new(2.4, col));
             }
-            let (tc, label) = if i == stage && i == 1 && err.is_none() {
-                (Color32::WHITE, format!("{name}   {}%", pct.round() as i32))
-            } else if i == stage {
-                (Color32::WHITE, name.to_string())
-            } else if i < stage {
-                (Color32::from_rgb(170, 185, 215), name.to_string())
+        }
+        for (i, name) in STAGES.iter().enumerate() {
+            let i8 = i as u8;
+            let ic = Pos2::new(x0 + step * i as f32, ty2);
+            if err.is_some() && i8 == stage {
+                p.circle_filled(ic, 13.0, RED.gamma_multiply(0.25));
+                p.text(ic, Align2::CENTER_CENTER, "!", FontId::proportional(15.0), RED);
+            } else if i8 < stage {
+                p.circle_filled(ic, 13.0, GREEN.gamma_multiply(0.22));
+                p.circle_stroke(ic, 13.0, Stroke::new(1.2, GREEN.gamma_multiply(0.6)));
+                tick(&p, ic, 15.0, GREEN, 1.0);
+            } else if i8 == stage {
+                radial(&p, ic, 26.0, col, 0.30);
+                p.circle_stroke(ic, 12.0, Stroke::new(2.0, Color32::from_white_alpha(25)));
+                let a0 = (tf * 4.5) % (2.0 * PI);
+                p.add(Shape::line(arc(ic, 12.0, a0, PI * 1.1), Stroke::new(2.8, col)));
             } else {
-                (TEXT_DIM.gamma_multiply(0.7), name.to_string())
-            };
-            p.text(Pos2::new(list_x + 34.0, ic.y), Align2::LEFT_CENTER, label, FontId::proportional(15.0), tc);
-            ly += 34.0;
+                p.circle_stroke(ic, 11.0, Stroke::new(1.5, Color32::from_white_alpha(28)));
+            }
+            let tc = if i8 == stage { Color32::WHITE } else if i8 < stage { Color32::from_rgb(170, 185, 215) } else { TEXT_DIM.gamma_multiply(0.7) };
+            p.text(Pos2::new(ic.x, ic.y + 26.0), Align2::CENTER_TOP, *name, FontId::proportional(11.5), tc);
         }
 
-        if let Some(e) = err {
-            p.text(Pos2::new(cx, ly + 12.0), Align2::CENTER_TOP, e, FontId::proportional(13.0), RED);
-            egui::Area::new(egui::Id::new("upd_back")).order(egui::Order::Foreground).fixed_pos(Pos2::new(cx - 100.0, ly + 42.0)).show(ctx, |ui| {
+        let fy = ty2 + 62.0;
+        if err.is_some() {
+            egui::Area::new(egui::Id::new("upd_back")).order(egui::Order::Foreground).fixed_pos(Pos2::new(cx - 100.0, fy - 4.0)).show(ctx, |ui| {
                 if ui.add(big_button("Zurück", th_blue()).min_size(Vec2::new(200.0, 44.0))).clicked() {
                     back = true;
                 }
             });
         } else {
-            p.text(Pos2::new(cx, ly + 14.0), Align2::CENTER_TOP, "Bitte lass das Fenster geöffnet – OVERLIME startet danach von selbst neu.", FontId::proportional(12.0), TEXT_DIM);
+            p.text(Pos2::new(cx, fy), Align2::CENTER_TOP, "Bitte lass das Fenster geöffnet – OVERLIME startet danach von selbst neu.", FontId::proportional(12.0), TEXT_DIM);
         }
     });
     back

@@ -193,6 +193,12 @@ pub struct Progress {
     pub stage: u8,
     pub pct: f32,
     pub error: Option<String>,
+    /// Heruntergeladene Bytes, Gesamtgröße und Tempo (Bytes pro Sekunde)
+    pub bytes: u64,
+    pub total: u64,
+    pub speed: f32,
+    /// Erwartete Prüfsumme (SHA-256, hex) für die Anzeige beim Prüfen
+    pub hash: String,
 }
 
 fn set(p: &Arc<Mutex<Progress>>, stage: u8, pct: f32) {
@@ -220,14 +226,30 @@ fn download_progress(url: &str, limit: u64, p: &Arc<Mutex<Progress>>) -> Result<
     let mut reader = resp.into_reader().take(limit);
     let mut buf = Vec::with_capacity(total as usize);
     let mut chunk = vec![0u8; 64 * 1024];
+    let t0 = Instant::now();
+    let mut last = (Instant::now(), 0usize);
+    let mut speed = 0.0f32;
     loop {
         let n = reader.read(&mut chunk).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
         }
         buf.extend_from_slice(&chunk[..n]);
-        if total > 0 {
-            set(p, 1, (buf.len() as f32 / total as f32 * 100.0).min(100.0));
+        // Tempo über ca. eine halbe Sekunde glätten
+        let dt = last.0.elapsed().as_secs_f32();
+        if dt >= 0.4 {
+            let inst = (buf.len() - last.1) as f32 / dt;
+            speed = if speed == 0.0 { inst } else { speed * 0.6 + inst * 0.4 };
+            last = (Instant::now(), buf.len());
+        }
+        if let Ok(mut g) = p.lock() {
+            g.stage = 1;
+            g.bytes = buf.len() as u64;
+            g.total = total.max(buf.len() as u64);
+            g.speed = if speed > 0.0 { speed } else { buf.len() as f32 / t0.elapsed().as_secs_f32().max(0.05) };
+            if total > 0 {
+                g.pct = (buf.len() as f32 / total as f32 * 100.0).min(100.0);
+            }
         }
     }
     set(p, 1, 100.0);
@@ -246,7 +268,10 @@ pub fn install_ui(rel: &Release, p: Arc<Mutex<Progress>>) -> Result<(), String> 
         if expected.len() != 64 {
             return Err("Ungültige Prüfsumme".into());
         }
-        hold(t0, Duration::from_millis(2200));
+        if let Ok(mut g) = p.lock() {
+            g.hash = expected.clone();
+        }
+        hold(t0, Duration::from_millis(3200));
 
         // 1: Herunterladen
         let t1 = Instant::now();
@@ -266,13 +291,13 @@ pub fn install_ui(rel: &Release, p: Arc<Mutex<Progress>>) -> Result<(), String> 
         }
         let sig_txt = String::from_utf8(download(&rel.sig_url, 4096)?).map_err(|e| e.to_string())?;
         verify_signature(&data, &sig_txt)?;
-        hold(t2, Duration::from_millis(3000));
+        hold(t2, Duration::from_millis(4200));
 
         // 3: Installieren
         let t3 = Instant::now();
         set(&p, 3, 0.0);
         let exe = swap_in(&data)?;
-        hold(t3, Duration::from_millis(3000));
+        hold(t3, Duration::from_millis(4600));
 
         // 4: Neustart
         let t4 = Instant::now();

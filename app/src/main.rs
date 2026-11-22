@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.29";
+const VERSION: &str = "0.30";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -424,10 +424,14 @@ impl App {
                     let t0 = Instant::now();
                     loop {
                         let el = t0.elapsed().as_secs_f32();
-                        let (stage, pct) = if el < 2.0 { (0, 0.0) } else if el < 7.0 { (1, (el - 2.0) / 5.0 * 100.0) } else if el < 10.0 { (2, 0.0) } else if el < 13.0 { (3, 0.0) } else { (4, 0.0) };
+                        let (stage, pct) = if el < 3.0 { (0, 0.0) } else if el < 8.0 { (1, (el - 3.0) / 5.0 * 100.0) } else if el < 12.2 { (2, 0.0) } else if el < 16.8 { (3, 0.0) } else { (4, 0.0) };
                         if let Ok(mut g) = prog.lock() {
                             g.stage = stage;
                             g.pct = pct;
+                            g.hash = "9716ead1f3a7e319052df3798585d72bfa59fcf966198de96dc70fefe3390899".to_string();
+                            g.total = 35_000_000;
+                            g.bytes = if stage >= 2 { 35_000_000 } else { (pct / 100.0 * 35_000_000.0) as u64 };
+                            g.speed = if stage == 1 { 7_300_000.0 } else { 0.0 };
                         }
                         std::thread::sleep(Duration::from_millis(50));
                     }
@@ -3665,7 +3669,7 @@ impl eframe::App for App {
             let dt = ctx.input(|i| i.stable_dt).min(0.1);
             self.upd_shown += (target - self.upd_shown) * (dt * 2.2).min(1.0);
             let rel = self.update.clone().unwrap();
-            if splash::update_screen(ctx, t, prog.stage, prog.pct, self.upd_shown, VERSION, &rel.version, prog.error.as_deref()) {
+            if splash::update_screen(ctx, t, &prog, self.upd_shown, VERSION, &rel.version) {
                 self.update_busy = false;
                 self.update_err = prog.error.unwrap_or_default();
                 *self.upd_progress.lock().unwrap() = update::Progress::default();
