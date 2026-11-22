@@ -29,13 +29,24 @@ moderner Oberfläche und einem Start in unter einer Minute.
 
 ## In drei Schritten loslegen
 
-1. **Herunterladen:** `overlime.exe` von der [Release-Seite](https://github.com/Overtime09991/overlime/releases/latest) laden und starten.
+1. **Herunterladen:** Von der [Release-Seite](https://github.com/Overtime09991/overlime/releases/latest) entweder `OVERLIME-Setup-….exe` (Installer, empfohlen) oder `overlime.exe` (ohne Installation) laden.
 2. **Anmelden und koppeln:** Mit dem PlayStation-Konto anmelden (nur einmal), bei der Konsole auf **Koppeln** klicken und den 8-stelligen Code eingeben, den die Konsole unter *Einstellungen › System › Remote Play › Gerät koppeln* anzeigt.
 3. **Spielen:** Auf **Verbinden** klicken.
 
 **Vorher an der Konsole:** Remote Play aktivieren (*Einstellungen › System › Remote Play*). Soll die Konsole aus dem Ruhemodus aufwachen, dort „Mit dem Netzwerk verbunden bleiben“ und „Aktivierung über das Netzwerk zulassen“ einschalten.
 
 > Windows zeigt bei neuen Programmen evtl. „Der Computer wurde durch Windows geschützt“. Dann auf *Weitere Informationen › Trotzdem ausführen* klicken. Falls beim Start eine Datei `VCRUNTIME140.dll` fehlt, einmal das [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) installieren.
+
+## Installieren (optional)
+
+Der **Installer** (`OVERLIME-Setup-….exe`) richtet OVERLIME in deinem Benutzerordner ein, ohne Administrator-Rechte:
+
+- Startmenü-Eintrag, auf Wunsch ein Desktop-Symbol und Start mit Windows
+- Eintrag unter *Einstellungen › Apps*, von dort lässt sich OVERLIME wieder deinstallieren
+- Die nötige Windows-Laufzeitdatei ist dabei, es läuft auch auf einem frisch eingerichteten PC
+- **Updates kommen weiter automatisch**, die App aktualisiert sich selbst
+
+Wer lieber nichts installiert, startet einfach die `overlime.exe`.
 
 ## Qualität
 
