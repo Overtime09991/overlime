@@ -4,6 +4,7 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Anrufe mit Klingelton, auch im Spiel",
     "Freunde & Sprache: eigener Sprachchat",
     "Rauschfilter wie Krisp",
     "Seite Module und Mikrofon zur Konsole",

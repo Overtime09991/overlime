@@ -29,6 +29,7 @@ pub struct Settings {
     pub chat_ptt: bool,
     pub chat_vol: f32,
     pub chat_denoise: bool,
+    pub chat_ring: bool,
     pub mic_denoise: bool,
     pub modules_off: String,
     pub mic_device: String,
@@ -102,8 +103,9 @@ impl Default for Settings {
             chat_ptt: false,
             chat_vol: 1.0,
             chat_denoise: true,
+            chat_ring: true,
             mic_denoise: true,
-            modules_off: String::new(),
+            modules_off: "friends".to_string(),
             mic_device: String::new(),
             mic_gain: 1.5,
             mic_gate: 0.02,
@@ -230,6 +232,7 @@ impl Settings {
                 "voice_online" => s.voice_online = v.trim() == "true",
                 "chat_ptt" => s.chat_ptt = v.trim() == "true",
                 "mic_denoise" => s.mic_denoise = v.trim() != "false",
+                "chat_ring" => s.chat_ring = v.trim() != "false",
                 "chat_denoise" => s.chat_denoise = v.trim() != "false",
                 "chat_vol" => s.chat_vol = v.trim().parse().unwrap_or(1.0f32).clamp(0.0, 2.0),
                 "modules_off" => s.modules_off = v.trim().to_string(),
@@ -308,7 +311,7 @@ impl Settings {
         text.push_str(&format!("notify_ready={}\n", self.notify_ready));
         text.push_str(&format!("tour_done={}\n", self.tour_done));
         text.push_str(&format!("intro={}\n", self.intro));
-        text.push_str(&format!("voice_secret={}\nvoice_name={}\nvoice_friends={}\nvoice_blocked={}\nvoice_server={}\nvoice_online={}\nchat_ptt={}\nchat_vol={}\nchat_denoise={}\nmic_denoise={}\n", self.voice_secret, self.voice_name.replace('\n', " "), self.voice_friends, self.voice_blocked, self.voice_server, self.voice_online, self.chat_ptt, self.chat_vol, self.chat_denoise, self.mic_denoise));
+        text.push_str(&format!("voice_secret={}\nvoice_name={}\nvoice_friends={}\nvoice_blocked={}\nvoice_server={}\nvoice_online={}\nchat_ptt={}\nchat_vol={}\nchat_denoise={}\nmic_denoise={}\nchat_ring={}\n", self.voice_secret, self.voice_name.replace('\n', " "), self.voice_friends, self.voice_blocked, self.voice_server, self.voice_online, self.chat_ptt, self.chat_vol, self.chat_denoise, self.mic_denoise, self.chat_ring));
         text.push_str(&format!("modules_off={}\nmic_device={}\nmic_gain={}\nmic_gate={}\nmic_ptt={}\n", self.modules_off, self.mic_device, self.mic_gain, self.mic_gate, self.mic_ptt));
         text.push_str(&format!("tune_dead_l={}\ntune_dead_r={}\ntune_sens_l={}\ntune_sens_r={}\ntune_curve_l={}\ntune_curve_r={}\naim_slow={}\naim_slow_pct={}\n", self.tune_dead_l, self.tune_dead_r, self.tune_sens_l, self.tune_sens_r, self.tune_curve_l, self.tune_curve_r, self.aim_slow, self.aim_slow_pct));
         text.push_str(&format!("hud_items={}\nhud_pos={}\nhud_size={}\nhud_box={}\n", self.hud_items, self.hud_pos, self.hud_size, self.hud_box));

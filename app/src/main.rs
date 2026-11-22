@@ -43,7 +43,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.47";
+const VERSION: &str = "0.48";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -250,6 +250,9 @@ struct App {
     v_muted: bool,
     v_pending_invite: Option<String>,
     v_demo_joined: bool,
+    v_ring: Option<audio::Audio>,
+    v_call_req: Option<String>,
+    v_leave_req: bool,
     mic_live: bool,
     mic_test: Option<mic::Mic>,
     mic_devices: Vec<String>,
@@ -433,6 +436,9 @@ impl App {
             v_muted: false,
             v_pending_invite: None,
             v_demo_joined: false,
+            v_ring: None,
+            v_call_req: None,
+            v_leave_req: false,
             mic_live: false,
             mic_test: None,
             mic_devices: Vec::new(),
@@ -496,6 +502,9 @@ impl App {
         };
         // Start-Animation: bei jedem normalen Start (ohne Startparameter), oder mit --intro
         app.intro_on = std::env::args().any(|a| a == "--intro") || (app.settings.intro && std::env::args().count() == 1);
+        if std::env::args().any(|a| a == "--demo-call") {
+            app.v_invites.push(friends::Invite { from: "OL-ABCD-EFGH".into(), name: "Anna".into(), room: "demo".into(), at: 0.0 });
+        }
         if std::env::args().any(|a| a == "--demo-friends") {
             app.page = Page::Friends;
         }
@@ -2991,6 +3000,38 @@ impl App {
                             self.muted = !self.muted;
                         }
                     });
+                    // Sprachchat: anrufen oder den Raum steuern, ohne das Spiel zu verlassen
+                    if self.settings.module_on("friends") && self.settings.voice_online && self.voice.as_ref().map(|v| v.connected()).unwrap_or(false) {
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(format!("{}  Sprachchat", ic::USERS_THREE)).size(14.0).strong());
+                        if self.v_room.is_some() {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = 10.0;
+                                if !self.settings.chat_ptt && tile(ui, if self.v_muted { ic::MICROPHONE_SLASH } else { ic::MICROPHONE }, if self.v_muted { "Stumm" } else { "Mikrofon an" }, tw, self.v_muted) {
+                                    self.v_muted = !self.v_muted;
+                                }
+                                if tile(ui, ic::PHONE_X, "Verlassen", tw, false) {
+                                    self.v_leave_req = true;
+                                }
+                            });
+                        } else {
+                            let blocked: Vec<String> = self.settings.voice_blocked.split(',').map(|s| s.to_string()).collect();
+                            let online: Vec<voice::Friend> = self.v_presence.iter().filter(|f| !blocked.contains(&f.id)).take(4).cloned().collect();
+                            if online.is_empty() {
+                                ui.label(RichText::new("Kein Freund online.").color(TEXT_DIM).size(12.5));
+                            }
+                            for f in online {
+                                ui.horizontal(|ui| {
+                                    ui.label(RichText::new(if f.name.is_empty() { f.id.clone() } else { f.name.clone() }).size(13.5));
+                                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                        if ui.add(egui::Button::new(RichText::new(format!("{}  Anrufen", ic::PHONE_CALL)).color(Color32::WHITE)).fill(th_blue()).rounding(8.0)).clicked() {
+                                            self.v_call_req = Some(f.id.clone());
+                                        }
+                                    });
+                                });
+                            }
+                        }
+                    }
                     ui.add_space(2.0);
                     ui.label(RichText::new("F11 Vollbild  •  F12 Screenshot  •  F9 Aufnahme  •  M Ton").color(TEXT_DIM).size(11.0));
                     ui.add_space(4.0);
@@ -4397,7 +4438,8 @@ impl eframe::App for App {
                 self.search();
             }
             self.stream_ui(ctx);
-            // Hinweise (Update, Screenshot, Aufnahme …) auch während des Spiels anzeigen
+            // Anrufe und Hinweise (Update, Screenshot, Aufnahme …) auch während des Spiels anzeigen
+            self.invites_overlay(ctx);
             self.draw_toasts(ctx, t);
             return;
         }

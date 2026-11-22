@@ -12,6 +12,29 @@ pub struct Invite {
     pub at: f64,
 }
 
+/// Sanfter Klingelton: zwei weiche Töne, dann eine Pause (wiederholt sich).
+fn ring_pull() -> audio::Pull {
+    let n = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    Arc::new(move |buf: &mut [i16]| {
+        let frames = buf.len() / 2;
+        let start = n.fetch_add(frames as u64, std::sync::atomic::Ordering::Relaxed);
+        for i in 0..frames {
+            let t = ((start + i as u64) as f64 / 48000.0) % 2.4;
+            // zwei Töne à 0,28 s, danach Stille
+            let (freq, local, len) = if t < 0.28 { (523.25, t, 0.28) } else if t < 0.56 { (659.25, t - 0.28, 0.28) } else { (0.0, 0.0, 1.0) };
+            let v = if freq > 0.0 {
+                let env = (std::f64::consts::PI * local / len).sin().powi(2);
+                ((2.0 * std::f64::consts::PI * freq * t).sin() * env * 3200.0) as i16
+            } else {
+                0
+            };
+            buf[i * 2] = v;
+            buf[i * 2 + 1] = v;
+        }
+        frames * 2
+    })
+}
+
 fn avatar(p: &egui::Painter, c: Pos2, r: f32, name: &str, col: Color32, ring: Option<f32>) {
     if let Some(a) = ring {
         p.circle_filled(c, r + 6.0 * a, GREEN.gamma_multiply(0.18 * a));
@@ -122,8 +145,46 @@ impl App {
                 VEvent::Error(m) => self.v_status = m,
             }
         }
-        self.v_invites.retain(|i| now - i.at < 120.0);
+        // Abgelaufene Anrufe (45 s) als verpasst melden
+        let mut missed: Vec<String> = Vec::new();
+        self.v_invites.retain(|i| {
+            if now - i.at < 45.0 {
+                true
+            } else {
+                missed.push(i.name.clone());
+                false
+            }
+        });
+        for n in missed {
+            self.toasts.push((format!("Verpasster Anruf von {n}"), 1, self.now));
+        }
+        // Klingelton, solange ein Anruf wartet
+        let ringing = !self.v_invites.is_empty() && self.settings.chat_ring;
+        if ringing && self.v_ring.is_none() {
+            self.v_ring = audio::start_with(ring_pull(), &self.settings.audio_device, 0.5 * self.settings.chat_vol.clamp(0.3, 1.2)).ok();
+        }
+        if !ringing && self.v_ring.is_some() {
+            self.v_ring = None;
+        }
+        if ringing {
+            ctx.request_repaint_after(Duration::from_millis(100));
+        }
         let v = self.voice.as_ref().unwrap();
+        if let Some(id) = self.v_call_req.take() {
+            v.join(None);
+            self.v_pending_invite = Some(id);
+        }
+        if self.v_leave_req {
+            self.v_leave_req = false;
+            v.leave();
+            self.v_room = None;
+        }
+        if self.v_room.is_some() {
+            if let Some(id) = self.v_pending_invite.take() {
+                v.invite(&id);
+                self.toasts.push(("Es klingelt …".to_string(), 2, self.now));
+            }
+        }
         if self.v_room.is_none() && v.connected() && !self.v_demo_joined && std::env::args().any(|a| a == "--demo-room") {
             self.v_demo_joined = true;
             v.join(None);
@@ -151,27 +212,38 @@ impl App {
         }
     }
 
-    /// Einladungen als Hinweis oben mittig (auf jeder Seite und im Stream).
+    /// Eingehende Anrufe als Hinweis oben mittig (auf jeder Seite und im Stream). Taste Y nimmt an, N lehnt ab.
     pub fn invites_overlay(&mut self, ctx: &egui::Context) {
         if self.v_invites.is_empty() {
             return;
         }
         let mut accept: Option<usize> = None;
         let mut decline: Option<usize> = None;
+        let now = ctx.input(|i| i.time);
+        if !ctx.wants_keyboard_input() {
+            let (y, n) = ctx.input(|i| (i.key_pressed(Key::Y), i.key_pressed(Key::N)));
+            if y {
+                accept = Some(self.v_invites.len() - 1);
+            } else if n {
+                decline = Some(self.v_invites.len() - 1);
+            }
+        }
         egui::Area::new(egui::Id::new("v_invites")).order(egui::Order::Tooltip).anchor(Align2::CENTER_TOP, [0.0, 54.0]).show(ctx, |ui| {
             for (i, inv) in self.v_invites.iter().enumerate() {
-                egui::Frame::none().fill(th_card()).rounding(14.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.7))).inner_margin(egui::Margin::symmetric(16.0, 12.0)).show(ui, |ui| {
+                let pulse = (((now * 3.0).sin() * 0.5 + 0.5) as f32) * 0.5 + 0.5;
+                egui::Frame::none().fill(th_card()).rounding(16.0).stroke(Stroke::new(1.5, GREEN.gamma_multiply(0.5 + 0.4 * pulse))).inner_margin(egui::Margin::symmetric(18.0, 14.0)).show(ui, |ui| {
                     ui.horizontal(|ui| {
-                        ui.label(RichText::new(ic::MICROPHONE).size(20.0).color(th_blue_light()));
+                        let (r, _) = ui.allocate_exact_size(Vec2::splat(46.0), egui::Sense::hover());
+                        avatar(ui.painter(), r.center(), 19.0, &inv.name, name_color(&inv.from), Some(pulse));
                         ui.vertical(|ui| {
-                            ui.label(RichText::new(format!("{} lädt dich ein", inv.name)).size(14.5).strong());
-                            ui.label(RichText::new("Sprachraum beitreten").color(TEXT_DIM).size(12.0));
+                            ui.label(RichText::new(format!("Anruf von {}", inv.name)).size(15.5).strong());
+                            ui.label(RichText::new(format!("Sprachraum beitreten  •  {} {}", ic::KEYBOARD, "Y = Annehmen, N = Ablehnen")).color(TEXT_DIM).size(12.0));
                         });
-                        ui.add_space(14.0);
-                        if ui.add(egui::Button::new(RichText::new("Beitreten").color(Color32::WHITE)).fill(th_blue()).rounding(10.0)).clicked() {
+                        ui.add_space(16.0);
+                        if ui.add(egui::Button::new(RichText::new(format!("{}  Annehmen", ic::PHONE_CALL)).color(Color32::WHITE).size(14.0)).fill(GREEN.gamma_multiply(0.85)).rounding(12.0).min_size(Vec2::new(120.0, 38.0))).clicked() {
                             accept = Some(i);
                         }
-                        if ui.add(egui::Button::new("Ablehnen").rounding(10.0)).clicked() {
+                        if ui.add(egui::Button::new(RichText::new(format!("{}  Ablehnen", ic::PHONE_X)).color(Color32::WHITE).size(14.0)).fill(RED.gamma_multiply(0.8)).rounding(12.0).min_size(Vec2::new(120.0, 38.0))).clicked() {
                             decline = Some(i);
                         }
                     });
@@ -452,6 +524,7 @@ impl App {
                         segmented(ui, &mut m, &["Mikrofon offen", "Taste B halten"]);
                         self.settings.chat_ptt = m == 1;
                         ui.add_space(6.0);
+                        ui.checkbox(&mut self.settings.chat_ring, "Klingelton bei Anrufen");
                         ui.checkbox(&mut self.settings.chat_denoise, "Rauschfilter (KI): Tastatur, Lüfter und Hintergrund herausfiltern");
                         ui.label(RichText::new("Ein kleines neuronales Netz (RNNoise) trennt deine Stimme vom Rauschen, ähnlich wie Krisp. Es läuft auf deinem PC, nichts geht an einen Dienst.").color(TEXT_DIM).size(11.5));
                         ui.add_space(4.0);
