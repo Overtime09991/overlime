@@ -22,7 +22,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
 - **Ton inklusive.** Spielton direkt auf deinem Standard-Wiedergabegerät.
 - **Nichts aus Versehen.** Esc öffnet nur ein Pause-Menü, und das Schließen des Fensters mitten im Stream fragt nach.
-- **Bleibt aktuell.** Neue Versionen lädt die App selbst, prüft sie und startet neu.
+- **Bleibt aktuell.** Neue Versionen lädt die App selbst, prüft sie und startet neu, mit einer eigenen Update-Animation und einem Willkommensbild danach.
 
 ## In drei Schritten loslegen
 

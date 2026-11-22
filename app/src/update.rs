@@ -2,6 +2,8 @@
 //! Erwartet im neuesten Release die Dateien `overlime.exe` und `overlime.exe.sha256`.
 use sha2::{Digest, Sha256};
 use std::io::Read;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 /// "besitzer/repository" auf GitHub. Leer = Updates aus.
 pub const UPDATE_REPO: &str = "Overtime09991/overlime";
@@ -118,4 +120,112 @@ pub fn install(rel: &Release) -> Result<(), String> {
     }
     std::process::Command::new(&exe).spawn().map_err(|e| e.to_string())?;
     std::process::exit(0);
+}
+
+/// Fortschritt des Updates für die Animation.
+/// Stufen: 0 Verbinden, 1 Herunterladen, 2 Prüfen, 3 Installieren, 4 Neustart
+#[derive(Clone, Default)]
+pub struct Progress {
+    pub stage: u8,
+    pub pct: f32,
+    pub error: Option<String>,
+}
+
+fn set(p: &Arc<Mutex<Progress>>, stage: u8, pct: f32) {
+    if let Ok(mut g) = p.lock() {
+        g.stage = stage;
+        g.pct = pct;
+    }
+}
+
+/// Jede Stufe zeigt sich mindestens so lange, damit die Animation lesbar bleibt.
+fn hold(start: Instant, min: Duration) {
+    let el = start.elapsed();
+    if el < min {
+        std::thread::sleep(min - el);
+    }
+}
+
+fn download_progress(url: &str, limit: u64, p: &Arc<Mutex<Progress>>) -> Result<Vec<u8>, String> {
+    let resp = ureq::get(url)
+        .set("User-Agent", "overlime-updater")
+        .timeout(Duration::from_secs(600))
+        .call()
+        .map_err(|e| e.to_string())?;
+    let total: u64 = resp.header("Content-Length").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let mut reader = resp.into_reader().take(limit);
+    let mut buf = Vec::with_capacity(total as usize);
+    let mut chunk = vec![0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut chunk).map_err(|e| e.to_string())?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if total > 0 {
+            set(p, 1, (buf.len() as f32 / total as f32 * 100.0).min(100.0));
+        }
+    }
+    set(p, 1, 100.0);
+    Ok(buf)
+}
+
+/// Wie `install`, meldet aber den Fortschritt und lässt jede Stufe kurz sichtbar.
+/// Dauer insgesamt etwa 15 Sekunden (die Willkommens-Animation folgt nach dem Neustart).
+pub fn install_ui(rel: &Release, p: Arc<Mutex<Progress>>) -> Result<(), String> {
+    let r = (|| -> Result<(), String> {
+        // 0: Verbinden / Prüfsumme holen
+        let t0 = Instant::now();
+        set(&p, 0, 0.0);
+        let sha_txt = String::from_utf8(download(&rel.sha_url, 4096)?).map_err(|e| e.to_string())?;
+        let expected = sha_txt.split_whitespace().next().unwrap_or("").to_lowercase();
+        if expected.len() != 64 {
+            return Err("Ungültige Prüfsumme".into());
+        }
+        hold(t0, Duration::from_millis(2200));
+
+        // 1: Herunterladen
+        let t1 = Instant::now();
+        set(&p, 1, 0.0);
+        let data = download_progress(&rel.url, 250 * 1024 * 1024, &p)?;
+        hold(t1, Duration::from_millis(5000));
+
+        // 2: Prüfen
+        let t2 = Instant::now();
+        set(&p, 2, 0.0);
+        let got: String = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+        if got != expected {
+            return Err("Prüfsumme stimmt nicht – Update abgebrochen".into());
+        }
+        if data.len() < 1_000_000 || &data[..2] != b"MZ" {
+            return Err("Heruntergeladene Datei ist keine gültige Programmdatei".into());
+        }
+        hold(t2, Duration::from_millis(3000));
+
+        // 3: Installieren
+        let t3 = Instant::now();
+        set(&p, 3, 0.0);
+        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let old = exe.with_extension("old");
+        let _ = std::fs::remove_file(&old);
+        std::fs::rename(&exe, &old).map_err(|e| format!("Ersetzen nicht möglich: {e}"))?;
+        if let Err(e) = std::fs::write(&exe, &data) {
+            let _ = std::fs::rename(&old, &exe);
+            return Err(format!("Schreiben fehlgeschlagen: {e}"));
+        }
+        hold(t3, Duration::from_millis(3000));
+
+        // 4: Neustart
+        let t4 = Instant::now();
+        set(&p, 4, 0.0);
+        hold(t4, Duration::from_millis(2000));
+        std::process::Command::new(&exe).spawn().map_err(|e| e.to_string())?;
+        std::process::exit(0);
+    })();
+    if let Err(e) = &r {
+        if let Ok(mut g) = p.lock() {
+            g.error = Some(e.clone());
+        }
+    }
+    r
 }

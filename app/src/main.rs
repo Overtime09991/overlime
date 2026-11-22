@@ -7,6 +7,7 @@ mod pad;
 mod pages;
 mod psn;
 mod settings;
+mod splash;
 mod store;
 mod update;
 
@@ -32,7 +33,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.10";
+const VERSION: &str = "0.11";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -53,6 +54,7 @@ enum Msg {
     StreamStarted(Stream, String),
     StreamErr(String),
     UpdateAvail(update::Release),
+    UpdateNone,
     UpdateErr(String),
 }
 
@@ -108,6 +110,12 @@ struct App {
     starting: Option<String>,
     update: Option<update::Release>,
     update_busy: bool,
+    upd_progress: Arc<std::sync::Mutex<update::Progress>>,
+    upd_shown: f32,
+    welcome: Option<(String, String)>,
+    welcome_start: Option<f64>,
+    update_checked: bool,
+    update_msg: String,
     update_err: String,
     skip_login: bool,
     login_pasted: String,
@@ -141,7 +149,10 @@ impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         setup_style(&cc.egui_ctx);
         let (tx, rx) = channel();
-        let settings = Settings::load();
+        let settings0 = Settings::load();
+        let prev_version = settings0.last_version.clone();
+        let mut settings = settings0.clone();
+        settings.last_version = VERSION.to_string();
         let mut app = Self {
             page: Page::Home,
             page_since: 0.0,
@@ -149,7 +160,7 @@ impl App {
             first_seen: HashMap::new(),
             misses: 0,
             local_ip: discovery::local_ip().map(|i| i.to_string()).unwrap_or_else(|| "?".into()),
-            saved: settings.clone(),
+            saved: settings0,
             settings,
             paired: store::load(),
             dialog: None,
@@ -157,6 +168,12 @@ impl App {
             starting: None,
             update: None,
             update_busy: false,
+            upd_progress: Arc::new(std::sync::Mutex::new(update::Progress::default())),
+            upd_shown: 0.0,
+            welcome: if !prev_version.is_empty() && prev_version != VERSION { Some((prev_version.clone(), VERSION.to_string())) } else { None },
+            welcome_start: None,
+            update_checked: false,
+            update_msg: String::new(),
             update_err: String::new(),
             skip_login: false,
             login_pasted: String::new(),
@@ -183,6 +200,26 @@ impl App {
         };
         if std::env::args().any(|a| a == "--demo") {
             app.local_ip = "192.168.0.10".into();
+            if std::env::args().any(|a| a == "--demo-welcome") {
+                app.welcome = Some(("0.10".into(), "0.11".into()));
+            }
+            if std::env::args().any(|a| a == "--demo-update") {
+                app.update = Some(update::Release { version: "0.11".into(), url: String::new(), sha_url: String::new(), notes: String::new() });
+                app.update_busy = true;
+                let prog = app.upd_progress.clone();
+                std::thread::spawn(move || {
+                    let t0 = Instant::now();
+                    loop {
+                        let el = t0.elapsed().as_secs_f32();
+                        let (stage, pct) = if el < 2.0 { (0, 0.0) } else if el < 7.0 { (1, (el - 2.0) / 5.0 * 100.0) } else if el < 10.0 { (2, 0.0) } else if el < 13.0 { (3, 0.0) } else { (4, 0.0) };
+                        if let Ok(mut g) = prog.lock() {
+                            g.stage = stage;
+                            g.pct = pct;
+                        }
+                        std::thread::sleep(Duration::from_millis(50));
+                    }
+                });
+            }
             let mk = |name: &str, ps5: bool, state: State, ip: &str, a: &str| Console {
                 addr: ip.into(),
                 name: name.into(),
@@ -230,8 +267,14 @@ impl App {
         if update::enabled() {
             let tx = app.tx.clone();
             std::thread::spawn(move || {
-                if let Ok(Some(r)) = update::check(VERSION) {
-                    let _ = tx.send(Msg::UpdateAvail(r));
+                match update::check(VERSION) {
+                    Ok(Some(r)) => {
+                        let _ = tx.send(Msg::UpdateAvail(r));
+                    }
+                    Ok(None) => {
+                        let _ = tx.send(Msg::UpdateNone);
+                    }
+                    Err(_) => {}
                 }
             });
         }
@@ -450,8 +493,11 @@ impl App {
                         self.update_busy = true;
                         let tx = self.tx.clone();
                         let rr = r.clone();
+                        *self.upd_progress.lock().unwrap() = update::Progress::default();
+                        self.upd_shown = 0.0;
+                        let prog = self.upd_progress.clone();
                         std::thread::spawn(move || {
-                            if let Err(e) = update::install(&rr) {
+                            if let Err(e) = update::install_ui(&rr, prog) {
                                 let _ = tx.send(Msg::UpdateErr(e));
                             }
                         });
@@ -459,8 +505,12 @@ impl App {
                     self.update = Some(r);
                 }
                 Msg::UpdateErr(e) => {
-                    self.update_busy = false;
+                    // update_busy bleibt an, damit der Fehler im Update-Bildschirm sichtbar ist
                     self.update_err = e;
+                }
+                Msg::UpdateNone => {
+                    self.update_checked = true;
+                    self.update_msg = "Du hast die neueste Version.".into();
                 }
             }
         }
@@ -869,6 +919,26 @@ impl App {
                 ui.add(egui::TextEdit::singleline(&mut st.manual_ip).hint_text("IP-Adresse der Konsole").desired_width(260.0));
                 ui.add_space(6.0);
                 ui.checkbox(&mut st.auto_update, "Updates automatisch installieren");
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new("Nach Updates suchen").fill(CARD_HOVER).rounding(10.0)).clicked() {
+                        self.update_msg = "Suche …".into();
+                        let tx = self.tx.clone();
+                        std::thread::spawn(move || {
+                            match update::check(VERSION) {
+                                Ok(Some(r)) => {
+                                    let _ = tx.send(Msg::UpdateAvail(r));
+                                }
+                                Ok(None) => {
+                                    let _ = tx.send(Msg::UpdateNone);
+                                }
+                                Err(e) => {
+                                    let _ = tx.send(Msg::Info(format!("Update-Suche fehlgeschlagen: {}", mask_ips(&e))));
+                                }
+                            }
+                        });
+                    }
+                    ui.label(RichText::new(&self.update_msg).color(TEXT_DIM).size(12.5));
+                });
                 ui.add_space(6.0);
                 if !st.psn_account.is_empty() && ui.button("PlayStation-Konto abmelden").clicked() {
                     st.psn_account.clear();
@@ -1421,6 +1491,38 @@ impl eframe::App for App {
             self.saved = self.settings.clone();
         }
 
+        // Update-Animation
+        if self.update_busy && self.update.is_some() {
+            ctx.request_repaint();
+            let prog = self.upd_progress.lock().unwrap().clone();
+            let target = if prog.error.is_some() {
+                self.upd_shown
+            } else if prog.stage >= 4 {
+                1.0
+            } else {
+                (prog.stage as f32 + if prog.stage == 1 { prog.pct / 100.0 } else { 0.5 }) / 5.0
+            };
+            let dt = ctx.input(|i| i.stable_dt).min(0.1);
+            self.upd_shown += (target - self.upd_shown) * (dt * 2.2).min(1.0);
+            let rel = self.update.clone().unwrap();
+            if splash::update_screen(ctx, t, prog.stage, prog.pct, self.upd_shown, VERSION, &rel.version, prog.error.as_deref()) {
+                self.update_busy = false;
+                self.update_err = prog.error.unwrap_or_default();
+                *self.upd_progress.lock().unwrap() = update::Progress::default();
+            }
+            return;
+        }
+        if self.session.is_none() {
+            if let Some((from, to)) = self.welcome.clone() {
+                ctx.request_repaint();
+                let start = *self.welcome_start.get_or_insert(t);
+                if splash::welcome_screen(ctx, t - start, &from, &to) {
+                    self.welcome = None;
+                }
+                return;
+            }
+        }
+
         if self.session.is_some() {
             ctx.request_repaint();
             self.stream_ui(ctx);
@@ -1484,7 +1586,13 @@ impl eframe::App for App {
                     self.page_since = t;
                 }
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    ui.label(RichText::new(format!("Version {VERSION}")).color(TEXT_DIM).size(12.0));
+                    if self.update.is_some() {
+                        ui.label(RichText::new(format!("Version {VERSION}  •  Update verfügbar")).color(YELLOW).size(12.0));
+                    } else if self.update_checked {
+                        ui.label(RichText::new(format!("Version {VERSION}  •  aktuell")).color(GREEN).size(12.0));
+                    } else {
+                        ui.label(RichText::new(format!("Version {VERSION}")).color(TEXT_DIM).size(12.0));
+                    }
                     if psn::id_from_b64(&self.settings.psn_account).is_some() {
                         let who = if self.settings.psn_name.is_empty() { "PlayStation-Konto".to_string() } else { self.settings.psn_name.clone() };
                         ui.label(RichText::new(format!("Angemeldet: {who}")).color(GREEN).size(12.0));
@@ -1519,8 +1627,11 @@ impl eframe::App for App {
                                 self.update_err.clear();
                                 let tx = self.tx.clone();
                                 let r = rel.clone();
+                                *self.upd_progress.lock().unwrap() = update::Progress::default();
+                                self.upd_shown = 0.0;
+                                let prog = self.upd_progress.clone();
                                 std::thread::spawn(move || {
-                                    if let Err(e) = update::install(&r) {
+                                    if let Err(e) = update::install_ui(&r, prog) {
                                         let _ = tx.send(Msg::UpdateErr(e));
                                     }
                                 });

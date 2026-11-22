@@ -15,6 +15,7 @@ pub struct Settings {
     pub auto_update: bool,
     pub manual_ip: String,
     pub keys: Vec<String>,
+    pub last_version: String,
 }
 
 impl Default for Settings {
@@ -32,6 +33,7 @@ impl Default for Settings {
             auto_update: true,
             manual_ip: String::new(),
             keys: crate::keys::defaults(),
+            last_version: String::new(),
         }
     }
 }
@@ -70,6 +72,7 @@ impl Settings {
                 "psn_name" => s.psn_name = v.trim().to_string(),
                 "auto_update" => s.auto_update = v.trim() != "false",
                 "manual_ip" => s.manual_ip = v.trim().to_string(),
+                "last_version" => s.last_version = v.trim().to_string(),
                 k if k.starts_with("key_") => {
                     if let Ok(i) = k[4..].parse::<usize>() {
                         if i < s.keys.len() {
@@ -93,6 +96,7 @@ impl Settings {
             self.resolution, self.fps, self.bitrate, self.codec, self.upscale, self.fullscreen, self.rumble, self.psn_account, self.psn_name, self.auto_update, self.manual_ip
         );
         let mut text = text;
+        text.push_str(&format!("last_version={}\n", self.last_version));
         for (i, k) in self.keys.iter().enumerate() {
             text.push_str(&format!("key_{i}={k}\n"));
         }
