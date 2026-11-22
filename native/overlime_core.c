@@ -17,8 +17,15 @@
 #include <libavutil/imgutils.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/pixfmt.h>
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libavutil/channel_layout.h>
+#include <libavutil/opt.h>
+#include <libavutil/mathematics.h>
+#include <libavutil/avutil.h>
 
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -206,13 +213,311 @@ struct OlStream {
 	size_t a_read, a_write; // monoton steigend
 	uint32_t audio_rate, audio_channels;
 	uint64_t audio_total;
+
+	// Aufnahme (MP4, Video unveraendert uebernommen, Ton als AAC)
+	ChiakiMutex rec_mtx;
+	int codec_hevc;
+	int rec_state; // 0 aus, 1 wartet auf Schluesselbild, 2 laeuft
+	AVFormatContext *rec_fc;
+	AVStream *rec_vs, *rec_as;
+	AVCodecContext *rec_aenc;
+	AVFrame *rec_aframe;
+	int rec_acount;
+	int64_t rec_apts;
+	uint64_t rec_t0_us;
+	int64_t rec_last_vpts;
+	uint64_t rec_bytes;
+	char rec_path[600];
 };
+
+// ------------------------------------------------------------------ Aufnahme
+static int is_keyframe(const uint8_t *b, size_t n, int hevc)
+{
+	for(size_t i = 0; i + 3 < n; i++)
+	{
+		if(b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1)
+		{
+			uint8_t nal = b[i + 3];
+			if(!hevc)
+			{
+				int t = nal & 0x1f;
+				if(t == 5) return 1;
+				if(t >= 1 && t <= 4) return 0;
+			}
+			else
+			{
+				int t = (nal >> 1) & 0x3f;
+				if(t >= 16 && t <= 21) return 1;
+				if(t < 16) return 0;
+			}
+			i += 3;
+		}
+	}
+	return 0;
+}
+
+static void rec_cleanup_locked(OlStream *s, int delete_file)
+{
+	if(s->rec_aenc) avcodec_free_context(&s->rec_aenc);
+	if(s->rec_aframe) av_frame_free(&s->rec_aframe);
+	if(s->rec_fc)
+	{
+		if(s->rec_fc->pb) avio_closep(&s->rec_fc->pb);
+		avformat_free_context(s->rec_fc);
+		s->rec_fc = NULL;
+	}
+	s->rec_vs = s->rec_as = NULL;
+	s->rec_state = 0;
+	s->rec_acount = 0;
+	if(delete_file && s->rec_path[0]) remove(s->rec_path);
+}
+
+static void rec_write_audio_packets(OlStream *s, AVFrame *frame)
+{
+	if(avcodec_send_frame(s->rec_aenc, frame) < 0) return;
+	AVPacket *pkt = av_packet_alloc();
+	while(pkt && avcodec_receive_packet(s->rec_aenc, pkt) == 0)
+	{
+		pkt->stream_index = s->rec_as->index;
+		av_packet_rescale_ts(pkt, s->rec_aenc->time_base, s->rec_as->time_base);
+		s->rec_bytes += (uint64_t)pkt->size;
+		av_interleaved_write_frame(s->rec_fc, pkt);
+		av_packet_unref(pkt);
+	}
+	av_packet_free(&pkt);
+}
+
+static void rec_video(OlStream *s, const uint8_t *buf, size_t size)
+{
+	chiaki_mutex_lock(&s->rec_mtx);
+	if(s->rec_state == 0 || size == 0)
+	{
+		chiaki_mutex_unlock(&s->rec_mtx);
+		return;
+	}
+	int key = is_keyframe(buf, size, s->codec_hevc);
+	if(s->rec_state == 1)
+	{
+		if(!key)
+		{
+			chiaki_mutex_unlock(&s->rec_mtx);
+			return;
+		}
+		AVCodecParameters *par = s->rec_vs->codecpar;
+		par->extradata = av_mallocz(size + AV_INPUT_BUFFER_PADDING_SIZE);
+		if(!par->extradata)
+		{
+			rec_cleanup_locked(s, 1);
+			chiaki_mutex_unlock(&s->rec_mtx);
+			return;
+		}
+		memcpy(par->extradata, buf, size);
+		par->extradata_size = (int)size;
+		AVDictionary *opts = NULL;
+		av_dict_set(&opts, "movflags", "frag_keyframe+empty_moov+default_base_moof", 0);
+		int r = avformat_write_header(s->rec_fc, &opts);
+		av_dict_free(&opts);
+		if(r < 0)
+		{
+			rec_cleanup_locked(s, 1);
+			chiaki_mutex_unlock(&s->rec_mtx);
+			return;
+		}
+		s->rec_t0_us = now_us();
+		s->rec_last_vpts = -1;
+		s->rec_state = 2;
+	}
+	AVPacket *pkt = av_packet_alloc();
+	if(pkt && av_new_packet(pkt, (int)size) == 0)
+	{
+		memcpy(pkt->data, buf, size);
+		int64_t pts = av_rescale_q((int64_t)(now_us() - s->rec_t0_us), (AVRational){1, 1000000}, s->rec_vs->time_base);
+		if(pts <= s->rec_last_vpts) pts = s->rec_last_vpts + 1;
+		s->rec_last_vpts = pts;
+		pkt->pts = pkt->dts = pts;
+		pkt->stream_index = s->rec_vs->index;
+		if(key) pkt->flags |= AV_PKT_FLAG_KEY;
+		s->rec_bytes += (uint64_t)size;
+		av_interleaved_write_frame(s->rec_fc, pkt);
+	}
+	av_packet_free(&pkt);
+	chiaki_mutex_unlock(&s->rec_mtx);
+}
+
+static void rec_audio(OlStream *s, const int16_t *buf, size_t frames, uint32_t channels)
+{
+	chiaki_mutex_lock(&s->rec_mtx);
+	if(s->rec_state != 2 || !s->rec_aenc || channels == 0)
+	{
+		chiaki_mutex_unlock(&s->rec_mtx);
+		return;
+	}
+	AVFrame *f = s->rec_aframe;
+	for(size_t i = 0; i < frames; i++)
+	{
+		if(s->rec_acount == 0 && av_frame_make_writable(f) < 0)
+			break;
+		float l = (float)buf[i * channels] / 32768.0f;
+		float r = channels > 1 ? (float)buf[i * channels + 1] / 32768.0f : l;
+		((float *)f->data[0])[s->rec_acount] = l;
+		((float *)f->data[1])[s->rec_acount] = r;
+		s->rec_acount++;
+		if(s->rec_acount >= f->nb_samples)
+		{
+			f->pts = s->rec_apts;
+			s->rec_apts += f->nb_samples;
+			rec_write_audio_packets(s, f);
+			s->rec_acount = 0;
+		}
+	}
+	chiaki_mutex_unlock(&s->rec_mtx);
+}
+
+static int rec_open(OlStream *s, const char *path, char *err, size_t err_size)
+{
+	chiaki_mutex_lock(&s->rec_mtx);
+	if(s->rec_state != 0)
+	{
+		chiaki_mutex_unlock(&s->rec_mtx);
+		snprintf(err, err_size, "Eine Aufnahme laeuft schon.");
+		return 1;
+	}
+	int w = s->width, h = s->height;
+	if(w <= 0 || h <= 0)
+	{
+		chiaki_mutex_unlock(&s->rec_mtx);
+		snprintf(err, err_size, "Noch kein Bild vorhanden.");
+		return 2;
+	}
+	snprintf(s->rec_path, sizeof(s->rec_path), "%s", path);
+	if(avformat_alloc_output_context2(&s->rec_fc, NULL, "mp4", path) < 0 || !s->rec_fc)
+	{
+		snprintf(err, err_size, "MP4 nicht moeglich.");
+		goto fail;
+	}
+	s->rec_vs = avformat_new_stream(s->rec_fc, NULL);
+	s->rec_as = avformat_new_stream(s->rec_fc, NULL);
+	if(!s->rec_vs || !s->rec_as)
+	{
+		snprintf(err, err_size, "Stream nicht moeglich.");
+		goto fail;
+	}
+	AVCodecParameters *vp = s->rec_vs->codecpar;
+	vp->codec_type = AVMEDIA_TYPE_VIDEO;
+	vp->codec_id = s->codec_hevc ? AV_CODEC_ID_HEVC : AV_CODEC_ID_H264;
+	vp->codec_tag = s->codec_hevc ? MKTAG('h', 'v', 'c', '1') : 0;
+	vp->width = w;
+	vp->height = h;
+	s->rec_vs->time_base = (AVRational){1, 90000};
+
+	const AVCodec *ac = avcodec_find_encoder(AV_CODEC_ID_AAC);
+	if(!ac)
+	{
+		snprintf(err, err_size, "AAC-Encoder fehlt.");
+		goto fail;
+	}
+	s->rec_aenc = avcodec_alloc_context3(ac);
+	if(!s->rec_aenc)
+		goto fail;
+	s->rec_aenc->sample_fmt = AV_SAMPLE_FMT_FLTP;
+	s->rec_aenc->sample_rate = 48000;
+	av_channel_layout_default(&s->rec_aenc->ch_layout, 2);
+	s->rec_aenc->bit_rate = 192000;
+	s->rec_aenc->time_base = (AVRational){1, 48000};
+	if(s->rec_fc->oformat->flags & AVFMT_GLOBALHEADER)
+		s->rec_aenc->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+	if(avcodec_open2(s->rec_aenc, ac, NULL) < 0)
+	{
+		snprintf(err, err_size, "AAC-Encoder startet nicht.");
+		goto fail;
+	}
+	avcodec_parameters_from_context(s->rec_as->codecpar, s->rec_aenc);
+	s->rec_as->time_base = (AVRational){1, 48000};
+	s->rec_aframe = av_frame_alloc();
+	if(!s->rec_aframe)
+		goto fail;
+	s->rec_aframe->nb_samples = s->rec_aenc->frame_size;
+	s->rec_aframe->format = AV_SAMPLE_FMT_FLTP;
+	s->rec_aframe->sample_rate = 48000;
+	av_channel_layout_copy(&s->rec_aframe->ch_layout, &s->rec_aenc->ch_layout);
+	if(av_frame_get_buffer(s->rec_aframe, 0) < 0)
+		goto fail;
+	if(avio_open(&s->rec_fc->pb, path, AVIO_FLAG_WRITE) < 0)
+	{
+		snprintf(err, err_size, "Datei kann nicht geschrieben werden.");
+		goto fail;
+	}
+	s->rec_acount = 0;
+	s->rec_apts = 0;
+	s->rec_bytes = 0;
+	s->rec_state = 1;
+	chiaki_mutex_unlock(&s->rec_mtx);
+	return 0;
+
+fail:
+	if(err[0] == 0)
+		snprintf(err, err_size, "Aufnahme konnte nicht gestartet werden.");
+	if(s->rec_fc && s->rec_fc->pb == NULL) { /* nichts geoeffnet */ }
+	rec_cleanup_locked(s, 1);
+	chiaki_mutex_unlock(&s->rec_mtx);
+	return 3;
+}
+
+int ol_record_start(OlStream *s, const char *path, char *err, size_t err_size)
+{
+	int r = rec_open(s, path, err, err_size);
+	// sofort ein Schluesselbild anfordern, damit die Aufnahme ohne Wartezeit beginnt
+	if(r == 0)
+		chiaki_session_request_idr(&s->session);
+	return r;
+}
+
+void ol_record_stop(OlStream *s)
+{
+	chiaki_mutex_lock(&s->rec_mtx);
+	if(s->rec_state == 2)
+	{
+		// Rest des Tons ausschreiben und Datei abschliessen
+		if(s->rec_acount > 0)
+		{
+			s->rec_aframe->nb_samples = s->rec_acount;
+			s->rec_aframe->pts = s->rec_apts;
+			rec_write_audio_packets(s, s->rec_aframe);
+		}
+		rec_write_audio_packets(s, NULL);
+		av_write_trailer(s->rec_fc);
+		rec_cleanup_locked(s, 0);
+	}
+	else if(s->rec_state == 1)
+	{
+		rec_cleanup_locked(s, 1);
+	}
+	chiaki_mutex_unlock(&s->rec_mtx);
+}
+
+// 0 aus, 1 wartet auf Schluesselbild, 2 laeuft
+int ol_record_state(OlStream *s)
+{
+	chiaki_mutex_lock(&s->rec_mtx);
+	int r = s->rec_state;
+	chiaki_mutex_unlock(&s->rec_mtx);
+	return r;
+}
+
+uint64_t ol_record_bytes(OlStream *s)
+{
+	chiaki_mutex_lock(&s->rec_mtx);
+	uint64_t r = s->rec_bytes;
+	chiaki_mutex_unlock(&s->rec_mtx);
+	return r;
+}
 
 static bool video_sample(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user)
 {
 	OlStream *s = user;
 	s->t_sample_us = now_us();
 	s->bytes_acc += buf_size;
+	rec_video(s, buf, buf_size);
 	return chiaki_ffmpeg_decoder_video_sample_cb(buf, buf_size, frames_lost, frame_recovered, &s->decoder);
 }
 
@@ -361,6 +666,7 @@ static void opus_frame_cb(int16_t *buf, size_t samples_count, void *user)
 {
 	OlStream *s = user;
 	size_t total = samples_count * (s->audio_channels ? s->audio_channels : 2);
+	rec_audio(s, buf, samples_count, s->audio_channels ? s->audio_channels : 2);
 	chiaki_mutex_lock(&s->mtx);
 	s->audio_total += samples_count;
 	for(size_t i = 0; i < total; i++)
@@ -429,6 +735,7 @@ OlStream *ol_stream_start(const OlStreamParams *p, char *err, size_t err_size)
 		return NULL;
 	make_log(&s->log);
 	chiaki_mutex_init(&s->mtx, false);
+	chiaki_mutex_init(&s->rec_mtx, false);
 	s->audio_channels = 2;
 	s->audio_rate = 48000;
 	snprintf(s->message, sizeof(s->message), "Verbinde ...");
@@ -444,6 +751,7 @@ OlStream *ol_stream_start(const OlStreamParams *p, char *err, size_t err_size)
 	ci.video_profile.max_fps = (unsigned)p->fps;
 	ci.video_profile.bitrate = (unsigned)(p->bitrate_kbps > 0 ? p->bitrate_kbps : 15000);
 	ci.video_profile.codec = p->codec ? CHIAKI_CODEC_H265 : CHIAKI_CODEC_H264;
+	s->codec_hevc = p->codec ? 1 : 0;
 	ci.video_profile_auto_downgrade = true;
 	ci.enable_keyboard = false;
 	ci.enable_dualsense = p->enable_dualsense ? true : false;
@@ -499,6 +807,7 @@ fail:
 	if(s->opus_ok) chiaki_opus_decoder_fini(&s->opus);
 	if(s->decoder_ok) chiaki_ffmpeg_decoder_fini(&s->decoder);
 	if(s->session_ok) chiaki_session_fini(&s->session);
+	chiaki_mutex_fini(&s->rec_mtx);
 	chiaki_mutex_fini(&s->mtx);
 	free(s);
 	return NULL;
@@ -684,6 +993,7 @@ void ol_stream_stop(OlStream *s)
 		return;
 	chiaki_session_stop(&s->session);
 	chiaki_session_join(&s->session);
+	ol_record_stop(s);
 	chiaki_opus_decoder_fini(&s->opus);
 	chiaki_ffmpeg_decoder_fini(&s->decoder);
 	chiaki_session_fini(&s->session);
@@ -691,6 +1001,79 @@ void ol_stream_stop(OlStream *s)
 	sws_freeContext(s->sws12);
 	free(s->nv12);
 	free(s->rgba);
+	chiaki_mutex_fini(&s->rec_mtx);
 	chiaki_mutex_fini(&s->mtx);
 	free(s);
+}
+
+
+// Selbsttest der Aufnahme ohne Konsole (nur fuer Entwickler).
+int ol_record_selftest(const char *in_path, const char *out_path, int hevc, int w, int h, char *err, size_t err_size)
+{
+	FILE *f = fopen(in_path, "rb");
+	if(!f)
+	{
+		snprintf(err, err_size, "Eingabe fehlt");
+		return 10;
+	}
+	fseek(f, 0, SEEK_END);
+	long n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	uint8_t *buf = malloc((size_t)n);
+	if(!buf || fread(buf, 1, (size_t)n, f) != (size_t)n)
+	{
+		fclose(f);
+		return 11;
+	}
+	fclose(f);
+	OlStream *s = calloc(1, sizeof(*s));
+	chiaki_mutex_init(&s->mtx, false);
+	chiaki_mutex_init(&s->rec_mtx, false);
+	s->codec_hevc = hevc;
+	s->width = w;
+	s->height = h;
+	err[0] = 0;
+	int r = rec_open(s, out_path, err, err_size);
+	if(r != 0)
+	{
+		free(buf);
+		return r;
+	}
+	// Zugriffseinheiten an den AUD-Nalus trennen (H.264: Typ 9, HEVC: Typ 35)
+	long starts[100000];
+	int cnt = 0;
+	for(long i = 0; i + 4 < n && cnt < 99999; i++)
+	{
+		if(buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1)
+		{
+			int t = hevc ? ((buf[i + 3] >> 1) & 0x3f) : (buf[i + 3] & 0x1f);
+			if(t == (hevc ? 35 : 9))
+			{
+				long st = (i > 0 && buf[i - 1] == 0) ? i - 1 : i;
+				starts[cnt++] = st;
+			}
+		}
+	}
+	starts[cnt] = n;
+	int16_t tone[2 * 800];
+	double ph = 0;
+	for(int k = 0; k < cnt; k++)
+	{
+		rec_video(s, buf + starts[k], (size_t)(starts[k + 1] - starts[k]));
+		for(int i = 0; i < 800; i++)
+		{
+			int16_t v = (int16_t)(sin(ph) * 8000);
+			ph += 2.0 * 3.14159265358979 * 440.0 / 48000.0;
+			tone[i * 2] = v;
+			tone[i * 2 + 1] = v;
+		}
+		rec_audio(s, tone, 800, 2);
+		Sleep(16);
+	}
+	ol_record_stop(s);
+	free(buf);
+	chiaki_mutex_fini(&s->rec_mtx);
+	chiaki_mutex_fini(&s->mtx);
+	free(s);
+	return 0;
 }

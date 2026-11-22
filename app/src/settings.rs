@@ -1,4 +1,4 @@
-//! Einstellungen, gespeichert in %APPDATA%\overlime\settings.txt (key=value).
+//! Einstellungen, verschlüsselt (Windows-Benutzerkonto) in %APPDATA%\overlime\settings.dat (key=value im Inneren).
 use std::path::PathBuf;
 
 /// Eigene Qualität für eine einzelne Konsole.
@@ -12,6 +12,13 @@ pub struct Profile {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
+    pub interp: bool,
+    pub hud_items: u32,
+    pub hud_pos: usize,  // 0 oben links, 1 oben rechts, 2 unten links, 3 unten rechts
+    pub hud_size: usize, // 0 klein, 1 normal, 2 groß
+    pub hud_box: bool,
+    pub tour_done: bool,
+    pub notify_ready: bool,
     pub eq_bass: f32,
     pub eq_mid: f32,
     pub eq_treble: f32,
@@ -53,6 +60,13 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             profiles: vec![],
+            interp: false,
+            hud_items: 0x0FF,
+            hud_pos: 0,
+            hud_size: 1,
+            hud_box: false,
+            tour_done: false,
+            notify_ready: true,
             eq_bass: 0.0,
             eq_mid: 0.0,
             eq_treble: 0.0,
@@ -108,7 +122,14 @@ impl Settings {
 
     pub fn load() -> Self {
         let mut s = Self::default();
-        let Some(text) = Self::path().and_then(|p| std::fs::read_to_string(p).ok()) else {
+        // verschlüsselte Datei (nur dein Windows-Konto kann sie lesen), sonst die alte Textdatei
+        let from_dat = Self::path()
+            .map(|p| p.with_file_name("settings.dat"))
+            .and_then(|p| std::fs::read(p).ok())
+            .and_then(|enc| crate::store::unprotect(&enc))
+            .map(|b| String::from_utf8_lossy(&b).to_string());
+        let used_dat = from_dat.is_some();
+        let Some(text) = from_dat.or_else(|| Self::path().and_then(|p| std::fs::read_to_string(p).ok())) else {
             return s;
         };
         for line in text.lines() {
@@ -143,6 +164,13 @@ impl Settings {
                 "eq_bass" => s.eq_bass = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
                 "eq_mid" => s.eq_mid = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
                 "eq_treble" => s.eq_treble = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
+                "interp" => s.interp = v.trim() == "true",
+                "hud_items" => s.hud_items = v.trim().parse().unwrap_or(0x0FFu32) & 0x3FF,
+                "hud_pos" => s.hud_pos = v.trim().parse().unwrap_or(0usize).min(3),
+                "hud_size" => s.hud_size = v.trim().parse().unwrap_or(1usize).min(2),
+                "hud_box" => s.hud_box = v.trim() == "true",
+                "tour_done" => s.tour_done = v.trim() == "true",
+                "notify_ready" => s.notify_ready = v.trim() != "false",
                 "wake_on" => s.wake_on = v.trim() == "true",
                 "wake_hour" => s.wake_hour = v.trim().parse().unwrap_or(19u8).min(23),
                 "wake_min" => s.wake_min = v.trim().parse().unwrap_or(0u8).min(59),
@@ -170,6 +198,9 @@ impl Settings {
                 }
                 _ => {}
             }
+        }
+        if !used_dat {
+            s.save(); // alte Textdatei in die verschlüsselte Datei übernehmen
         }
         s
     }
@@ -199,9 +230,21 @@ impl Settings {
         }
         text.push_str(&format!("wake_on={}\nwake_hour={}\nwake_min={}\nwake_days={}\n", self.wake_on, self.wake_hour, self.wake_min, self.wake_days));
         text.push_str(&format!("eq_bass={}\neq_mid={}\neq_treble={}\n", self.eq_bass, self.eq_mid, self.eq_treble));
+        text.push_str(&format!("notify_ready={}\n", self.notify_ready));
+        text.push_str(&format!("tour_done={}\n", self.tour_done));
+        text.push_str(&format!("hud_items={}\nhud_pos={}\nhud_size={}\nhud_box={}\n", self.hud_items, self.hud_pos, self.hud_size, self.hud_box));
+        text.push_str(&format!("interp={}\n", self.interp));
         for (id, p) in &self.profiles {
             text.push_str(&format!("profile={}|{}|{}|{}|{}\n", id, p.resolution, p.fps, p.bitrate, p.codec));
         }
-        let _ = std::fs::write(p, text);
+        // verschlüsselt speichern; die alte Textdatei wird entfernt
+        match crate::store::protect(text.as_bytes()) {
+            Some(enc) if std::fs::write(p.with_file_name("settings.dat"), &enc).is_ok() => {
+                let _ = std::fs::remove_file(&p);
+            }
+            _ => {
+                let _ = std::fs::write(p, text);
+            }
+        }
     }
 }

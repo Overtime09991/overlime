@@ -44,7 +44,7 @@ extern "system" {
     fn LocalFree(h: *mut std::ffi::c_void) -> *mut std::ffi::c_void;
 }
 
-fn protect(data: &[u8]) -> Option<Vec<u8>> {
+pub fn protect(data: &[u8]) -> Option<Vec<u8>> {
     #[cfg(windows)]
     unsafe {
         let inp = Blob { cb: data.len() as u32, pb: data.as_ptr() as *mut u8 };
@@ -60,7 +60,7 @@ fn protect(data: &[u8]) -> Option<Vec<u8>> {
     None
 }
 
-fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
+pub fn unprotect(data: &[u8]) -> Option<Vec<u8>> {
     #[cfg(windows)]
     unsafe {
         let inp = Blob { cb: data.len() as u32, pb: data.as_ptr() as *mut u8 };

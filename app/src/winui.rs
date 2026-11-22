@@ -153,3 +153,52 @@ pub fn clipboard_text() -> String {
     #[allow(unreachable_code)]
     String::new()
 }
+
+#[repr(C)]
+struct SysTime {
+    year: u16,
+    month: u16,
+    dow: u16,
+    day: u16,
+    hour: u16,
+    min: u16,
+    sec: u16,
+    ms: u16,
+}
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetLocalTime(t: *mut SysTime);
+}
+
+/// Aktuelle Uhrzeit als "HH:MM".
+pub fn local_time_hm() -> String {
+    #[cfg(windows)]
+    unsafe {
+        let mut t = SysTime { year: 0, month: 0, dow: 0, day: 0, hour: 0, min: 0, sec: 0, ms: 0 };
+        GetLocalTime(&mut t);
+        return format!("{:02}:{:02}", t.hour, t.min);
+    }
+    #[allow(unreachable_code)]
+    String::new()
+}
+
+#[cfg(windows)]
+#[link(name = "user32")]
+extern "system" {
+    fn EnumDisplaySettingsW(device: *const u16, mode: i32, dm: *mut u8) -> i32;
+}
+
+/// Bildwiederholrate des Hauptbildschirms in Hz (0 = unbekannt).
+pub fn display_refresh_hz() -> u32 {
+    #[cfg(windows)]
+    unsafe {
+        let mut dm = [0u8; 220];
+        dm[68] = 220; // dmSize
+        if EnumDisplaySettingsW(std::ptr::null(), -1, dm.as_mut_ptr()) != 0 {
+            return u32::from_le_bytes([dm[184], dm[185], dm[186], dm[187]]);
+        }
+    }
+    0
+}

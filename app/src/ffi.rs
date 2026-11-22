@@ -110,6 +110,11 @@ extern "C" {
     pub fn ol_stream_set_input_ex(s: *mut OlStream, inp: *const OlInputEx);
     pub fn ol_stream_take_ctrl_events(s: *mut OlStream, out: *mut OlCtrlEvents) -> c_int;
     pub fn ol_stream_stop(s: *mut OlStream);
+    pub fn ol_record_start(s: *mut OlStream, path: *const c_char, err: *mut c_char, err_size: usize) -> c_int;
+    pub fn ol_record_stop(s: *mut OlStream);
+    pub fn ol_record_state(s: *mut OlStream) -> c_int;
+    pub fn ol_record_bytes(s: *mut OlStream) -> u64;
+    pub fn ol_record_selftest(inp: *const c_char, out: *const c_char, hevc: c_int, w: c_int, h: c_int, err: *mut c_char, err_size: usize) -> c_int;
 }
 
 pub fn cstr(buf: &[c_char]) -> String {
@@ -316,6 +321,26 @@ impl Stream {
 
     pub fn set_input(&self, buttons: u32, l2: u8, r2: u8, lx: i16, ly: i16, rx: i16, ry: i16) {
         unsafe { ol_stream_set_input(self.ptr, buttons, l2, r2, lx, ly, rx, ry) }
+    }
+}
+
+impl Stream {
+    /// Startet die Aufnahme als MP4. Beginnt beim nächsten Schlüsselbild.
+    pub fn record_start(&self, path: &str) -> Result<(), String> {
+        let c = CString::new(path).map_err(|e| e.to_string())?;
+        let mut err = [0 as c_char; 160];
+        let r = unsafe { ol_record_start(self.ptr, c.as_ptr(), err.as_mut_ptr(), err.len()) };
+        if r == 0 { Ok(()) } else { Err(cstr(&err)) }
+    }
+    pub fn record_stop(&self) {
+        unsafe { ol_record_stop(self.ptr) }
+    }
+    /// 0 aus, 1 wartet auf Schlüsselbild, 2 läuft
+    pub fn record_state(&self) -> i32 {
+        unsafe { ol_record_state(self.ptr) }
+    }
+    pub fn record_bytes(&self) -> u64 {
+        unsafe { ol_record_bytes(self.ptr) }
     }
 }
 

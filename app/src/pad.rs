@@ -31,6 +31,233 @@ extern "C" {
     fn SDL_GameControllerSendEffect(c: *mut c_void, data: *const c_void, size: c_int) -> c_int;
     fn SDL_GameControllerGetFirmwareVersion(c: *mut c_void) -> u16;
     fn SDL_JoystickCurrentPowerLevel(j: *mut c_void) -> c_int;
+    fn SDL_JoystickOpen(idx: c_int) -> *mut c_void;
+    fn SDL_JoystickClose(j: *mut c_void);
+    fn SDL_JoystickNumAxes(j: *mut c_void) -> c_int;
+    fn SDL_JoystickNumButtons(j: *mut c_void) -> c_int;
+    fn SDL_JoystickNumHats(j: *mut c_void) -> c_int;
+    fn SDL_JoystickGetAxis(j: *mut c_void, axis: c_int) -> i16;
+    fn SDL_JoystickGetButton(j: *mut c_void, button: c_int) -> u8;
+    fn SDL_JoystickGetHat(j: *mut c_void, hat: c_int) -> u8;
+    fn SDL_JoystickUpdate();
+    fn SDL_JoystickGetDeviceGUID(idx: c_int) -> SdlGuid;
+    fn SDL_JoystickGetGUIDString(g: SdlGuid, buf: *mut c_char, len: c_int);
+    fn SDL_GameControllerAddMapping(s: *const c_char) -> c_int;
+    fn SDL_RWFromFile(file: *const c_char, mode: *const c_char) -> *mut c_void;
+    fn SDL_GameControllerAddMappingsFromRW(rw: *mut c_void, freerw: c_int) -> c_int;
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct SdlGuid {
+    data: [u8; 16],
+}
+
+const EV_JOY_ADDED: u32 = 0x605;
+
+fn db_path() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var("APPDATA").ok()?).join("overlime").join("gamecontrollerdb.txt"))
+}
+
+fn guid_string(idx: c_int) -> String {
+    let mut buf = [0 as c_char; 64];
+    unsafe {
+        let g = SDL_JoystickGetDeviceGUID(idx);
+        SDL_JoystickGetGUIDString(g, buf.as_mut_ptr(), 64);
+        CStr::from_ptr(buf.as_ptr()).to_string_lossy().to_string()
+    }
+}
+
+fn device_name(idx: c_int) -> String {
+    unsafe {
+        let np = SDL_JoystickNameForIndex(idx);
+        if np.is_null() { "Controller".to_string() } else { CStr::from_ptr(np).to_string_lossy().replace(',', " ") }
+    }
+}
+
+/// Eigene Zuordnungen laden (Datei im OVERLIME-Ordner) und unbekannte Controller mit einer allgemeinen Belegung versehen.
+fn setup_mappings() {
+    unsafe {
+        if let Some(path) = db_path() {
+            if path.exists() {
+                if let (Ok(f), Ok(m)) = (CString::new(path.to_string_lossy().as_bytes()), CString::new("rb")) {
+                    let rw = SDL_RWFromFile(f.as_ptr(), m.as_ptr());
+                    if !rw.is_null() {
+                        SDL_GameControllerAddMappingsFromRW(rw, 1);
+                    }
+                }
+            }
+        }
+        for i in 0..SDL_NumJoysticks() {
+            automap(i);
+        }
+    }
+}
+
+/// Allgemeine Belegung für unbekannte Controller (Nachbauten). Passt oft, sonst hilft „Controller einrichten“.
+fn automap(idx: c_int) -> bool {
+    unsafe {
+        if SDL_IsGameController(idx) != 0 {
+            return false;
+        }
+        let j = SDL_JoystickOpen(idx);
+        if j.is_null() {
+            return false;
+        }
+        let (axes, buttons, hats) = (SDL_JoystickNumAxes(j), SDL_JoystickNumButtons(j), SDL_JoystickNumHats(j));
+        SDL_JoystickClose(j);
+        if axes < 2 || buttons < 6 {
+            return false;
+        }
+        let pad_part = if hats >= 1 { "dpup:h0.1,dpright:h0.2,dpdown:h0.4,dpleft:h0.8" } else { "dpup:b12,dpdown:b13,dpleft:b14,dpright:b15" };
+        let body = if axes >= 6 {
+            "a:b0,b:b1,x:b2,y:b3,back:b6,start:b7,leftshoulder:b4,rightshoulder:b5,leftstick:b8,rightstick:b9,leftx:a0,lefty:a1,rightx:a2,righty:a3,lefttrigger:a4,righttrigger:a5"
+        } else {
+            "a:b1,b:b2,x:b0,y:b3,leftshoulder:b4,rightshoulder:b5,lefttrigger:b6,righttrigger:b7,back:b8,start:b9,leftstick:b10,rightstick:b11,guide:b12,leftx:a0,lefty:a1,rightx:a2,righty:a3"
+        };
+        let line = format!("{},{} (allgemein),{},{},platform:Windows", guid_string(idx), device_name(idx), body, pad_part);
+        match CString::new(line) {
+            Ok(c) => SDL_GameControllerAddMapping(c.as_ptr()) >= 0,
+            Err(_) => false,
+        }
+    }
+}
+
+pub const WIZ_STEPS: &[(&str, &str)] = &[
+    ("a", "Kreuz (untere Taste)"),
+    ("b", "Kreis (rechte Taste)"),
+    ("x", "Quadrat (linke Taste)"),
+    ("y", "Dreieck (obere Taste)"),
+    ("leftshoulder", "L1 (linke Schultertaste)"),
+    ("rightshoulder", "R1 (rechte Schultertaste)"),
+    ("lefttrigger", "L2 (linken Trigger ganz durchdrücken)"),
+    ("righttrigger", "R2 (rechten Trigger ganz durchdrücken)"),
+    ("back", "Share / Create / Select"),
+    ("start", "Options / Start"),
+    ("leftstick", "L3 (linken Stick eindrücken)"),
+    ("rightstick", "R3 (rechten Stick eindrücken)"),
+    ("dpup", "Steuerkreuz nach oben"),
+    ("dpdown", "Steuerkreuz nach unten"),
+    ("dpleft", "Steuerkreuz nach links"),
+    ("dpright", "Steuerkreuz nach rechts"),
+    ("leftx", "Linken Stick ganz nach rechts"),
+    ("lefty", "Linken Stick ganz nach unten"),
+    ("rightx", "Rechten Stick ganz nach rechts"),
+    ("righty", "Rechten Stick ganz nach unten"),
+    ("guide", "PS- oder Home-Taste (kann übersprungen werden)"),
+];
+
+/// Assistent: der Nutzer drückt nacheinander die Tasten, daraus entsteht eine eigene Belegung.
+pub struct Wizard {
+    joy: *mut c_void,
+    pub name: String,
+    guid: String,
+    pub step: usize,
+    base_axes: Vec<i16>,
+    map: Vec<(String, String)>,
+    wait_idle: bool,
+    pub finished: bool,
+}
+
+impl Drop for Wizard {
+    fn drop(&mut self) {
+        if !self.joy.is_null() {
+            unsafe { SDL_JoystickClose(self.joy) };
+        }
+    }
+}
+
+impl Wizard {
+    pub fn prompt(&self) -> &'static str {
+        WIZ_STEPS.get(self.step).map(|s| s.1).unwrap_or("")
+    }
+
+    fn is_axis_step(&self) -> bool {
+        matches!(WIZ_STEPS.get(self.step).map(|s| s.0), Some("leftx" | "lefty" | "rightx" | "righty" | "lefttrigger" | "righttrigger"))
+    }
+
+    pub fn skip(&mut self) {
+        self.next();
+    }
+
+    fn next(&mut self) {
+        self.step += 1;
+        self.wait_idle = true;
+        if self.step >= WIZ_STEPS.len() {
+            self.finished = true;
+        }
+    }
+
+    /// Einmal pro Bild aufrufen.
+    pub fn poll(&mut self) {
+        if self.finished || self.joy.is_null() {
+            return;
+        }
+        unsafe {
+            SDL_JoystickUpdate();
+            let j = self.joy;
+            let (na, nb, nh) = (SDL_JoystickNumAxes(j), SDL_JoystickNumButtons(j), SDL_JoystickNumHats(j));
+            if self.base_axes.len() != na as usize {
+                self.base_axes = (0..na).map(|a| SDL_JoystickGetAxis(j, a)).collect();
+            }
+            // Erst warten, bis alles wieder in Ruhe ist
+            let any_button = (0..nb).any(|b| SDL_JoystickGetButton(j, b) != 0);
+            let any_hat = (0..nh).any(|h| SDL_JoystickGetHat(j, h) != 0);
+            let moved: Vec<(c_int, i32)> = (0..na).filter_map(|a| {
+                let d = SDL_JoystickGetAxis(j, a) as i32 - self.base_axes[a as usize] as i32;
+                if d.abs() > 16000 { Some((a, d)) } else { None }
+            }).collect();
+            if self.wait_idle {
+                if !any_button && !any_hat && moved.is_empty() {
+                    self.wait_idle = false;
+                }
+                return;
+            }
+            let key = WIZ_STEPS[self.step].0.to_string();
+            let axis_step = self.is_axis_step();
+            let mut found: Option<String> = None;
+            if axis_step {
+                if let Some((a, d)) = moved.first() {
+                    let trig = key.ends_with("trigger");
+                    found = Some(if !trig && *d < 0 { format!("a{}~", a) } else { format!("a{}", a) });
+                }
+            } else {
+                if let Some(b) = (0..nb).find(|b| SDL_JoystickGetButton(j, *b) != 0) {
+                    found = Some(format!("b{}", b));
+                } else if let Some((h, v)) = (0..nh).map(|h| (h, SDL_JoystickGetHat(j, h))).find(|(_, v)| *v != 0) {
+                    found = Some(format!("h{}.{}", h, v));
+                }
+            }
+            if let Some(v) = found {
+                self.map.push((key, v));
+                self.next();
+            }
+        }
+    }
+
+    /// Fertige Zuordnung speichern und sofort aktivieren.
+    pub fn finish(&self) -> Result<(), String> {
+        if self.map.len() < 8 {
+            return Err("Zu wenige Tasten erkannt. Bitte noch einmal versuchen.".into());
+        }
+        let body: Vec<String> = self.map.iter().map(|(k, v)| format!("{k}:{v}")).collect();
+        let line = format!("{},{},{},platform:Windows", self.guid, self.name, body.join(","));
+        let c = CString::new(line.clone()).map_err(|e| e.to_string())?;
+        if unsafe { SDL_GameControllerAddMapping(c.as_ptr()) } < 0 {
+            return Err("Die Belegung wurde nicht angenommen.".into());
+        }
+        if let Some(path) = db_path() {
+            if let Some(d) = path.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            // alte Zeile desselben Controllers ersetzen
+            let old = std::fs::read_to_string(&path).unwrap_or_default();
+            let mut keep: Vec<&str> = old.lines().filter(|l| !l.starts_with(&format!("{},", self.guid))).collect();
+            keep.push(&line);
+            let _ = std::fs::write(&path, keep.join("\n") + "\n");
+        }
+        Ok(())
+    }
 }
 
 /// Zusatzdaten für DualSense: Touchpad und Bewegung.
@@ -83,6 +310,7 @@ pub struct Pad {
     ctrl: *mut c_void,
     instance: i32,
     pub ds_intensity: u8,
+    init_rx: Option<std::sync::mpsc::Receiver<bool>>,
 }
 
 fn deadzone(v: i16) -> i16 {
@@ -94,27 +322,47 @@ fn deadzone(v: i16) -> i16 {
 }
 
 impl Pad {
+    /// Startet SDL im Hintergrund (das dauert ca. 0,2 s), damit das Fenster sofort erscheint.
     pub fn new() -> Self {
-        let mut ok = false;
-        unsafe {
-            let hints = [
-                ("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1"),
-                ("SDL_JOYSTICK_HIDAPI_PS5", "1"),
-                ("SDL_JOYSTICK_HIDAPI_PS4", "1"),
-                ("SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "1"),
-                ("SDL_JOYSTICK_HIDAPI_PS4_RUMBLE", "1"),
-            ];
-            for (k, v) in hints {
-                let (k, v) = (CString::new(k).unwrap(), CString::new(v).unwrap());
-                SDL_SetHint(k.as_ptr(), v.as_ptr());
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let mut ok = false;
+            unsafe {
+                let hints = [
+                    ("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1"),
+                    ("SDL_JOYSTICK_HIDAPI_PS5", "1"),
+                    ("SDL_JOYSTICK_HIDAPI_PS4", "1"),
+                    ("SDL_JOYSTICK_HIDAPI_PS5_RUMBLE", "1"),
+                    ("SDL_JOYSTICK_HIDAPI_PS4_RUMBLE", "1"),
+                ];
+                for (k, v) in hints {
+                    let (k, v) = (CString::new(k).unwrap(), CString::new(v).unwrap());
+                    SDL_SetHint(k.as_ptr(), v.as_ptr());
+                }
+                if SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) == 0 {
+                    ok = true;
+                    setup_mappings();
+                }
             }
-            if SDL_Init(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS) == 0 {
-                ok = true;
+            let _ = tx.send(ok);
+        });
+        Self { ok: false, ctrl: std::ptr::null_mut(), instance: -1, ds_intensity: 0, init_rx: Some(rx) }
+    }
+
+    /// Prüft, ob der Hintergrundstart fertig ist.
+    fn ensure_ready(&mut self) {
+        let Some(rx) = &self.init_rx else { return };
+        match rx.try_recv() {
+            Ok(ok) => {
+                self.init_rx = None;
+                self.ok = ok;
+                if ok {
+                    self.open_any();
+                }
             }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(_) => self.init_rx = None,
         }
-        let mut p = Self { ok, ctrl: std::ptr::null_mut(), instance: -1, ds_intensity: 0 };
-        p.open_any();
-        p
     }
 
     fn open_any(&mut self) {
@@ -150,6 +398,7 @@ impl Pad {
     }
 
     fn pump(&mut self) {
+        self.ensure_ready();
         if !self.ok {
             return;
         }
@@ -158,7 +407,11 @@ impl Pad {
             while SDL_PollEvent(ev.as_mut_ptr()) != 0 {
                 let ty = (ev[0] & 0xffff_ffff) as u32;
                 let which = (ev[0] >> 32) as u32 as i32;
-                if ty == EV_ADDED && self.ctrl.is_null() {
+                if ty == EV_JOY_ADDED && self.ctrl.is_null() {
+                    if automap(which) {
+                        self.open(which);
+                    }
+                } else if ty == EV_ADDED && self.ctrl.is_null() {
                     self.open(which);
                 } else if ty == EV_REMOVED && which == self.instance {
                     SDL_GameControllerClose(self.ctrl);
@@ -387,7 +640,22 @@ impl Pad {
             self.ctrl = std::ptr::null_mut();
             self.instance = -1;
         }
+        setup_mappings();
         self.pump();
         self.open_any();
+    }
+
+    /// Startet den Einrichtungs-Assistenten für das Gerät mit diesem Index.
+    pub fn wizard_start(&self, idx: i32) -> Option<Wizard> {
+        if !self.ok {
+            return None;
+        }
+        unsafe {
+            let j = SDL_JoystickOpen(idx);
+            if j.is_null() {
+                return None;
+            }
+            Some(Wizard { joy: j, name: device_name(idx), guid: guid_string(idx), step: 0, base_axes: Vec::new(), map: Vec::new(), wait_idle: true, finished: false })
+        }
     }
 }

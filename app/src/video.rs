@@ -1,10 +1,13 @@
-//! Videodarstellung auf der Grafikkarte: NV12 -> RGB (BT.709), Hochskalieren und
-//! Schärfen (CAS, wie bei AMD FidelityFX). Die CPU muss kein Bild mehr umrechnen.
+//! Videodarstellung auf der Grafikkarte: NV12 -> RGB (BT.709), Hochskalieren (bikubisch) und
+//! Schärfen (CAS, wie bei AMD FidelityFX). Optional (experimentell): Zwischenbilder durch
+//! Bewegungsabschätzung, damit 60 FPS auf einem 120-Hz-Bildschirm flüssiger wirken.
+//! Die CPU muss kein Bild mehr umrechnen.
 use eframe::egui;
 use eframe::egui_glow;
 use eframe::glow::{self, HasContext};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub struct FrameData {
     pub w: usize,
@@ -13,21 +16,38 @@ pub struct FrameData {
     pub dirty: bool,
     pub sharp: f32,
     pub nearest: bool,
+    /// Zwischenbilder berechnen (experimentell)
+    pub interp: bool,
+    /// nur für Tests: feste Position zwischen zwei Bildern (0..1)
+    pub force_t: Option<f32>,
+}
+
+struct Interp {
+    fbo: glow::Framebuffer,
+    mv_tex: glow::Texture,
+    rgb_tex: glow::Texture,
+    mvw: i32,
+    mvh: i32,
+    w: i32,
+    h: i32,
 }
 
 struct GlState {
-    program: glow::Program,
+    prog: glow::Program,
+    prog_rgb: glow::Program,
+    prog_me: glow::Program,
+    prog_ip: glow::Program,
     vao: glow::VertexArray,
-    tex_y: glow::Texture,
-    tex_uv: glow::Texture,
+    ty: [glow::Texture; 2],
+    tuv: [glow::Texture; 2],
+    cur: usize,
     w: usize,
     h: usize,
-    u_y: Option<glow::UniformLocation>,
-    u_uv: Option<glow::UniformLocation>,
-    u_out: Option<glow::UniformLocation>,
-    u_sharp: Option<glow::UniformLocation>,
-    u_src: Option<glow::UniformLocation>,
-    u_cubic: Option<glow::UniformLocation>,
+    have_prev: bool,
+    interp: Option<Interp>,
+    interp_failed: bool,
+    arrival: Instant,
+    interval: f32,
 }
 
 pub struct VideoGpu {
@@ -38,14 +58,49 @@ pub struct VideoGpu {
 }
 
 const FRAG: &str = r#"
-uniform sampler2D u_y;
-uniform sampler2D u_uv;
 uniform vec2 u_out;
 uniform float u_sharp;
 uniform vec2 u_src;
 uniform float u_cubic;
 in vec2 v_uv;
 out vec4 o_color;
+
+#ifdef RGB_SRC
+uniform sampler2D u_rgb;
+
+vec3 yuv(vec2 uv) {
+    return texture(u_rgb, uv).rgb;
+}
+
+// Catmull-Rom (bikubisch) auf RGB
+vec3 yuv_cubic(vec2 uv) {
+    vec2 pos = uv * u_src;
+    vec2 c = floor(pos - 0.5) + 0.5;
+    vec2 f = pos - c;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 o12 = w2 / w12;
+    vec2 t0 = (c - 1.0) / u_src;
+    vec2 t3 = (c + 2.0) / u_src;
+    vec2 t12 = (c + o12) / u_src;
+    vec3 r = vec3(0.0);
+    r += texture(u_rgb, vec2(t0.x, t0.y)).rgb * w0.x * w0.y;
+    r += texture(u_rgb, vec2(t12.x, t0.y)).rgb * w12.x * w0.y;
+    r += texture(u_rgb, vec2(t3.x, t0.y)).rgb * w3.x * w0.y;
+    r += texture(u_rgb, vec2(t0.x, t12.y)).rgb * w0.x * w12.y;
+    r += texture(u_rgb, vec2(t12.x, t12.y)).rgb * w12.x * w12.y;
+    r += texture(u_rgb, vec2(t3.x, t12.y)).rgb * w3.x * w12.y;
+    r += texture(u_rgb, vec2(t0.x, t3.y)).rgb * w0.x * w3.y;
+    r += texture(u_rgb, vec2(t12.x, t3.y)).rgb * w12.x * w3.y;
+    r += texture(u_rgb, vec2(t3.x, t3.y)).rgb * w3.x * w3.y;
+    return clamp(r, 0.0, 1.0);
+}
+#else
+uniform sampler2D u_y;
+uniform sampler2D u_uv;
 
 vec3 yuv(vec2 uv) {
     float y = texture(u_y, uv).r;
@@ -89,6 +144,7 @@ vec3 yuv_cubic(vec2 uv) {
     c = (c - 128.0 / 255.0) * (255.0 / 224.0);
     return clamp(vec3(y + 1.5748 * c.y, y - 0.1873 * c.x - 0.4681 * c.y, y + 1.8556 * c.x), 0.0, 1.0);
 }
+#endif
 
 void main() {
     vec2 d = 1.0 / u_out;
@@ -109,6 +165,89 @@ void main() {
 }
 "#;
 
+// Bewegungsabschätzung: je 8x8-Block der beste Bewegungsvektor (Vorbild -> aktuelles Bild).
+const FRAG_ME: &str = r#"
+uniform sampler2D cur_y;
+uniform sampler2D prev_y;
+uniform vec2 u_src;
+in vec2 v_uv;
+out vec4 o_color;
+
+float sad(vec2 center, vec2 mv) {
+    float s = 0.0;
+    for (int j = 0; j < 4; j++) {
+        for (int i = 0; i < 4; i++) {
+            vec2 o = vec2(float(i) * 5.0 - 7.5, float(j) * 5.0 - 7.5);
+            float a = texture(cur_y, (center + o) / u_src).r;
+            float b = texture(prev_y, (center + o - mv) / u_src).r;
+            s += abs(a - b);
+        }
+    }
+    return s;
+}
+
+void main() {
+    vec2 center = v_uv * u_src;
+    float best = sad(center, vec2(0.0));
+    vec2 bmv = vec2(0.0);
+    // grob: -24..24 in Schritten von 4 Pixeln
+    for (int cy = -24; cy <= 24; cy += 4) {
+        for (int cx = -24; cx <= 24; cx += 4) {
+            vec2 mv = vec2(float(cx), float(cy));
+            float s = sad(center, mv) + 0.002 * (abs(mv.x) + abs(mv.y));
+            if (s < best) {
+                best = s;
+                bmv = mv;
+            }
+        }
+    }
+    // fein: +-3 Pixel um den besten Wert
+    vec2 base = bmv;
+    for (int cy = -3; cy <= 3; cy++) {
+        for (int cx = -3; cx <= 3; cx++) {
+            vec2 mv = base + vec2(float(cx), float(cy));
+            float s = sad(center, mv) + 0.002 * (abs(mv.x) + abs(mv.y));
+            if (s < best) {
+                best = s;
+                bmv = mv;
+            }
+        }
+    }
+    o_color = vec4(bmv / 128.0 + 0.5, 0.0, 1.0);
+}
+"#;
+
+// Zwischenbild an Position u_t (0 = voriges, 1 = aktuelles Bild), mit Rückfall auf einfaches Überblenden.
+const FRAG_IP: &str = r#"
+uniform sampler2D cur_y;
+uniform sampler2D cur_uv;
+uniform sampler2D prev_y;
+uniform sampler2D prev_uv;
+uniform sampler2D mvtex;
+uniform vec2 u_src;
+uniform float u_t;
+in vec2 v_uv;
+out vec4 o_color;
+
+vec3 conv(float y, vec2 c) {
+    y = (y - 16.0 / 255.0) * (255.0 / 219.0);
+    c = (c - 128.0 / 255.0) * (255.0 / 224.0);
+    return clamp(vec3(y + 1.5748 * c.y, y - 0.1873 * c.x - 0.4681 * c.y, y + 1.8556 * c.x), 0.0, 1.0);
+}
+vec3 samp_cur(vec2 uv) { return conv(texture(cur_y, uv).r, texture(cur_uv, uv).rg); }
+vec3 samp_prev(vec2 uv) { return conv(texture(prev_y, uv).r, texture(prev_uv, uv).rg); }
+
+void main() {
+    vec2 mv = (texture(mvtex, v_uv).rg - 0.5) * 128.0;
+    vec3 a = samp_prev(v_uv - mv * u_t / u_src);
+    vec3 c = samp_cur(v_uv + mv * (1.0 - u_t) / u_src);
+    vec3 mc = mix(a, c, u_t);
+    vec3 plain = mix(samp_prev(v_uv), samp_cur(v_uv), u_t);
+    float k = smoothstep(0.10, 0.28, length(a - c));
+    o_color = vec4(mix(mc, plain, k), 1.0);
+}
+"#;
+
 const VERT: &str = r#"
 out vec2 v_uv;
 void main() {
@@ -118,10 +257,20 @@ void main() {
 }
 "#;
 
+// Beim Zeichnen in eine Textur steht Zeile 0 unten: hier nicht spiegeln, damit die Zeilenfolge gleich bleibt.
+const VERT_FBO: &str = r#"
+out vec2 v_uv;
+void main() {
+    vec2 p = vec2(float((gl_VertexID << 1) & 2), float(gl_VertexID & 2));
+    v_uv = p;
+    gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}
+"#;
+
 impl VideoGpu {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            frame: Mutex::new(FrameData { w: 0, h: 0, nv12: Vec::new(), dirty: false, sharp: 0.0, nearest: false }),
+            frame: Mutex::new(FrameData { w: 0, h: 0, nv12: Vec::new(), dirty: false, sharp: 0.0, nearest: false, interp: false, force_t: None }),
             gl: Mutex::new(None),
             failed: AtomicBool::new(false),
             error: Mutex::new(String::new()),
@@ -170,50 +319,161 @@ impl VideoGpu {
         if f.w == 0 || f.h == 0 {
             return;
         }
+        let mut new_frame = false;
         unsafe {
             let cw = (f.w + 1) / 2;
             let ch = (f.h + 1) / 2;
             gl.pixel_store_i32(glow::UNPACK_ALIGNMENT, 1);
             if s.w != f.w || s.h != f.h {
-                gl.bind_texture(glow::TEXTURE_2D, Some(s.tex_y));
-                gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::R8 as i32, f.w as i32, f.h as i32, 0, glow::RED, glow::UNSIGNED_BYTE, None);
-                gl.bind_texture(glow::TEXTURE_2D, Some(s.tex_uv));
-                gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RG8 as i32, cw as i32, ch as i32, 0, glow::RG, glow::UNSIGNED_BYTE, None);
+                for i in 0..2 {
+                    gl.bind_texture(glow::TEXTURE_2D, Some(s.ty[i]));
+                    gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::R8 as i32, f.w as i32, f.h as i32, 0, glow::RED, glow::UNSIGNED_BYTE, None);
+                    gl.bind_texture(glow::TEXTURE_2D, Some(s.tuv[i]));
+                    gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RG8 as i32, cw as i32, ch as i32, 0, glow::RG, glow::UNSIGNED_BYTE, None);
+                }
                 s.w = f.w;
                 s.h = f.h;
+                s.have_prev = false;
                 f.dirty = true;
             }
             if f.dirty {
                 let ysz = f.w * f.h;
                 let uvsz = cw * 2 * ch;
                 if f.nv12.len() >= ysz + uvsz {
-                    gl.bind_texture(glow::TEXTURE_2D, Some(s.tex_y));
-                    gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, f.w as i32, f.h as i32, glow::RED, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(&f.nv12[..ysz]));
-                    gl.bind_texture(glow::TEXTURE_2D, Some(s.tex_uv));
-                    gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, cw as i32, ch as i32, glow::RG, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(&f.nv12[ysz..ysz + uvsz]));
+                    // Zwei Texturpaare im Wechsel: das neue Bild kommt in das ältere Paar, das bisherige bleibt als „voriges Bild“
+                    let first = !s.have_prev;
+                    let targets: Vec<usize> = if first { vec![0, 1] } else { vec![1 - s.cur] };
+                    for idx in targets {
+                        gl.bind_texture(glow::TEXTURE_2D, Some(s.ty[idx]));
+                        gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, f.w as i32, f.h as i32, glow::RED, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(&f.nv12[..ysz]));
+                        gl.bind_texture(glow::TEXTURE_2D, Some(s.tuv[idx]));
+                        gl.tex_sub_image_2d(glow::TEXTURE_2D, 0, 0, 0, cw as i32, ch as i32, glow::RG, glow::UNSIGNED_BYTE, glow::PixelUnpackData::Slice(&f.nv12[ysz..ysz + uvsz]));
+                    }
+                    if first {
+                        s.cur = 0;
+                        s.have_prev = true;
+                    } else {
+                        s.cur = 1 - s.cur;
+                    }
+                    let now = Instant::now();
+                    let dt = now.duration_since(s.arrival).as_secs_f32();
+                    if dt > 0.004 && dt < 0.1 {
+                        s.interval = s.interval * 0.9 + dt * 0.1;
+                    }
+                    s.arrival = now;
+                    new_frame = true;
                 }
                 f.dirty = false;
             }
+            let prev = 1 - s.cur;
             let filter = if f.nearest { glow::NEAREST } else { glow::LINEAR } as i32;
-            for t in [s.tex_y, s.tex_uv] {
+            for t in [s.ty[0], s.ty[1], s.tuv[0], s.tuv[1]] {
                 gl.bind_texture(glow::TEXTURE_2D, Some(t));
                 gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filter);
                 gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter);
             }
-            gl.use_program(Some(s.program));
-            gl.bind_vertex_array(Some(s.vao));
-            gl.active_texture(glow::TEXTURE0);
-            gl.bind_texture(glow::TEXTURE_2D, Some(s.tex_y));
-            gl.active_texture(glow::TEXTURE1);
-            gl.bind_texture(glow::TEXTURE_2D, Some(s.tex_uv));
-            gl.uniform_1_i32(s.u_y.as_ref(), 0);
-            gl.uniform_1_i32(s.u_uv.as_ref(), 1);
-            gl.uniform_2_f32(s.u_out.as_ref(), out_w.max(1.0), out_h.max(1.0));
-            gl.uniform_1_f32(s.u_sharp.as_ref(), if f.nearest { 0.0 } else { f.sharp });
-            gl.uniform_2_f32(s.u_src.as_ref(), f.w as f32, f.h as f32);
-            // Bikubisch nur beim Hochskalieren mit Schärfe (Scharf/Ultra)
+
+            // ---- Zwischenbilder (experimentell) ----
+            let mut use_rgb = false;
+            if f.interp && !s.interp_failed && !f.nearest {
+                match s.ensure_interp(gl, f.w as i32, f.h as i32) {
+                    Ok(()) => {
+                        let ip = s.interp.as_ref().unwrap();
+                        // Zustand merken
+                        let prev_fb = gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING);
+                        let mut vp = [0i32; 4];
+                        gl.get_parameter_i32_slice(glow::VIEWPORT, &mut vp);
+                        let scissor = gl.is_enabled(glow::SCISSOR_TEST);
+                        let blend = gl.is_enabled(glow::BLEND);
+                        gl.disable(glow::SCISSOR_TEST);
+                        gl.disable(glow::BLEND);
+                        gl.bind_vertex_array(Some(s.vao));
+                        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(ip.fbo));
+                        let bind = |unit: u32, tex: glow::Texture| {
+                            gl.active_texture(glow::TEXTURE0 + unit);
+                            gl.bind_texture(glow::TEXTURE_2D, Some(tex));
+                        };
+                        // Bewegungsabschätzung nur bei einem neuen Bild
+                        if new_frame {
+                            gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(ip.mv_tex), 0);
+                            gl.viewport(0, 0, ip.mvw, ip.mvh);
+                            gl.use_program(Some(s.prog_me));
+                            bind(0, s.ty[s.cur]);
+                            bind(1, s.ty[prev]);
+                            gl.uniform_1_i32(gl.get_uniform_location(s.prog_me, "cur_y").as_ref(), 0);
+                            gl.uniform_1_i32(gl.get_uniform_location(s.prog_me, "prev_y").as_ref(), 1);
+                            gl.uniform_2_f32(gl.get_uniform_location(s.prog_me, "u_src").as_ref(), f.w as f32, f.h as f32);
+                            gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                        }
+                        // Zwischenbild berechnen
+                        let t = match f.force_t {
+                            Some(t) => t,
+                            None => (s.arrival.elapsed().as_secs_f32() / s.interval.max(0.004)).clamp(0.0, 1.0),
+                        };
+                        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(ip.rgb_tex), 0);
+                        gl.viewport(0, 0, ip.w, ip.h);
+                        gl.use_program(Some(s.prog_ip));
+                        bind(0, s.ty[s.cur]);
+                        bind(1, s.tuv[s.cur]);
+                        bind(2, s.ty[prev]);
+                        bind(3, s.tuv[prev]);
+                        bind(4, ip.mv_tex);
+                        for (i, n) in ["cur_y", "cur_uv", "prev_y", "prev_uv", "mvtex"].iter().enumerate() {
+                            gl.uniform_1_i32(gl.get_uniform_location(s.prog_ip, n).as_ref(), i as i32);
+                        }
+                        gl.uniform_2_f32(gl.get_uniform_location(s.prog_ip, "u_src").as_ref(), f.w as f32, f.h as f32);
+                        gl.uniform_1_f32(gl.get_uniform_location(s.prog_ip, "u_t").as_ref(), t);
+                        gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                        // Zustand zurück
+                        let fb = std::num::NonZeroU32::new(prev_fb as u32).map(glow::NativeFramebuffer);
+                        gl.bind_framebuffer(glow::FRAMEBUFFER, fb);
+                        gl.viewport(vp[0], vp[1], vp[2], vp[3]);
+                        if scissor {
+                            gl.enable(glow::SCISSOR_TEST);
+                        }
+                        if blend {
+                            gl.enable(glow::BLEND);
+                        }
+                        gl.active_texture(glow::TEXTURE0);
+                        use_rgb = true;
+                    }
+                    Err(e) => {
+                        s.interp_failed = true;
+                        *self.error.lock().unwrap() = e;
+                    }
+                }
+            }
+
+            // ---- Ausgabe ----
+            let sharp = if f.nearest { 0.0 } else { f.sharp };
             let cubic = !f.nearest && f.sharp > 0.001 && out_w > f.w as f32 * 1.02;
-            gl.uniform_1_f32(s.u_cubic.as_ref(), if cubic { 1.0 } else { 0.0 });
+            gl.bind_vertex_array(Some(s.vao));
+            if use_rgb {
+                let ip = s.interp.as_ref().unwrap();
+                gl.bind_texture(glow::TEXTURE_2D, Some(ip.rgb_tex));
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::LINEAR as i32);
+                gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::LINEAR as i32);
+                gl.use_program(Some(s.prog_rgb));
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(ip.rgb_tex));
+                gl.uniform_1_i32(gl.get_uniform_location(s.prog_rgb, "u_rgb").as_ref(), 0);
+                gl.uniform_2_f32(gl.get_uniform_location(s.prog_rgb, "u_out").as_ref(), out_w.max(1.0), out_h.max(1.0));
+                gl.uniform_1_f32(gl.get_uniform_location(s.prog_rgb, "u_sharp").as_ref(), sharp);
+                gl.uniform_2_f32(gl.get_uniform_location(s.prog_rgb, "u_src").as_ref(), f.w as f32, f.h as f32);
+                gl.uniform_1_f32(gl.get_uniform_location(s.prog_rgb, "u_cubic").as_ref(), if cubic { 1.0 } else { 0.0 });
+            } else {
+                gl.use_program(Some(s.prog));
+                gl.active_texture(glow::TEXTURE0);
+                gl.bind_texture(glow::TEXTURE_2D, Some(s.ty[s.cur]));
+                gl.active_texture(glow::TEXTURE1);
+                gl.bind_texture(glow::TEXTURE_2D, Some(s.tuv[s.cur]));
+                gl.uniform_1_i32(gl.get_uniform_location(s.prog, "u_y").as_ref(), 0);
+                gl.uniform_1_i32(gl.get_uniform_location(s.prog, "u_uv").as_ref(), 1);
+                gl.uniform_2_f32(gl.get_uniform_location(s.prog, "u_out").as_ref(), out_w.max(1.0), out_h.max(1.0));
+                gl.uniform_1_f32(gl.get_uniform_location(s.prog, "u_sharp").as_ref(), sharp);
+                gl.uniform_2_f32(gl.get_uniform_location(s.prog, "u_src").as_ref(), f.w as f32, f.h as f32);
+                gl.uniform_1_f32(gl.get_uniform_location(s.prog, "u_cubic").as_ref(), if cubic { 1.0 } else { 0.0 });
+            }
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_vertex_array(None);
@@ -222,31 +482,81 @@ impl VideoGpu {
 }
 
 impl GlState {
+    unsafe fn ensure_interp(&mut self, gl: &glow::Context, w: i32, h: i32) -> Result<(), String> {
+        if let Some(ip) = &self.interp {
+            if ip.w == w && ip.h == h {
+                return Ok(());
+            }
+            gl.delete_framebuffer(ip.fbo);
+            gl.delete_texture(ip.mv_tex);
+            gl.delete_texture(ip.rgb_tex);
+            self.interp = None;
+        }
+        let mk = |gl: &glow::Context, tw: i32, th: i32, filter: u32| -> Result<glow::Texture, String> {
+            let t = gl.create_texture()?;
+            gl.bind_texture(glow::TEXTURE_2D, Some(t));
+            gl.tex_image_2d(glow::TEXTURE_2D, 0, glow::RGBA8 as i32, tw, th, 0, glow::RGBA, glow::UNSIGNED_BYTE, None);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filter as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+            gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
+            Ok(t)
+        };
+        let (mvw, mvh) = ((w + 7) / 8, (h + 7) / 8);
+        let mv_tex = mk(gl, mvw, mvh, glow::NEAREST)?;
+        let rgb_tex = mk(gl, w, h, glow::LINEAR)?;
+        let fbo = gl.create_framebuffer()?;
+        // Prüfen, ob die Grafikkarte das Zeichnen in diese Texturen erlaubt
+        let prev_fb = gl.get_parameter_i32(glow::DRAW_FRAMEBUFFER_BINDING);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, Some(fbo));
+        gl.framebuffer_texture_2d(glow::FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(rgb_tex), 0);
+        let ok = gl.check_framebuffer_status(glow::FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;
+        let fb = std::num::NonZeroU32::new(prev_fb as u32).map(glow::NativeFramebuffer);
+        gl.bind_framebuffer(glow::FRAMEBUFFER, fb);
+        if !ok {
+            return Err("Zwischenbilder: Grafikkarte unterstützt das Zeichnen in Texturen nicht".into());
+        }
+        self.interp = Some(Interp { fbo, mv_tex, rgb_tex, mvw, mvh, w, h });
+        Ok(())
+    }
+
     unsafe fn new(gl: &glow::Context) -> Result<Self, String> {
         let v = gl.version();
-        let header = if v.major > 3 || (v.major == 3 && v.minor >= 3) { "#version 330 core\n" } else { "#version 140\n" };
-        let compile = |kind: u32, src: &str| -> Result<glow::Shader, String> {
-            let sh = gl.create_shader(kind)?;
-            gl.shader_source(sh, &format!("{header}{src}"));
-            gl.compile_shader(sh);
-            if !gl.get_shader_compile_status(sh) {
-                return Err(format!("Shader: {}", gl.get_shader_info_log(sh)));
+        let ver = if v.major > 3 || (v.major == 3 && v.minor >= 3) { "#version 330 core\n" } else { "#version 140\n" };
+        let build = |extra: &str, vsrc: &str, fsrc: &str| -> Result<glow::Program, String> {
+            let compile = |kind: u32, src: &str| -> Result<glow::Shader, String> {
+                let sh = gl.create_shader(kind)?;
+                gl.shader_source(sh, &format!("{ver}{extra}{src}"));
+                gl.compile_shader(sh);
+                if !gl.get_shader_compile_status(sh) {
+                    return Err(format!("Shader: {}", gl.get_shader_info_log(sh)));
+                }
+                Ok(sh)
+            };
+            let vs = compile(glow::VERTEX_SHADER, vsrc)?;
+            let fs = compile(glow::FRAGMENT_SHADER, fsrc)?;
+            let program = gl.create_program()?;
+            gl.attach_shader(program, vs);
+            gl.attach_shader(program, fs);
+            gl.link_program(program);
+            if !gl.get_program_link_status(program) {
+                return Err(format!("Programm: {}", gl.get_program_info_log(program)));
             }
-            Ok(sh)
+            gl.detach_shader(program, vs);
+            gl.detach_shader(program, fs);
+            gl.delete_shader(vs);
+            gl.delete_shader(fs);
+            Ok(program)
         };
-        let vs = compile(glow::VERTEX_SHADER, VERT)?;
-        let fs = compile(glow::FRAGMENT_SHADER, FRAG)?;
-        let program = gl.create_program()?;
-        gl.attach_shader(program, vs);
-        gl.attach_shader(program, fs);
-        gl.link_program(program);
-        if !gl.get_program_link_status(program) {
-            return Err(format!("Programm: {}", gl.get_program_info_log(program)));
-        }
-        gl.detach_shader(program, vs);
-        gl.detach_shader(program, fs);
-        gl.delete_shader(vs);
-        gl.delete_shader(fs);
+        let prog = build("", VERT, FRAG)?;
+        // Die Zwischenbild-Teile sind optional: schlagen sie fehl, läuft das Video trotzdem normal.
+        let prog_rgb = build("#define RGB_SRC 1\n", VERT, FRAG);
+        let prog_me = build("", VERT_FBO, FRAG_ME);
+        let prog_ip = build("", VERT_FBO, FRAG_IP);
+        let (prog_rgb, prog_me, prog_ip, interp_failed) = match (prog_rgb, prog_me, prog_ip) {
+            (Ok(a), Ok(b), Ok(c)) => (a, b, c, false),
+            _ => (prog, prog, prog, true),
+        };
         let vao = gl.create_vertex_array()?;
         let mk = |gl: &glow::Context| -> Result<glow::Texture, String> {
             let t = gl.create_texture()?;
@@ -255,21 +565,22 @@ impl GlState {
             gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
             Ok(t)
         };
-        let tex_y = mk(gl)?;
-        let tex_uv = mk(gl)?;
         Ok(GlState {
-            program,
+            prog,
+            prog_rgb,
+            prog_me,
+            prog_ip,
             vao,
-            tex_y,
-            tex_uv,
+            ty: [mk(gl)?, mk(gl)?],
+            tuv: [mk(gl)?, mk(gl)?],
+            cur: 0,
             w: 0,
             h: 0,
-            u_y: gl.get_uniform_location(program, "u_y"),
-            u_uv: gl.get_uniform_location(program, "u_uv"),
-            u_out: gl.get_uniform_location(program, "u_out"),
-            u_sharp: gl.get_uniform_location(program, "u_sharp"),
-            u_src: gl.get_uniform_location(program, "u_src"),
-            u_cubic: gl.get_uniform_location(program, "u_cubic"),
+            have_prev: false,
+            interp: None,
+            interp_failed,
+            arrival: Instant::now(),
+            interval: 1.0 / 60.0,
         })
     }
 }
@@ -364,6 +675,29 @@ pub fn test_pattern_nv12(w: usize, h: usize) -> Vec<u8> {
             let o = w * h + cy * cw * 2 + cx * 2;
             out[o] = (128.0 + u * 224.0 / 255.0).clamp(16.0, 240.0) as u8;
             out[o + 1] = (128.0 + v * 224.0 / 255.0).clamp(16.0, 240.0) as u8;
+        }
+    }
+    out
+}
+
+/// Verschiebt ein NV12-Bild waagerecht (zyklisch) um dx Pixel (nur für den Zwischenbild-Test).
+pub fn shift_nv12(src: &[u8], w: usize, h: usize, dx: usize) -> Vec<u8> {
+    let mut out = src.to_vec();
+    let dx = dx % w;
+    for y in 0..h {
+        for x in 0..w {
+            out[y * w + (x + dx) % w] = src[y * w + x];
+        }
+    }
+    let cw = (w + 1) / 2;
+    let ch = (h + 1) / 2;
+    let base = w * h;
+    let dxc = (dx / 2) % cw;
+    for y in 0..ch {
+        for x in 0..cw {
+            let (a, b) = (base + y * cw * 2 + x * 2, base + y * cw * 2 + ((x + dxc) % cw) * 2);
+            out[b] = src[a];
+            out[b + 1] = src[a + 1];
         }
     }
     out

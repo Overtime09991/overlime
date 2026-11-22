@@ -14,6 +14,61 @@ use windows_sys::Win32::UI::WindowsAndMessaging::{DispatchMessageW, GetMessageW,
 
 static BUSY: AtomicBool = AtomicBool::new(false);
 static LAST_MIN: AtomicU32 = AtomicU32::new(u32::MAX);
+static POLL_BUSY: AtomicBool = AtomicBool::new(false);
+static LAST_POLL: AtomicU32 = AtomicU32::new(0);
+static READY: Mutex<Option<std::collections::HashMap<String, bool>>> = Mutex::new(None);
+
+/// Zeigt eine leise Windows-Benachrichtigung (ohne Ton). Texte laufen über Umgebungsvariablen, nicht über die Befehlszeile.
+pub fn toast(title: &str, body: &str) {
+    use std::os::windows::process::CommandExt;
+    let clean = |s: &str| -> String { s.chars().filter(|c| c.is_alphanumeric() || " .,-_()äöüÄÖÜß".contains(*c)).take(80).collect() };
+    let script = "$ErrorActionPreference='Stop'; \
+[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] | Out-Null; \
+$x=[Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02); \
+$n=$x.GetElementsByTagName('text'); \
+$n.Item(0).AppendChild($x.CreateTextNode($env:OL_T)) | Out-Null; \
+$n.Item(1).AppendChild($x.CreateTextNode($env:OL_B)) | Out-Null; \
+$a=$x.CreateElement('audio'); $a.SetAttribute('silent','true'); $x.DocumentElement.AppendChild($a) | Out-Null; \
+$toast=[Windows.UI.Notifications.ToastNotification]::new($x); \
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\\WindowsPowerShell\\v1.0\\powershell.exe').Show($toast)";
+    let _ = Command::new("powershell")
+        .args(["-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command", script])
+        .env("OL_T", clean(title))
+        .env("OL_B", clean(body))
+        .creation_flags(0x0800_0000)
+        .spawn();
+}
+
+/// Alle 20 Sekunden prüfen, ob eine gekoppelte Konsole bereit geworden ist, und dann einen Hinweis zeigen.
+fn check_ready() {
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as u32).unwrap_or(0);
+    if now.wrapping_sub(LAST_POLL.load(Ordering::Relaxed)) < 20 || POLL_BUSY.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    LAST_POLL.store(now, Ordering::Relaxed);
+    std::thread::spawn(|| {
+        let s = crate::settings::Settings::load();
+        if s.notify_ready {
+            let paired = crate::store::load();
+            if !paired.is_empty() {
+                let list = crate::discovery::discover(None, Duration::from_millis(1500)).unwrap_or_default();
+                let mut g = READY.lock().unwrap();
+                let prev = g.get_or_insert_with(std::collections::HashMap::new);
+                for c in list {
+                    if !paired.iter().any(|p| p.console_id == c.id) {
+                        continue;
+                    }
+                    let ready = c.state == crate::discovery::State::Ready;
+                    let was = prev.insert(c.id.clone(), ready);
+                    if ready && was == Some(false) {
+                        toast("OVERLIME", &format!("{} ist bereit. Klick auf das Symbol zum Verbinden.", c.name));
+                    }
+                }
+            }
+        }
+        POLL_BUSY.store(false, Ordering::SeqCst);
+    });
+}
 
 #[repr(C)]
 struct SysTime {
@@ -135,6 +190,7 @@ fn run_wake_and_connect() {
 
 unsafe extern "system" fn timer_proc(_: *mut std::ffi::c_void, _: u32, _: usize, _: u32) {
     check_schedule();
+    check_ready();
     let s = STATUS.lock().map(|g| g.clone()).unwrap_or_default();
     let tip = if s.is_empty() { IDLE_TIP.to_string() } else { format!("OVERLIME – {s}") };
     TRAY.with(|t| {
@@ -198,32 +254,53 @@ pub fn run() {
 }
 
 // ---------------- Autostart mit Windows ----------------
+// Direkt über die Registrierung, ohne ein Programm (reg.exe) zu starten, damit kein Konsolenfenster aufblitzt.
 
-const RUN_KEY: &str = "HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run";
+#[link(name = "advapi32")]
+extern "system" {
+    fn RegOpenKeyExW(h: isize, sub: *const u16, opts: u32, sam: u32, out: *mut isize) -> i32;
+    fn RegCloseKey(h: isize) -> i32;
+    fn RegQueryValueExW(h: isize, name: *const u16, res: *mut u32, ty: *mut u32, data: *mut u8, len: *mut u32) -> i32;
+    fn RegSetValueExW(h: isize, name: *const u16, res: u32, ty: u32, data: *const u8, len: u32) -> i32;
+    fn RegDeleteValueW(h: isize, name: *const u16) -> i32;
+}
+
+const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
+const RUN_NAME: &str = "OVERLIME_TRAY";
+
+fn wide(s: &str) -> Vec<u16> {
+    s.encode_utf16().chain(std::iter::once(0)).collect()
+}
+
+fn open_run(write: bool) -> Option<isize> {
+    let hkcu = 0x8000_0001u32 as i32 as isize;
+    let mut h: isize = 0;
+    let sam = if write { 0x0002 | 0x0001 } else { 0x0001 };
+    let r = unsafe { RegOpenKeyExW(hkcu, wide(RUN_KEY).as_ptr(), 0, sam, &mut h) };
+    if r == 0 { Some(h) } else { None }
+}
 
 pub fn autostart_enabled() -> bool {
-    Command::new("reg")
-        .args(["query", RUN_KEY, "/v", "OVERLIME_TRAY"])
-        .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+    let Some(h) = open_run(false) else { return false };
+    let mut len: u32 = 0;
+    let r = unsafe { RegQueryValueExW(h, wide(RUN_NAME).as_ptr(), std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut(), &mut len) };
+    unsafe { RegCloseKey(h) };
+    r == 0
 }
 
 pub fn set_autostart(on: bool) -> Result<(), String> {
-    let out = if on {
+    let Some(h) = open_run(true) else { return Err("Eintrag konnte nicht gesetzt werden".into()) };
+    let name = wide(RUN_NAME);
+    let r = if on {
         let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        Command::new("reg")
-            .args(["add", RUN_KEY, "/v", "OVERLIME_TRAY", "/t", "REG_SZ", "/d", &format!("\"{}\" --tray", exe.display()), "/f"])
-            .output()
+        let val = wide(&format!("\"{}\" --tray", exe.display()));
+        unsafe { RegSetValueExW(h, name.as_ptr(), 0, 1, val.as_ptr() as *const u8, (val.len() * 2) as u32) }
     } else {
-        Command::new("reg").args(["delete", RUN_KEY, "/v", "OVERLIME_TRAY", "/f"]).output()
-    }
-    .map_err(|e| e.to_string())?;
-    if out.status.success() || !on {
-        Ok(())
-    } else {
-        Err("Eintrag konnte nicht gesetzt werden".into())
-    }
+        unsafe { RegDeleteValueW(h, name.as_ptr()); }
+        0
+    };
+    unsafe { RegCloseKey(h) };
+    if r == 0 { Ok(()) } else { Err("Eintrag konnte nicht gesetzt werden".into()) }
 }
 
 /// Startet den Tray-Prozess als eigenen Prozess (falls er noch nicht läuft).

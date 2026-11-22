@@ -508,18 +508,75 @@ impl App {
             let conn = self.pad.connected();
             let inp = self.pad.poll();
             let ex = self.pad.poll_extra();
-            ui.label(RichText::new("Drücke Tasten und bewege Sticks. Was hier reagiert, kommt auch im Spiel an. Die App selbst lässt sich nicht mit dem Controller bedienen.").color(TEXT_DIM).size(12.5));
+            ui.label(RichText::new("Drücke Tasten und bewege Sticks. Was hier reagiert, kommt auch im Spiel an. Die App selbst lässt sich nicht mit dem Controller bedienen. Nachbau-Controller und fremde Marken werden meist automatisch erkannt, sonst hilft „Controller einrichten“.").color(TEXT_DIM).size(12.5));
             ui.add_space(4.0);
             pad_visual(ui, &inp, &ex, conn);
             ui.ctx().request_repaint();
             ui.add_space(8.0);
+            if self.wiz.is_some() {
+                let (mut cancel, mut skip, mut done) = (false, false, false);
+                if let Some(w) = self.wiz.as_mut() {
+                    w.poll();
+                    ui.ctx().request_repaint();
+                    egui::Frame::none().fill(th_bg().gamma_multiply(0.6)).rounding(14.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.6))).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(format!("Controller einrichten: {}", w.name)).size(16.0).strong());
+                        let total = pad::WIZ_STEPS.len();
+                        ui.add(egui::ProgressBar::new(w.step as f32 / total as f32).desired_height(8.0));
+                        ui.add_space(6.0);
+                        if w.finished {
+                            done = true;
+                        } else {
+                            ui.label(RichText::new(format!("Schritt {} von {}", w.step + 1, total)).color(TEXT_DIM).size(12.5));
+                            ui.label(RichText::new(format!("Drücke jetzt: {}", w.prompt())).size(20.0).strong().color(th_blue_light()));
+                            ui.add_space(6.0);
+                            ui.horizontal(|ui| {
+                                if ui.add(egui::Button::new("Überspringen").fill(th_card_hover()).rounding(10.0)).clicked() {
+                                    skip = true;
+                                }
+                                if ui.add(egui::Button::new("Abbrechen").fill(th_card_hover()).rounding(10.0)).clicked() {
+                                    cancel = true;
+                                }
+                            });
+                        }
+                    });
+                    if skip {
+                        w.skip();
+                    }
+                }
+                if done {
+                    let r = self.wiz.as_ref().map(|w| w.finish());
+                    match r {
+                        Some(Ok(())) => {
+                            self.toasts.push(("Controller eingerichtet und gespeichert.".to_string(), 2, self.now));
+                            self.wiz = None;
+                            self.pad.rescan();
+                        }
+                        Some(Err(e)) => {
+                            self.toasts.push((e, 1, self.now));
+                            self.wiz = None;
+                        }
+                        None => {}
+                    }
+                }
+                if cancel {
+                    self.wiz = None;
+                }
+                ui.add_space(8.0);
+            }
             let devs = self.pad.devices();
             if devs.is_empty() {
                 status_row(ui, 1, "Kein Gerät gefunden", "Windows meldet keinen Controller. Per USB-Kabel anschließen oder per Bluetooth koppeln (Windows: Einstellungen > Bluetooth und Geräte), dann „Neu suchen“ klicken. Ohne Bluetooth am PC hilft ein USB-Kabel oder ein Bluetooth-Stick.");
             } else {
-                for (name, usable, vid, pid) in &devs {
-                    status_row(ui, if *usable { 0 } else { 1 }, &format!("{name}  ({vid:04x}:{pid:04x})"), if *usable { "Als Gamepad erkannt." } else { "Gerät gefunden, aber nicht als Gamepad nutzbar." });
-                    ui.add_space(4.0);
+                for (i, (name, usable, vid, pid)) in devs.iter().enumerate() {
+                    status_row(ui, if *usable { 0 } else { 1 }, &format!("{name}  ({vid:04x}:{pid:04x})"), if *usable { "Als Gamepad erkannt." } else { "Gerät gefunden, aber die Tasten sind noch nicht zugeordnet. Mit „Einrichten“ geht es in einer Minute." });
+                    if ui.add(egui::Button::new(format!("{} Controller einrichten", ic::SLIDERS)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                        self.wiz = self.pad.wizard_start(i as i32);
+                        if self.wiz.is_none() {
+                            self.toasts.push(("Das Gerät lässt sich nicht öffnen.".to_string(), 1, self.now));
+                        }
+                    }
+                    ui.add_space(6.0);
                 }
             }
             ui.add_space(4.0);
@@ -557,6 +614,7 @@ impl App {
                 for (k, v) in [
                     ("Esc", "Menü im Stream (beendet nichts aus Versehen)"),
                     ("F1", "Tastenbelegung im Stream anzeigen"),
+                    ("F9", "Aufnahme starten/beenden (MP4 in Videos\\OVERLIME)"),
                     ("F10", "Statusanzeige ein/aus"),
                     ("F11", "Vollbild"),
                     ("F5", "Konsolen neu suchen"),
@@ -606,6 +664,10 @@ impl App {
             ui.label(RichText::new("Der Stream-Kern basiert auf dem Open-Source-Projekt chiaki-ng (AGPL-3.0).").color(TEXT_DIM).size(12.5));
             ui.label(RichText::new("Nicht mit Sony verbunden. „PlayStation“ ist eine Marke von Sony Interactive Entertainment.").color(TEXT_DIM).size(12.5));
             ui.add_space(6.0);
+            if ui.add(egui::Button::new(format!("{} Tour wiederholen", ic::ROCKET_LAUNCH)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                self.tour = Some(0);
+            }
+            ui.add_space(4.0);
             if ui.add(egui::Button::new(format!("{} Projektseite auf GitHub", ic::GITHUB_LOGO)).fill(th_card_hover()).rounding(10.0)).clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab("https://github.com/Overtime09991/overlime"));
             }

@@ -34,7 +34,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.26";
+const VERSION: &str = "0.27";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -87,6 +87,7 @@ enum Msg {
     DiagPort(bool, String),
     NetTest(NetResult),
     ReportDone(bool, String),
+    AudioDevices(Vec<String>),
     News(Vec<update::NewsItem>),
     NewsErr(String),
     UpdateCheckFailed(String),
@@ -126,6 +127,8 @@ struct Session {
     kbps: u32,
     loss_prev: i32,
     loss_rate: f32,
+    hist: Vec<(f32, f32, f32)>,
+    hist_t: Instant,
     loss_t: Instant,
     name: String,
     started: Instant,
@@ -169,7 +172,11 @@ struct App {
     login_step: usize,
     set_cat: usize,
     help_tab: usize,
+    wiz: Option<pad::Wizard>,
     report_open: bool,
+    crash_pending: bool,
+    tour: Option<usize>,
+    tour_checked: bool,
     net_res: Option<NetResult>,
     profile_active: Option<String>,
     saved_global: Option<(usize, usize, f32, usize)>,
@@ -211,16 +218,22 @@ struct App {
     now: f64,
     pad_name_cache: String,
     shot_requested: bool,
+    rec_toggle: bool,
+    rec_started: Option<Instant>,
+    rec_name: String,
     feedback: Option<bool>,
     audio_devices: Vec<String>,
     audio_test: Option<(audio::Audio, f64)>,
     muted: bool,
     gl_ok: bool,
+    gl_info: String,
     quick: bool,
     last_connect: Option<(Console, Paired, (usize, usize, i32, usize))>,
     pending_reconnect: Option<(Console, Paired, Instant)>,
     reconnecting: bool,
     reconnect_msg: String,
+    quality_retry: u32,
+    reconnect_delay_ms: u64,
     auto_retries: u32,
     update_click: bool,
     news: Vec<update::NewsItem>,
@@ -234,6 +247,8 @@ struct App {
     update_checked_at: Option<Instant>,
     last_update_check: Instant,
     demo_gpu: Option<Arc<video::VideoGpu>>,
+    demo_base: Vec<u8>,
+    demo_step: usize,
     close_hint: bool,
     fullscreen: bool,
     status: String,
@@ -258,6 +273,13 @@ impl App {
         }
         setup_style(&cc.egui_ctx);
         let (tx, rx) = channel();
+        {
+            // Tonausgänge im Hintergrund suchen (dauert ca. 0,3 s)
+            let txa = tx.clone();
+            std::thread::spawn(move || {
+                let _ = txa.send(Msg::AudioDevices(audio::list_devices()));
+            });
+        }
         let settings0 = Settings::load();
         let prev_version = settings0.last_version.clone();
         let show_welcome = settings0.welcome_anim;
@@ -289,10 +311,14 @@ impl App {
             login_pasted: String::new(),
             set_cat: 0,
             help_tab: 0,
+            wiz: None,
             net_res: None,
             profile_active: None,
             saved_global: None,
             net_hint: None,
+            crash_pending: false,
+            tour: None,
+            tour_checked: false,
             report_open: std::env::args().any(|a| a == "--report-dialog"),
             report_text: String::new(),
             report_state: 0,
@@ -332,16 +358,22 @@ impl App {
             now: 0.0,
             pad_name_cache: String::new(),
             shot_requested: false,
+            rec_toggle: false,
+            rec_started: None,
+            rec_name: String::new(),
             feedback: None,
-            audio_devices: audio::list_devices(),
+            audio_devices: Vec::new(),
             audio_test: None,
             muted: false,
             gl_ok: false,
+            gl_info: String::new(),
             quick: false,
             last_connect: None,
             pending_reconnect: None,
             reconnecting: false,
             reconnect_msg: String::new(),
+            quality_retry: 0,
+            reconnect_delay_ms: 2500,
             auto_retries: 0,
             update_click: false,
             news: Vec::new(),
@@ -355,6 +387,8 @@ impl App {
             update_checked_at: None,
             last_update_check: Instant::now(),
             demo_gpu: None,
+            demo_base: Vec::new(),
+            demo_step: usize::MAX,
             close_hint: false,
             fullscreen: false,
             status: String::new(),
@@ -424,7 +458,7 @@ impl App {
             }
             if std::env::args().any(|a| a == "--diag-page") {
                 app.page = Page::Help;
-                app.help_tab = 0;
+                app.help_tab = std::env::args().find_map(|a| a.strip_prefix("--help-tab=").and_then(|v| v.parse().ok())).unwrap_or(0);
             }
             if std::env::args().any(|a| a == "--help-page") {
                 app.page = Page::Help;
@@ -453,6 +487,11 @@ impl App {
             return app;
         }
         update::cleanup_old();
+        if !RELAY_URL.is_empty() && crash_path().map(|p| p.exists()).unwrap_or(false) && !std::env::args().any(|a| a == "--no-crash-prompt") {
+            app.report_open = true;
+            app.crash_pending = true;
+            app.report_text = "OVERLIME ist beim letzten Mal unerwartet beendet worden.".to_string();
+        }
         app.load_news();
         if update::enabled() {
             let tx = app.tx.clone();
@@ -603,6 +642,13 @@ impl App {
         self.stream_menu = false;
         self.show_keys = false;
         self.close_hint = false;
+        if self.rec_started.take().is_some() {
+            let name = std::mem::take(&mut self.rec_name);
+            if let Some(s) = self.session.as_ref() {
+                s.stream.record_stop();
+            }
+            self.toasts.push((format!("Aufnahme gespeichert: {name}"), 2, self.now));
+        }
         self.session = None; // Drop beendet die Sitzung
         self.profile_release();
         if self.settings.ask_feedback {
@@ -736,6 +782,8 @@ impl App {
                         kbps: 0,
                         loss_prev: 0,
                         loss_rate: 0.0,
+                        hist: Vec::new(),
+                        hist_t: Instant::now(),
                         loss_t: Instant::now(),
                         name,
                         started: Instant::now(),
@@ -759,6 +807,16 @@ impl App {
                 Msg::StreamErr(e) => {
                     self.reconnecting = false;
                     self.starting = None;
+                    if self.quality_retry > 0 {
+                        if let Some((c, p, _)) = self.last_connect.clone() {
+                            self.quality_retry -= 1;
+                            self.reconnecting = true;
+                            self.reconnect_delay_ms = 4000;
+                            self.reconnect_msg = "Die Konsole braucht einen Moment, neuer Versuch …".to_string();
+                            self.pending_reconnect = Some((c, p, Instant::now()));
+                            continue;
+                        }
+                    }
                     self.start_error = Some(mask_ips(&e));
                 }
                 Msg::UpdateAvail(r) => {
@@ -773,7 +831,9 @@ impl App {
                         };
                         self.toasts.push((text, 0, self.now));
                     }
-                    if self.settings.auto_update && !self.update_busy && self.session.is_none() && self.app_start.elapsed() < Duration::from_secs(90) {
+                    // Nie mitten im Verbinden installieren (z. B. Klick auf das Symbol neben der Uhr): das würde die Verbindung abbrechen
+                    let connecting = self.starting.is_some() || self.reconnecting || self.pending_reconnect.is_some() || self.connect_now || self.settings.autoconnect || self.dialog.is_some() || self.report_open;
+                    if self.settings.auto_update && !self.update_busy && self.session.is_none() && !connecting && self.app_start.elapsed() < Duration::from_secs(90) {
                         self.update_busy = true;
                         let tx = self.tx.clone();
                         let rr = r.clone();
@@ -804,8 +864,17 @@ impl App {
                     self.news_fetched = Some(Instant::now());
                 }
                 Msg::ReportDone(ok, text) => {
+                    if ok && self.crash_pending {
+                        if let Some(p) = crash_path() {
+                            let _ = std::fs::remove_file(p);
+                        }
+                        self.crash_pending = false;
+                    }
                     self.report_state = if ok { 2 } else { 3 };
                     self.report_msg = text;
+                }
+                Msg::AudioDevices(v) => {
+                    self.audio_devices = v;
                 }
                 Msg::NetTest(r) => {
                     self.net_res = Some(r);
@@ -974,6 +1043,16 @@ fn save_screenshot(buf: &[u8], w: usize, h: usize) -> Result<String, String> {
     Ok(name)
 }
 
+/// Zielpfad für eine Aufnahme: Videos\OVERLIME\OVERLIME-<Zeit>.mp4 (voller Pfad, Dateiname).
+fn recording_path() -> Result<(String, String), String> {
+    let base = std::env::var("USERPROFILE").map_err(|e| e.to_string())?;
+    let dir = std::path::PathBuf::from(base).join("Videos").join("OVERLIME");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let name = format!("OVERLIME-{secs}.mp4");
+    Ok((dir.join(&name).to_string_lossy().to_string(), name))
+}
+
 /// Leiser Testton (440 Hz) für die Geräteauswahl.
 fn tone_pull() -> audio::Pull {
     let n = Arc::new(std::sync::atomic::AtomicU64::new(0));
@@ -1006,6 +1085,7 @@ struct BarFlags {
     keys: bool,
     shot: bool,
     mute: bool,
+    rec: bool,
 }
 
 /// Elegante Leiste im Stream: Verbindungsstatus links, Schnellzugriffe rechts.
@@ -1048,6 +1128,9 @@ fn draw_stream_bar(ctx: &egui::Context, anim: f32, t: f64, ps5: bool, game: &str
                         }
                         if ui.add(ib(ic::CAMERA)).on_hover_text("Screenshot (F12)").clicked() {
                             fl.shot = true;
+                        }
+                        if ui.add(ib(ic::RECORD)).on_hover_text("Aufnahme starten/beenden (F9)").clicked() {
+                            fl.rec = true;
                         }
                         ui.scope(|ui| {
                             ui.spacing_mut().slider_width = 96.0;
@@ -1176,6 +1259,112 @@ fn pill(ui: &mut egui::Ui, text: &str, color: Color32) {
     ui.painter().galley(Pos2::new(rect.min.x + 22.0, rect.center().y - galley.size().y / 2.0), galley, color);
 }
 
+pub const HUD_ITEMS: [&str; 10] = ["Auflösung", "FPS", "Ping", "Dekodierzeit", "Datenrate", "Paketverlust", "Controller", "Ton-Status", "Uhrzeit", "Akku"];
+
+/// Auswahl, was die Statusanzeige im Stream zeigt, und wo sie steht.
+fn hud_config_ui(ui: &mut egui::Ui, st: &mut Settings) {
+    ui.horizontal_wrapped(|ui| {
+        for (i, name) in HUD_ITEMS.iter().enumerate() {
+            let on = st.hud_items & (1 << i) != 0;
+            let btn = egui::Button::new(RichText::new(*name).size(12.5).color(if on { Color32::WHITE } else { TEXT_DIM }))
+                .fill(if on { th_blue() } else { th_card_hover() })
+                .rounding(12.0);
+            if ui.add(btn).clicked() {
+                st.hud_items ^= 1 << i;
+            }
+        }
+    });
+    ui.add_space(4.0);
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Position").size(12.5).color(TEXT_DIM));
+        segmented(ui, &mut st.hud_pos, &["Oben links", "Oben rechts", "Unten links", "Unten rechts"]);
+    });
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Größe").size(12.5).color(TEXT_DIM));
+        segmented(ui, &mut st.hud_size, &["Klein", "Normal", "Groß"]);
+        ui.checkbox(&mut st.hud_box, "Mit Hintergrund");
+    });
+}
+
+/// Zeichnet die Statusanzeige im Stream an die gewählte Stelle.
+fn paint_hud(painter: &egui::Painter, full: Rect, hud: String, st: &Settings, bar_shift: f32) {
+    let size = [11.0, 12.5, 15.0][st.hud_size.min(2)];
+    let galley = painter.layout_no_wrap(hud, FontId::monospace(size), Color32::from_white_alpha(if st.hud_box { 235 } else { 160 }));
+    let pad_box = if st.hud_box { 9.0 } else { 0.0 };
+    let (w, h) = (galley.size().x + 2.0 * pad_box, galley.size().y + 2.0 * pad_box);
+    let margin = 14.0;
+    let top = st.hud_pos < 2;
+    let left = st.hud_pos % 2 == 0;
+    let x = if left { full.left() + margin } else { full.right() - margin - w };
+    let y = if top { full.top() + 12.0 + bar_shift } else { full.bottom() - 12.0 - h };
+    let r = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h));
+    if st.hud_box {
+        painter.rect_filled(r, Rounding::same(10.0), Color32::from_black_alpha(150));
+    }
+    painter.galley(r.min + Vec2::splat(pad_box), galley, Color32::WHITE);
+}
+
+/// Große Kachel mit Symbol und Beschriftung (für das Pause-Menü).
+fn tile(ui: &mut egui::Ui, icon: &str, label: &str, w: f32, active: bool) -> bool {
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 78.0), egui::Sense::click());
+    let h = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+    let base = if active { RED.gamma_multiply(0.45) } else { th_card_hover() };
+    let fill = base.lerp_to_gamma(th_blue().gamma_multiply(0.7), h);
+    ui.painter().rect_filled(rect, Rounding::same(14.0), fill);
+    ui.painter().rect_stroke(rect, Rounding::same(14.0), Stroke::new(1.0, th_blue_light().gamma_multiply(0.35 * h)));
+    let lift = -2.0 * h;
+    ui.painter().text(rect.center() + Vec2::new(0.0, -10.0 + lift), Align2::CENTER_CENTER, icon, FontId::proportional(24.0), if active { RED } else { Color32::WHITE });
+    ui.painter().text(rect.center() + Vec2::new(0.0, 20.0 + lift), Align2::CENTER_CENTER, label, FontId::proportional(12.5), Color32::from_gray(190).lerp_to_gamma(Color32::WHITE, h));
+    resp.clicked()
+}
+
+/// Abgesetzter Bereich mit Überschrift.
+fn card(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::none().fill(Color32::from_white_alpha(9)).rounding(14.0).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.label(RichText::new(title).strong().size(13.5));
+        ui.add_space(4.0);
+        add(ui);
+    });
+}
+
+/// Kleine Anzeige (Wert mit Farbe).
+fn stat_chip(ui: &mut egui::Ui, text: &str, col: Color32) {
+    egui::Frame::none().fill(col.gamma_multiply(0.18)).rounding(10.0).stroke(Stroke::new(1.0, col.gamma_multiply(0.45))).inner_margin(egui::Margin::symmetric(9.0, 3.0)).show(ui, |ui| {
+        ui.label(RichText::new(text).size(12.0).color(col));
+    });
+}
+
+/// Kleines Liniendiagramm (z. B. Ping über die letzte Minute).
+fn sparkline(ui: &mut egui::Ui, data: &[f32], color: Color32, min_top: f32, unit: &str) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 54.0), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, Rounding::same(10.0), Color32::from_white_alpha(10));
+    if data.len() < 2 {
+        p.text(rect.center(), Align2::CENTER_CENTER, "Sammelt Messwerte …", FontId::proportional(12.0), TEXT_DIM);
+        return;
+    }
+    let top = data.iter().cloned().fold(min_top, f32::max);
+    let n = data.len();
+    let pts: Vec<Pos2> = data
+        .iter()
+        .enumerate()
+        .map(|(i, v)| {
+            let x = rect.min.x + 6.0 + (rect.width() - 12.0) * i as f32 / (n - 1) as f32;
+            let y = rect.max.y - 6.0 - (rect.height() - 12.0) * (v / top).clamp(0.0, 1.0);
+            Pos2::new(x, y)
+        })
+        .collect();
+    let mut fill = pts.clone();
+    fill.push(Pos2::new(pts[n - 1].x, rect.max.y - 6.0));
+    fill.push(Pos2::new(pts[0].x, rect.max.y - 6.0));
+    p.add(egui::Shape::convex_polygon(fill, color.gamma_multiply(0.12), Stroke::NONE));
+    p.add(egui::Shape::line(pts, Stroke::new(1.8, color)));
+    let last = data[n - 1];
+    p.text(Pos2::new(rect.max.x - 8.0, rect.min.y + 9.0), Align2::RIGHT_CENTER, format!("{:.0} {unit}", last), FontId::proportional(11.5), Color32::WHITE);
+    p.text(Pos2::new(rect.min.x + 8.0, rect.min.y + 9.0), Align2::LEFT_CENTER, format!("max {:.0}", top), FontId::proportional(10.5), TEXT_DIM);
+}
+
 fn segmented(ui: &mut egui::Ui, value: &mut usize, labels: &[&str]) {
     ui.horizontal(|ui| {
         for (i, l) in labels.iter().enumerate() {
@@ -1199,7 +1388,9 @@ thread_local! {
 /// Kategorie (1 Bild & Ton, 2 Steuerung, 3 Darstellung, 4 Verbindung, 5 App & Updates) und Suchbegriffe je Abschnitt.
 fn section_meta(title: &str) -> (usize, &'static str) {
     let t = title.to_lowercase();
-    let table: [(&str, usize, &str); 10] = [
+    let table: [(&str, usize, &str); 12] = [
+        ("statusanzeige", 3, "hud anzeige ping fps position oben links statistik einblendung uhrzeit"),
+        ("aufnahmen", 1, "aufnahme video screenshot ordner mp4 aufnehmen"),
         ("videoqualität", 1, "auflösung bildrate fps bitrate codec hevc h.264 schärfe qualität 1080p"),
         ("ton", 1, "ton lautstärke audio lautsprecher sound"),
         ("steuerung", 2, "controller vibration touchpad gyro bewegung trigger led gamepad"),
@@ -1529,6 +1720,7 @@ impl App {
                     }
                 }
                 ui.add_space(6.0);
+                ui.checkbox(&mut st.notify_ready, "Hinweis in Windows, wenn die Konsole bereit ist");
                 ui.checkbox(&mut st.wake_on, "Konsole zu einer festen Zeit aufwecken");
                 if st.wake_on {
                     ui.horizontal(|ui| {
@@ -1571,9 +1763,21 @@ impl App {
             section(ui, &format!("{}  Darstellung", ic::MONITOR), |ui| {
                 label(ui, "Hochskalierung auf 4K", "Die Konsole sendet max. 1080p. Die Grafikkarte rechnet hoch: „Aus“ = harte Pixel, „Weich“ = glatt, „Scharf“ und „Ultra“ = Schärfefilter (CAS).");
                 segmented(ui, &mut st.upscale, &["Aus", "Weich", "Scharf", "Ultra"]);
+                ui.add_space(4.0);
+                ui.checkbox(&mut st.interp, "Zwischenbilder berechnen (experimentell)");
+                let hz = winui::display_refresh_hz();
+                ui.label(RichText::new(format!("Die Konsole sendet höchstens 60 Bilder pro Sekunde. Mit dieser Option berechnet die Grafikkarte Bilder dazwischen, damit es auf einem Bildschirm mit 120 Hz oder mehr flüssiger wirkt. Das kostet etwa ein Bild (ca. 17 ms) mehr Verzögerung und kann bei schnellen Bewegungen kleine Fehler zeigen. Dein Bildschirm läuft gerade mit {} Hz{}.", if hz > 0 { hz.to_string() } else { "?".to_string() }, if hz > 0 && hz < 100 { " – hier bringt es nichts" } else { "" })).color(TEXT_DIM).size(12.0));
+                ui.add_space(4.0);
                     ui.checkbox(&mut st.fullscreen, "Vollbild beim Streamen");
                     label(ui, "Größe der Oberfläche", "Kompakt zeigt mehr auf einmal und wirkt aufgeräumter.");
                 segmented(ui, &mut st.ui_scale, &["Kompakt", "Normal", "Groß"]);
+            });
+            section(ui, &format!("{}  Statusanzeige im Stream", ic::CHART_LINE), |ui| {
+                ui.label(RichText::new("Wähle, was im Stream eingeblendet wird (an/aus mit F10), wo es steht und wie groß.").color(TEXT_DIM).size(12.5));
+                ui.add_space(4.0);
+                ui.checkbox(&mut self.show_hud, "Statusanzeige im Stream zeigen");
+                ui.add_space(2.0);
+                hud_config_ui(ui, st);
             });
             section(ui, &format!("{}  Farbschema", ic::PALETTE), |ui| {
                 ui.label(RichText::new("Wähle ein Farbschema. Eigene Schemata legst du als Textdatei in den Themes-Ordner.").color(TEXT_DIM).size(12.5));
@@ -1651,6 +1855,26 @@ impl App {
                     }
                     if ui.add(egui::Button::new("Geräte neu laden").fill(th_card_hover()).rounding(10.0)).clicked() {
                         self.audio_devices = audio::list_devices();
+                    }
+                });
+            });
+            section(ui, &format!("{}  Aufnahmen", ic::RECORD), |ui| {
+                ui.label(RichText::new("Im Stream: F9 startet und beendet eine Video-Aufnahme (MP4, Bild unverändert vom Stream, Ton als AAC). F12 macht einen Screenshot.").color(TEXT_DIM).size(12.5));
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(format!("{} Videos öffnen", ic::FOLDER_OPEN)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                        if let Ok(base) = std::env::var("USERPROFILE") {
+                            let d = std::path::PathBuf::from(base).join("Videos").join("OVERLIME");
+                            let _ = std::fs::create_dir_all(&d);
+                            let _ = std::process::Command::new("explorer").arg(d).spawn();
+                        }
+                    }
+                    if ui.add(egui::Button::new(format!("{} Screenshots öffnen", ic::FOLDER_OPEN)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                        if let Ok(base) = std::env::var("USERPROFILE") {
+                            let d = std::path::PathBuf::from(base).join("Pictures").join("OVERLIME");
+                            let _ = std::fs::create_dir_all(&d);
+                            let _ = std::process::Command::new("explorer").arg(d).spawn();
+                        }
                     }
                 });
             });
@@ -1775,11 +1999,15 @@ impl App {
     }
 
     fn dialog_ui(&mut self, ctx: &egui::Context) {
-        let Some(mut d) = self.dialog.take() else { return };
+        let Some(mut d) = self.dialog.take() else {
+            modal_reset(ctx, "pair");
+            return;
+        };
+        let a = modal_progress(ctx, "pair");
         // Hintergrund abdunkeln
         egui::Area::new(egui::Id::new("dim")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
             let r = ctx.screen_rect();
-            ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha(170));
+            ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha((170.0 * a) as u8));
             ui.allocate_rect(r, egui::Sense::click());
         });
         let mut close = false;
@@ -1788,11 +2016,12 @@ impl App {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .anchor(Align2::CENTER_CENTER, [0.0, (1.0 - a) * 18.0])
             .fixed_size([520.0, 0.0])
             .order(egui::Order::Tooltip)
-            .frame(egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
+            .frame(egui::Frame::none().fill(th_card().gamma_multiply(a)).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5 * a))).inner_margin(egui::Margin::same(26.0)))
             .show(ctx, |ui| {
+                ui.set_opacity(a);
                 ui.set_width(468.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{} koppeln", d.console.name)).size(22.0).strong());
@@ -1919,59 +2148,115 @@ impl App {
     /// Schnell-Einstellungen im Stream. Gibt true zurück, wenn die Qualität neu angewendet werden soll.
     fn quick_panel(&mut self, ctx: &egui::Context) -> bool {
         if !self.quick {
+            modal_reset(ctx, "quick");
             return false;
         }
+        let a = modal_progress(ctx, "quick");
         let mut apply = false;
         let running = self.last_connect.as_ref().map(|(_, _, pr)| *pr);
         let cur = (self.settings.resolution, self.settings.fps, self.settings.bitrate as i32, self.settings.codec);
         let differs = running.map(|r| r != cur).unwrap_or(false);
+        let demo = std::env::args().any(|a| a == "--demo-quick");
+        let (hist, ping_now, fps_now, mbit_now, loss_now): (Vec<(f32, f32, f32)>, f32, u32, f32, f32) = match self.session.as_ref() {
+            Some(s) => (s.hist.clone(), s.ping, s.fps, s.kbps as f32 / 1000.0, s.loss_rate),
+            None if demo => ((0..90).map(|i| (9.0 + 4.0 * ((i as f32) * 0.35).sin().abs() + if i % 23 == 0 { 14.0 } else { 0.0 }, 27.0 + 2.0 * ((i as f32) * 0.2).cos(), if i % 31 == 0 { 3.0 } else { 0.0 })).collect(), 11.0, 60, 27.4, 0.0),
+            None => (Vec::new(), 0.0, 0, 0.0, 0.0),
+        };
         egui::Window::new("quick")
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .anchor(Align2::RIGHT_TOP, [-14.0, 64.0])
+            .anchor(Align2::RIGHT_TOP, [-14.0 + (1.0 - a) * 40.0, 64.0])
             .order(egui::Order::Foreground)
-            .frame(egui::Frame::none().fill(Color32::from_rgba_unmultiplied(12, 16, 32, 240)).rounding(16.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.4))).inner_margin(egui::Margin::same(18.0)))
+            .frame(egui::Frame::none().fill(Color32::from_rgba_unmultiplied(12, 16, 32, (244.0 * a) as u8)).rounding(18.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.45 * a))).inner_margin(egui::Margin::same(16.0)))
             .show(ctx, |ui| {
-                ui.set_width(360.0);
+                ui.set_opacity(a);
+                ui.set_width(380.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(format!("{}  Schnell-Einstellungen", ic::SLIDERS)).size(16.0).strong());
+                    ui.label(RichText::new(format!("{}  Schnell-Einstellungen", ic::SLIDERS)).size(17.0).strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if ui.add(egui::Button::new("X").fill(Color32::from_white_alpha(14)).rounding(8.0)).clicked() {
+                        if ui.add(egui::Button::new("X").fill(th_card_hover()).rounding(8.0)).clicked() {
                             self.quick = false;
                         }
                     });
                 });
                 ui.add_space(6.0);
-                ui.label(RichText::new("Bildschärfe (sofort)").strong().size(13.5));
-                segmented(ui, &mut self.settings.upscale, &["Aus", "Weich", "Scharf", "Ultra"]);
-                ui.add_enabled_ui(self.settings.upscale >= 2, |ui| {
-                    ui.horizontal(|ui| {
-                        ui.label(RichText::new("Stärke").size(12.5).color(TEXT_DIM));
-                        ui.add(egui::Slider::new(&mut self.settings.sharp, 0.0..=1.0).show_value(false));
-                    });
+                let max_h = (ctx.screen_rect().height() - 100.0).max(240.0);
+                egui::ScrollArea::vertical().max_height(max_h).auto_shrink([false, true]).show(ui, |ui| {
+                // Live-Werte
+                ui.horizontal_wrapped(|ui| {
+                    let pc = if ping_now < 25.0 { GREEN } else if ping_now < 60.0 { YELLOW } else { RED };
+                    stat_chip(ui, &format!("Ping {ping_now:.0} ms"), pc);
+                    stat_chip(ui, &format!("{fps_now} FPS"), if fps_now >= 50 { GREEN } else if fps_now >= 30 { YELLOW } else { RED });
+                    stat_chip(ui, &format!("{mbit_now:.0} Mbit/s"), th_blue_light());
+                    stat_chip(ui, &format!("Verlust {loss_now:.0}/s"), if loss_now < 1.0 { GREEN } else if loss_now < 5.0 { YELLOW } else { RED });
                 });
-                ui.checkbox(&mut self.show_hud, "Statusanzeige oben links (F10)");
-                ui.add_space(8.0);
-                ui.separator();
-                ui.add_space(4.0);
-                ui.label(RichText::new("Qualität (verbindet kurz neu)").strong().size(13.5));
-                ui.label(RichText::new("Die PlayStation legt Auflösung und Datenrate beim Verbinden fest.").color(TEXT_DIM).size(11.5));
-                segmented(ui, &mut self.settings.resolution, &["540p", "720p", "1080p"]);
-                segmented(ui, &mut self.settings.fps, &["30 FPS", "60 FPS"]);
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("Bitrate").size(12.5).color(TEXT_DIM));
-                    ui.add(egui::Slider::new(&mut self.settings.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
-                });
-                segmented(ui, &mut self.settings.codec, &["Auto", "H.264", "HEVC"]);
                 ui.add_space(6.0);
-                if differs {
-                    if ui.add(big_button("Anwenden und neu verbinden", th_blue()).min_size(Vec2::new(324.0, 42.0))).clicked() {
-                        apply = true;
+                let pings: Vec<f32> = hist.iter().map(|h| h.0).collect();
+                sparkline(ui, &pings, th_blue_light(), 20.0, "ms Ping");
+                ui.add_space(2.0);
+                let rates: Vec<f32> = hist.iter().map(|h| h.1).collect();
+                sparkline(ui, &rates, GREEN, 10.0, "Mbit/s");
+                ui.add_space(8.0);
+                card(ui, &format!("{}  Bild (wirkt sofort)", ic::MONITOR), |ui| {
+                    segmented(ui, &mut self.settings.upscale, &["Aus", "Weich", "Scharf", "Ultra"]);
+                    ui.add_enabled_ui(self.settings.upscale >= 2, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new("Stärke").size(12.5).color(TEXT_DIM));
+                            ui.add(egui::Slider::new(&mut self.settings.sharp, 0.0..=1.0).show_value(false));
+                        });
+                    });
+                    ui.checkbox(&mut self.settings.interp, "Zwischenbilder (für 120 Hz, experimentell)");
+                    ui.checkbox(&mut self.show_hud, "Statusanzeige im Stream (F10)");
+                    if self.show_hud {
+                        ui.add_space(2.0);
+                        hud_config_ui(ui, &mut self.settings);
                     }
-                } else {
-                    ui.label(RichText::new("Diese Qualität läuft gerade.").color(GREEN).size(12.5));
-                }
+                });
+                ui.add_space(8.0);
+                card(ui, &format!("{}  Qualität", ic::FILM_STRIP), |ui| {
+                    // Voreinstellungen mit einem Klick
+                    let presets: [(&str, (usize, usize, f32, usize)); 4] = [
+                        ("Beste", (2, 1, 50.0, 2)),
+                        ("Ausgewogen", (2, 1, 30.0, 0)),
+                        ("Sparsam", (1, 1, 15.0, 0)),
+                        ("Schwaches Netz", (1, 0, 8.0, 1)),
+                    ];
+                    ui.horizontal_wrapped(|ui| {
+                        for (name, (r, f, b, c)) in presets {
+                            let on = self.settings.resolution == r && self.settings.fps == f && (self.settings.bitrate - b).abs() < 0.5 && self.settings.codec == c;
+                            let btn = egui::Button::new(RichText::new(name).size(12.5).color(if on { Color32::WHITE } else { TEXT_DIM }))
+                                .fill(if on { th_blue() } else { th_card_hover() })
+                                .rounding(12.0);
+                            if ui.add(btn).clicked() {
+                                self.settings.resolution = r;
+                                self.settings.fps = f;
+                                self.settings.bitrate = b;
+                                self.settings.codec = c;
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    segmented(ui, &mut self.settings.resolution, &["540p", "720p", "1080p"]);
+                    segmented(ui, &mut self.settings.fps, &["30 FPS", "60 FPS"]);
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Bitrate").size(12.5).color(TEXT_DIM));
+                        ui.spacing_mut().slider_width = 190.0;
+                        ui.add(egui::Slider::new(&mut self.settings.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
+                    });
+                    segmented(ui, &mut self.settings.codec, &["Auto", "H.264", "HEVC"]);
+                    ui.add_space(6.0);
+                    if differs {
+                        ui.label(RichText::new(format!("Neu: {} • {} FPS • {} Mbit/s", ["540p", "720p", "1080p"][self.settings.resolution], [30, 60][self.settings.fps], self.settings.bitrate as i32)).size(12.5).color(th_blue_light()));
+                        if ui.add(big_button(&format!("{}  Anwenden und neu verbinden", ic::ARROWS_CLOCKWISE), th_blue()).min_size(Vec2::new(ui.available_width(), 42.0))).clicked() {
+                            apply = true;
+                        }
+                        ui.label(RichText::new("Das dauert etwa 5 Sekunden. Dein Spiel läuft auf der Konsole weiter.").color(TEXT_DIM).size(11.5));
+                    } else {
+                        ui.label(RichText::new(format!("{}  Diese Qualität läuft gerade.", ic::CHECK_CIRCLE)).color(GREEN).size(12.5));
+                    }
+                });
+                });
             });
         apply
     }
@@ -1980,20 +2265,25 @@ impl App {
     fn stream_overlays(&mut self, ctx: &egui::Context) -> (bool, bool, bool, bool, bool) {
         let (mut resume, mut fs, mut keys_btn, mut stop, mut quit) = (false, false, false, false, false);
         let mut shot = false;
+        if !self.stream_menu {
+            modal_reset(ctx, "pause");
+        }
         if self.stream_menu {
+            let a = modal_progress(ctx, "pause");
             egui::Area::new(egui::Id::new("menu_dim")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
                 let r = ctx.screen_rect();
-                ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha(150));
+                ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha((150.0 * a) as u8));
                 ui.allocate_rect(r, egui::Sense::click());
             });
             egui::Window::new("pause")
                 .title_bar(false)
                 .collapsible(false)
                 .resizable(false)
-                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .anchor(Align2::CENTER_CENTER, [0.0, (1.0 - a) * 18.0])
                 .order(egui::Order::Tooltip)
-                .frame(egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
+                .frame(egui::Frame::none().fill(th_card().gamma_multiply(a)).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5 * a))).inner_margin(egui::Margin::same(26.0)))
                 .show(ctx, |ui| {
+                    ui.set_opacity(a);
                     ui.set_width(360.0);
                     ui.label(RichText::new("Pause-Menü").size(22.0).strong());
                     if self.close_hint {
@@ -2005,20 +2295,44 @@ impl App {
                     if ui.add(big_button("Weiter (Esc)", th_blue()).min_size(Vec2::new(360.0, 46.0))).clicked() {
                         resume = true;
                     }
-                    if ui.add(big_button("Vollbild (F11)", th_card_hover()).min_size(Vec2::new(360.0, 42.0))).clicked() {
-                        fs = true;
-                    }
-                    if ui.add(big_button("Tastenbelegung (F1)", th_card_hover()).min_size(Vec2::new(360.0, 42.0))).clicked() {
-                        keys_btn = true;
-                    }
-                    if ui.add(big_button("Screenshot (F12)", th_card_hover()).min_size(Vec2::new(360.0, 42.0))).clicked() {
-                        shot = true;
-                    }
+                    ui.add_space(6.0);
+                    let tw = (360.0 - 2.0 * 10.0) / 3.0;
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        if tile(ui, ic::CORNERS_OUT, "Vollbild", tw, false) {
+                            fs = true;
+                        }
+                        if tile(ui, ic::KEYBOARD, "Tasten", tw, false) {
+                            keys_btn = true;
+                        }
+                        if tile(ui, ic::CAMERA, "Screenshot", tw, false) {
+                            shot = true;
+                        }
+                    });
+                    ui.add_space(2.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 10.0;
+                        let rec_on = self.rec_started.is_some();
+                        if tile(ui, ic::RECORD, if rec_on { "Aufnahme aus" } else { "Aufnehmen" }, tw, rec_on) {
+                            self.rec_toggle = true;
+                            self.stream_menu = false;
+                        }
+                        if tile(ui, ic::SLIDERS, "Qualität", tw, false) {
+                            self.quick = true;
+                            self.stream_menu = false;
+                        }
+                        if tile(ui, if self.muted { ic::SPEAKER_X } else { ic::SPEAKER_HIGH }, if self.muted { "Ton an" } else { "Ton aus" }, tw, self.muted) {
+                            self.muted = !self.muted;
+                        }
+                    });
+                    ui.add_space(2.0);
+                    ui.label(RichText::new("F11 Vollbild  •  F12 Screenshot  •  F9 Aufnahme  •  M Ton").color(TEXT_DIM).size(11.0));
                     ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new(format!("{}  Lautstärke", ic::SPEAKER_HIGH)).size(14.0));
+                        ui.spacing_mut().slider_width = 120.0;
                         ui.add(egui::Slider::new(&mut self.settings.volume, 0.0..=1.5).show_value(false));
-                        ui.checkbox(&mut self.muted, "Stumm (M)");
+                        ui.checkbox(&mut self.muted, "Stumm");
                     });
                     ui.add_space(4.0);
                     if ui.add(big_button("Stream beenden", RED.gamma_multiply(0.55)).min_size(Vec2::new(360.0, 42.0))).clicked() {
@@ -2198,6 +2512,9 @@ impl App {
     fn diag_report(&self) -> String {
         let mut r = format!("OVERLIME {VERSION}\n");
         r.push_str(&format!("Qualität: {} • {} FPS • {} Mbit/s • Codec {}\n", ["540p", "720p", "1080p"][self.settings.resolution], [30, 60][self.settings.fps], self.settings.bitrate as i32, ["Auto", "H.264", "HEVC"][self.settings.codec]));
+        if !self.gl_info.is_empty() {
+            r.push_str(&format!("Grafik: {}\n", self.gl_info));
+        }
         r.push_str(&format!("Netzwerk: {}\n", if self.local_ip == "?" { "offline" } else { "verbunden" }));
         r.push_str(&format!("Angemeldet: {}\n", if psn::id_from_b64(&self.settings.psn_account).is_some() { "ja" } else { "nein" }));
         r.push_str(&format!("Controller: {}\n", if self.pad_name_cache.is_empty() { "keiner".to_string() } else { self.pad_name_cache.clone() }));
@@ -2211,6 +2528,12 @@ impl App {
         if let Some((ok, t)) = &self.diag_port {
             r.push_str(&format!("Verbindungstest: {} - {}\n", if *ok { "ok" } else { "fehlgeschlagen" }, t));
         }
+        if self.crash_pending {
+            if let Some(c) = crash_path().and_then(|p| std::fs::read_to_string(p).ok()) {
+                r.push_str("\n--- Absturzbericht ---\n");
+                r.push_str(&c.chars().take(6000).collect::<String>());
+            }
+        }
         r.push_str("\n--- Protokoll (letzte Zeilen) ---\n");
         let tail: Vec<&str> = self.log.lines().rev().take(150).collect();
         for l in tail.into_iter().rev() {
@@ -2223,11 +2546,13 @@ impl App {
     /// Fenster "Problem melden": schickt Beschreibung, Bericht und Protokoll an den Entwickler.
     fn report_ui(&mut self, ctx: &egui::Context) {
         if !self.report_open {
+            modal_reset(ctx, "report");
             return;
         }
+        let a = modal_progress(ctx, "report");
         egui::Area::new(egui::Id::new("rp_dim")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
             let r = ctx.screen_rect();
-            ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha(170));
+            ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha((170.0 * a) as u8));
             ui.allocate_rect(r, egui::Sense::click());
         });
         let mut close = false;
@@ -2236,13 +2561,14 @@ impl App {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .anchor(Align2::CENTER_CENTER, [0.0, (1.0 - a) * 18.0])
             .order(egui::Order::Tooltip)
-            .frame(egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
+            .frame(egui::Frame::none().fill(th_card().gamma_multiply(a)).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5 * a))).inner_margin(egui::Margin::same(26.0)))
             .show(ctx, |ui| {
+                ui.set_opacity(a);
                 ui.set_width(480.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new("Problem melden").size(22.0).strong());
+                    ui.label(RichText::new(if self.crash_pending { "OVERLIME wurde unerwartet beendet" } else { "Problem melden" }).size(22.0).strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if self.report_state != 1 && ui.add(egui::Button::new("X").fill(th_card_hover()).rounding(8.0)).clicked() {
                             close = true;
@@ -2263,7 +2589,7 @@ impl App {
                     }
                     return;
                 }
-                ui.label(RichText::new("Beschreibe kurz, was du tun wolltest und was passiert ist.").color(TEXT_DIM).size(13.5));
+                ui.label(RichText::new(if self.crash_pending { "Möchtest du den Fehlerbericht senden? Das hilft, den Fehler zu beheben. Ergänze gern, was du gerade gemacht hast." } else { "Beschreibe kurz, was du tun wolltest und was passiert ist." }).color(TEXT_DIM).size(13.5));
                 ui.add_space(6.0);
                 ui.add_enabled(self.report_state != 1, egui::TextEdit::multiline(&mut self.report_text).hint_text("z. B. „Beim Verbinden mit der PS5 bleibt das Bild schwarz“").desired_rows(5).desired_width(480.0));
                 self.report_text.truncate(2000);
@@ -2272,7 +2598,7 @@ impl App {
                     ui.set_width(456.0);
                     ui.horizontal_top(|ui| {
                         ui.label(RichText::new(ic::LOCK_KEY).size(18.0).color(GREEN));
-                        ui.add(egui::Label::new(RichText::new("Mitgeschickt werden: OVERLIME-Version, Qualitäts-Einstellungen, Controller, gefundene Konsolen und das Protokoll. IP-Adressen, Passwörter und deine Konto-Nummer sind nicht dabei.").color(TEXT_DIM).size(12.5)).wrap());
+                        ui.add(egui::Label::new(RichText::new("Mitgeschickt werden: OVERLIME-Version, Qualitäts-Einstellungen, Controller, gefundene Konsolen, das Protokoll und bei einem Absturz dessen Fehlermeldung. IP-Adressen, Passwörter und deine Konto-Nummer sind nicht dabei.").color(TEXT_DIM).size(12.5)).wrap());
                     });
                 });
                 if self.report_state == 3 {
@@ -2296,6 +2622,13 @@ impl App {
                 }
             });
         if close {
+            if self.crash_pending {
+                // nicht senden: die Absturzdatei wird gelöscht
+                if let Some(p) = crash_path() {
+                    let _ = std::fs::remove_file(p);
+                }
+                self.crash_pending = false;
+            }
             self.report_open = false;
             if self.report_state == 2 {
                 self.report_text.clear();
@@ -2336,6 +2669,89 @@ impl App {
         self.toasts.push(("Bericht kopiert. Auf der GitHub-Seite mit Strg+V einfügen.".to_string(), 0, self.now));
     }
 
+    /// Kurze Einführung mit weichen Übergängen. Wird einmal gezeigt und lässt sich unter Hilfe > Über wiederholen.
+    fn tour_ui(&mut self, ctx: &egui::Context) {
+        let Some(step) = self.tour else {
+            modal_reset(ctx, "tour");
+            return;
+        };
+        let a = modal_progress(ctx, "tour");
+        let steps: [(&str, &str, &str); 5] = [
+            (ic::ROCKET_LAUNCH, "Willkommen bei OVERLIME", "Eine kurze Tour zeigt dir in einer halben Minute, wie alles funktioniert. Du kannst sie jederzeit überspringen."),
+            (ic::GAME_CONTROLLER, "Konsole verbinden", "Auf der Seite „Konsolen“ siehst du deine PS4 und PS5. Einmal koppelst du sie mit dem Code von der Konsole, danach genügt ein Klick auf „Verbinden“."),
+            (ic::KEYBOARD, "Im Spiel", "Esc öffnet das Menü, F11 schaltet auf Vollbild, F12 macht einen Screenshot, F9 nimmt ein Video auf und M schaltet den Ton aus oder an."),
+            (ic::POWER, "Symbol neben der Uhr", "In den Einstellungen kannst du das kleine Symbol einschalten. Ein Klick darauf weckt die Konsole und verbindet automatisch. Auf Wunsch auch zu einer festen Uhrzeit."),
+            (ic::QUESTION, "Hilfe, wenn etwas klemmt", "Unter „Hilfe & Diagnose“ prüft OVERLIME alles für dich, hilft beim Controller und lässt dich Probleme direkt melden."),
+        ];
+        let last = steps.len() - 1;
+        let (mut next, mut skip) = (false, false);
+        egui::Area::new(egui::Id::new("tour_dim")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
+            let r = ctx.screen_rect();
+            ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha((170.0 * a) as u8));
+            ui.allocate_rect(r, egui::Sense::click());
+        });
+        egui::Window::new("tour")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, (1.0 - a) * 18.0])
+            .order(egui::Order::Tooltip)
+            .frame(egui::Frame::none().fill(th_card().gamma_multiply(a)).rounding(22.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5 * a))).inner_margin(egui::Margin::same(30.0)))
+            .show(ctx, |ui| {
+                ui.set_opacity(a);
+                ui.set_width(440.0);
+                let (icn, title, text) = steps[step];
+                // Inhalt gleitet beim Weiterschalten sanft ein
+                let k = ctx.animate_value_with_time(egui::Id::new("tour_step_anim"), step as f32, 0.35);
+                let moving = (k - step as f32).abs();
+                ui.vertical_centered(|ui| {
+                    let (rc, _) = ui.allocate_exact_size(Vec2::splat(76.0), egui::Sense::hover());
+                    ui.painter().circle_filled(rc.center(), 38.0, th_blue().gamma_multiply(0.25));
+                    ui.painter().text(rc.center(), Align2::CENTER_CENTER, icn, FontId::proportional(36.0), th_blue_light());
+                    ui.add_space(10.0);
+                    ui.label(RichText::new(title).size(24.0).strong().color(Color32::WHITE.gamma_multiply(1.0 - moving.min(1.0) * 0.6)));
+                    ui.add_space(6.0);
+                    ui.add(egui::Label::new(RichText::new(text).color(TEXT_DIM).size(14.5)).wrap());
+                });
+                ui.add_space(16.0);
+                // Fortschrittspunkte
+                ui.horizontal(|ui| {
+                    let w = steps.len() as f32 * 22.0;
+                    ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
+                    for i in 0..steps.len() {
+                        let (rc, _) = ui.allocate_exact_size(Vec2::new(22.0, 10.0), egui::Sense::hover());
+                        let on = ctx.animate_bool_with_time(egui::Id::new(("tour_dot", i)), i == step, 0.3);
+                        let r = 3.0 + 2.0 * on;
+                        ui.painter().circle_filled(rc.center(), r, TEXT_DIM.gamma_multiply(0.35).lerp_to_gamma(th_blue_light(), on));
+                    }
+                });
+                ui.add_space(14.0);
+                let label = if step == last { "Los geht's" } else { "Weiter" };
+                if ui.add(big_button(label, th_blue()).min_size(Vec2::new(440.0, 48.0))).clicked() {
+                    next = true;
+                }
+                if step < last {
+                    ui.add_space(4.0);
+                    ui.vertical_centered(|ui| {
+                        if ui.add(egui::Button::new(RichText::new("Tour überspringen").color(TEXT_DIM)).frame(false)).clicked() {
+                            skip = true;
+                        }
+                    });
+                }
+            });
+        if next {
+            if step >= last {
+                skip = true;
+            } else {
+                self.tour = Some(step + 1);
+            }
+        }
+        if skip {
+            self.tour = None;
+            self.settings.tour_done = true;
+        }
+    }
+
     /// Hält das Test-Ergebnis lokal fest (nur auf diesem PC, wird nirgends hingeschickt).
     fn save_feedback(&self, result: &str) {
         use std::io::Write;
@@ -2350,10 +2766,14 @@ impl App {
 
     /// Kurze Abfrage nach dem Streamen: gut oder schlecht.
     fn feedback_ui(&mut self, ctx: &egui::Context) {
-        let Some(err) = self.feedback else { return };
+        let Some(err) = self.feedback else {
+            modal_reset(ctx, "feedback");
+            return;
+        };
+        let a = modal_progress(ctx, "feedback");
         egui::Area::new(egui::Id::new("fb_dim")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
             let r = ctx.screen_rect();
-            ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha(150));
+            ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha((150.0 * a) as u8));
             ui.allocate_rect(r, egui::Sense::click());
         });
         let (mut good, mut bad, mut later) = (false, false, false);
@@ -2361,10 +2781,11 @@ impl App {
             .title_bar(false)
             .collapsible(false)
             .resizable(false)
-            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .anchor(Align2::CENTER_CENTER, [0.0, (1.0 - a) * 18.0])
             .order(egui::Order::Tooltip)
-            .frame(egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
+            .frame(egui::Frame::none().fill(th_card().gamma_multiply(a)).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5 * a))).inner_margin(egui::Margin::same(26.0)))
             .show(ctx, |ui| {
+                ui.set_opacity(a);
                 ui.set_width(400.0);
                 if err {
                     ui.label(RichText::new("Die Verbindung hat nicht geklappt").size(21.0).strong().color(RED));
@@ -2454,8 +2875,8 @@ impl App {
         if self.update_busy {
             return;
         }
-        if self.session.is_some() {
-            self.toasts.push(("Während eines Spiels wird nichts installiert. Bitte danach aktualisieren.".to_string(), 1, self.now));
+        if self.session.is_some() || self.starting.is_some() || self.reconnecting {
+            self.toasts.push(("Während eines Spiels oder Verbindens wird nichts installiert. Bitte danach aktualisieren.".to_string(), 1, self.now));
             return;
         }
         self.update_busy = true;
@@ -2484,6 +2905,7 @@ impl App {
         let mut stop = false;
         let mut open_menu = false;
         let mut bar_shot = false;
+        let mut bar_rec = false;
         let mut bar_keys = false;
         let mut bar_quick = false;
         let show_hud = self.show_hud;
@@ -2559,6 +2981,13 @@ impl App {
         s.ping = ping;
         s.dec_ms = dec;
         s.kbps = kbps;
+        if s.hist_t.elapsed() >= Duration::from_millis(500) {
+            s.hist_t = Instant::now();
+            s.hist.push((ping, kbps as f32 / 1000.0, s.loss_rate));
+            if s.hist.len() > 120 {
+                s.hist.remove(0);
+            }
+        }
         if s.loss_t.elapsed() >= Duration::from_secs(1) {
             let lost_now = s.stream.status().8;
             s.loss_rate = (lost_now - s.loss_prev).max(0) as f32 / s.loss_t.elapsed().as_secs_f32();
@@ -2579,6 +3008,7 @@ impl App {
         s.size = (w, h);
         s.lost = lost;
         // Verbindung mitten im Spiel verloren: bis zu dreimal automatisch neu verbinden
+        let has_video_now = s.has_video;
         let auto_retry = state == 2 && err && s.has_video && s.started.elapsed().as_secs() >= 20;
         let healthy = state == 1 && s.started.elapsed().as_secs() >= 60;
         if frames != s.frames_total {
@@ -2599,6 +3029,7 @@ impl App {
                     f.dirty = true;
                     f.sharp = sharp;
                     f.nearest = nearest;
+                    f.interp = self.settings.interp;
                 }
                 s.has_video = true;
                 s.vsize = (fw, fh);
@@ -2722,18 +3153,44 @@ impl App {
                         }
                     }
                 };
-                let hud = format!(
-                    "{}x{}  •  {} FPS{}{}{}{}",
-                    s.size.0,
-                    s.size.1,
-                    s.fps,
-                    if s.lost > 0 { format!("  •  {} Pakete verloren", s.lost) } else { String::new() },
-                    if pad_connected { "  •  Controller".to_string() } else { String::new() },
-                    atxt,
-                    if s.ping >= 0.0 { format!("  •  Ping {:.0} ms  •  Dek. {:.1} ms  •  {:.1} Mbit/s", s.ping, s.dec_ms, s.kbps as f32 / 1000.0) } else { String::new() }
-                );
-                if show_hud {
-                    ui.painter().text(full.left_top() + Vec2::new(14.0, 12.0), Align2::LEFT_TOP, hud, FontId::monospace(12.0), Color32::from_white_alpha(150));
+                let items = self.settings.hud_items;
+                let mut parts: Vec<String> = Vec::new();
+                if items & (1 << 0) != 0 {
+                    parts.push(format!("{}x{}", s.size.0, s.size.1));
+                }
+                if items & (1 << 1) != 0 {
+                    parts.push(format!("{} FPS", s.fps));
+                }
+                if items & (1 << 2) != 0 && s.ping >= 0.0 {
+                    parts.push(format!("Ping {:.0} ms", s.ping));
+                }
+                if items & (1 << 3) != 0 && s.ping >= 0.0 {
+                    parts.push(format!("Dek. {:.1} ms", s.dec_ms));
+                }
+                if items & (1 << 4) != 0 && s.ping >= 0.0 {
+                    parts.push(format!("{:.1} Mbit/s", s.kbps as f32 / 1000.0));
+                }
+                if items & (1 << 5) != 0 && s.lost > 0 {
+                    parts.push(format!("{} Pakete verloren", s.lost));
+                }
+                if items & (1 << 6) != 0 && pad_connected {
+                    parts.push("Controller".to_string());
+                }
+                if items & (1 << 7) != 0 {
+                    parts.push(atxt.trim_start_matches("  •  ").to_string());
+                }
+                if items & (1 << 8) != 0 {
+                    parts.push(winui::local_time_hm());
+                }
+                if items & (1 << 9) != 0 {
+                    if let Some(b) = self.pad.battery() {
+                        parts.push(format!("Akku {b}"));
+                    }
+                }
+                let hud = parts.join("  •  ");
+                if show_hud && !hud.is_empty() {
+                    let bar_shift = 52.0 * ctx.animate_bool_with_time(egui::Id::new("bar_anim"), show_ui, 0.25);
+                    paint_hud(ui.painter(), full, hud, &self.settings, bar_shift);
                 }
                 let anim = ctx.animate_bool_with_time(egui::Id::new("bar_anim"), show_ui, 0.25);
                 if anim > 0.01 {
@@ -2757,6 +3214,9 @@ impl App {
                     if fl.shot {
                         bar_shot = true;
                     }
+                    if fl.rec {
+                        bar_rec = true;
+                    }
                     if fl.mute {
                         self.muted = !self.muted;
                     }
@@ -2766,6 +3226,9 @@ impl App {
 
         if bar_shot {
             self.shot_requested = true;
+        }
+        if bar_rec {
+            self.rec_toggle = true;
         }
         if bar_keys {
             self.show_keys = !self.show_keys;
@@ -2805,6 +3268,50 @@ impl App {
             match msg {
                 Ok(path) => self.toasts.push((format!("Screenshot gespeichert: {path}"), 2, self.now)),
                 Err(e) => self.toasts.push((format!("Screenshot fehlgeschlagen: {e}"), 1, self.now)),
+            }
+        }
+
+        // Aufnahme: F9 oder Knopf
+        let want_rec = ctx.input(|i| i.key_pressed(Key::F9)) && !ctx.wants_keyboard_input() || self.rec_toggle;
+        self.rec_toggle = false;
+        if want_rec {
+            if let Some(s) = self.session.as_ref() {
+                if s.stream.record_state() != 0 {
+                    s.stream.record_stop();
+                    let name = std::mem::take(&mut self.rec_name);
+                    self.rec_started = None;
+                    self.toasts.push((format!("Aufnahme gespeichert: {name}"), 2, self.now));
+                } else {
+                    match recording_path() {
+                        Ok((full, name)) => match s.stream.record_start(&full) {
+                            Ok(()) => {
+                                self.rec_started = Some(Instant::now());
+                                self.rec_name = name;
+                                self.toasts.push(("Aufnahme läuft. Mit F9 beendest du sie.".to_string(), 0, self.now));
+                            }
+                            Err(e) => self.toasts.push((format!("Aufnahme nicht möglich: {e}"), 1, self.now)),
+                        },
+                        Err(e) => self.toasts.push((format!("Aufnahme nicht möglich: {e}"), 1, self.now)),
+                    }
+                }
+            }
+        }
+        // Anzeige "REC" mit Zeit und Dateigröße
+        if let (Some(t0), Some(s)) = (self.rec_started, self.session.as_ref()) {
+            if s.stream.record_state() == 0 {
+                self.rec_started = None;
+            } else {
+                let secs = t0.elapsed().as_secs();
+                let mb = s.stream.record_bytes() as f64 / 1_048_576.0;
+                let pulse = 0.55 + 0.45 * ((self.now * 3.0).sin() as f32 * 0.5 + 0.5);
+                let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("rec_badge")));
+                let txt = format!("REC  {:02}:{:02}  {:.0} MB", secs / 60, secs % 60, mb);
+                let galley = p.layout_no_wrap(txt, FontId::proportional(14.0), Color32::WHITE);
+                let r = Rect::from_min_size(Pos2::new(16.0, 76.0), galley.size() + Vec2::new(34.0, 12.0));
+                p.rect_filled(r, Rounding::same(14.0), Color32::from_black_alpha(170));
+                p.circle_filled(Pos2::new(r.min.x + 15.0, r.center().y), 5.0, Color32::from_rgb(235, 60, 60).gamma_multiply(pulse));
+                p.galley(Pos2::new(r.min.x + 27.0, r.center().y - galley.size().y / 2.0), galley, Color32::WHITE);
+                ctx.request_repaint_after(Duration::from_millis(250));
             }
         }
         let (esc, f1, f10) = ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::F1), i.key_pressed(Key::F10)));
@@ -2851,6 +3358,21 @@ impl App {
         if healthy {
             self.auto_retries = 0;
         }
+        if state == 1 && has_video_now {
+            self.quality_retry = 0;
+        }
+        if self.quality_retry > 0 && state == 2 && err && !has_video_now && !stop {
+            if let Some((c, p, _)) = self.last_connect.clone() {
+                self.quality_retry -= 1;
+                self.stop_stream(ctx);
+                self.feedback = None;
+                self.reconnecting = true;
+                self.reconnect_delay_ms = 4000;
+                self.reconnect_msg = "Die Konsole braucht einen Moment, neuer Versuch …".to_string();
+                self.pending_reconnect = Some((c, p, Instant::now()));
+                return;
+            }
+        }
         if auto_retry && !stop && self.auto_retries < 3 {
             if let Some((c, p, _)) = self.last_connect.clone() {
                 self.auto_retries += 1;
@@ -2859,6 +3381,7 @@ impl App {
                 self.feedback = None;
                 self.reconnecting = true;
                 self.reconnect_msg = format!("Verbindung verloren, verbinde neu ({n} von 3) …");
+                self.reconnect_delay_ms = 2500;
                 self.pending_reconnect = Some((c, p, Instant::now()));
                 return;
             }
@@ -2870,6 +3393,8 @@ impl App {
                 self.feedback = None;
                 self.reconnecting = true;
                 self.reconnect_msg = "Neue Qualität wird angewendet …".to_string();
+                self.quality_retry = 3;
+                self.reconnect_delay_ms = 4500;
                 self.pending_reconnect = Some((c, p, Instant::now()));
             }
         }
@@ -2897,6 +3422,13 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.gl_ok = frame.gl().is_some();
+        if self.gl_info.is_empty() {
+            if let Some(gl) = frame.gl() {
+                use eframe::glow::HasContext;
+                let (r, v) = unsafe { (gl.get_parameter_string(eframe::glow::RENDERER), gl.get_parameter_string(eframe::glow::VERSION)) };
+                self.gl_info = format!("{r} (OpenGL {v})");
+            }
+        }
         let t = ctx.input(|i| i.time);
         self.now = t;
         {
@@ -2990,6 +3522,8 @@ impl eframe::App for App {
                     f.w = sw;
                     f.h = sh;
                     f.nv12 = video::test_pattern_nv12(sw, sh);
+                    f.interp = std::env::args().any(|a| a == "--demo-interp");
+                    f.force_t = std::env::args().find_map(|a| a.strip_prefix("--force-t=").and_then(|v| v.parse().ok()));
                     f.dirty = true;
                 }
                 g
@@ -2998,6 +3532,25 @@ impl eframe::App for App {
                 let mut f = gpu.frame.lock().unwrap();
                 f.sharp = [0.0, 0.0, 0.55, 0.9][mode.min(3)];
                 f.nearest = mode == 0;
+            }
+            if std::env::args().any(|a| a == "--demo-interp") {
+                // Quelle mit 10 Bildern pro Sekunde, die jedes Mal 24 Pixel nach rechts springt
+                let (w, h) = {
+                    let f = gpu.frame.lock().unwrap();
+                    (f.w, f.h)
+                };
+                if self.demo_base.is_empty() {
+                    self.demo_base = video::test_pattern_nv12(w, h);
+                }
+                let freeze = std::env::args().any(|a| a == "--freeze");
+                // mit --freeze: genau zwei Bilder (Schritt 2 und 3), danach Stillstand
+                let step = if freeze { if self.demo_step == usize::MAX { 2 } else { 3 } } else { (self.now * 10.0) as usize };
+                if step != self.demo_step && !(freeze && self.demo_step == 3) {
+                    self.demo_step = step;
+                    let mut f = gpu.frame.lock().unwrap();
+                    f.nv12 = video::shift_nv12(&self.demo_base, w, h, (step * 24) % w);
+                    f.dirty = true;
+                }
             }
             let failed = gpu.failed();
             egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |ui| {
@@ -3019,6 +3572,16 @@ impl eframe::App for App {
             if std::env::args().any(|a| a == "--demo-quick") {
                 self.quick = true;
                 self.quick_panel(ctx);
+            }
+            if std::env::args().any(|a| a == "--demo-hud") {
+                let mask = self.settings.hud_items;
+                let demo_parts = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll"];
+                let hud: Vec<&str> = demo_parts.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, s)| *s).collect();
+                paint_hud(&ctx.layer_painter(egui::LayerId::background()), ctx.screen_rect(), hud.join("  •  "), &self.settings, 0.0);
+            }
+            if std::env::args().any(|a| a == "--demo-pause") {
+                self.stream_menu = true;
+                let _ = self.stream_overlays(ctx);
             }
             ctx.request_repaint();
             return;
@@ -3054,7 +3617,7 @@ impl eframe::App for App {
                 ui.painter().text(c + Vec2::new(0.0, 72.0), Align2::CENTER_CENTER, "OVERLIME verbindet kurz neu", FontId::proportional(13.0), TEXT_DIM);
                 ui.put(Rect::from_center_size(c - Vec2::new(0.0, 20.0), Vec2::splat(44.0)), egui::Spinner::new().size(44.0));
             });
-            let go = self.pending_reconnect.as_ref().map(|(_, _, t0)| t0.elapsed() > Duration::from_millis(2500)).unwrap_or(false);
+            let go = self.pending_reconnect.as_ref().map(|(_, _, t0)| t0.elapsed() > Duration::from_millis(self.reconnect_delay_ms)).unwrap_or(false);
             if go {
                 if let Some((c, p, _)) = self.pending_reconnect.take() {
                     self.connect(&c, &p);
@@ -3117,7 +3680,14 @@ impl eframe::App for App {
             self.settings.save();
             self.saved = self.settings.clone();
         }
-        ctx.request_repaint_after(Duration::from_millis(16));
+        {
+            // Im Leerlauf sparsam zeichnen: 30 Bilder/s im Vordergrund, selten wenn unscharf oder minimiert
+            let (focused, minimized) = ctx.input(|i| (i.viewport().focused.unwrap_or(true), i.viewport().minimized.unwrap_or(false)));
+            let animated = matches!(self.page, Page::Home | Page::Consoles);
+            let changing = t - self.page_since < 0.5;
+            let ms = if minimized { 1000 } else if !focused { 250 } else if changing { 16 } else if animated { 50 } else { 100 };
+            ctx.request_repaint_after(Duration::from_millis(ms));
+        }
 
         // animierter Hintergrund
         {
@@ -3289,8 +3859,18 @@ impl eframe::App for App {
         if self.dialog.is_none() {
             self.feedback_ui(ctx);
         }
+        if !self.tour_checked && self.now > 2.0 {
+            self.tour_checked = true;
+            let ready = !self.settings.tour_done && self.session.is_none() && self.dialog.is_none() && !self.report_open && !self.update_busy
+                && !std::env::args().any(|a| a == "--demo" || a == "--login" || a.starts_with("--demo-"));
+            let force = std::env::args().any(|a| a == "--tour");
+            if ready || force {
+                self.tour = Some(0);
+            }
+        }
         self.dialog_ui(ctx);
         self.report_ui(ctx);
+        self.tour_ui(ctx);
         self.draw_toasts(ctx, t);
     }
 }
@@ -3370,7 +3950,110 @@ fn audio_test() {
     }
 }
 
+/// Fortschritt (0 bis 1, weich auslaufend) für das Einblenden eines Fensters. Startet bei jedem Öffnen neu.
+fn modal_progress(ctx: &egui::Context, key: &str) -> f32 {
+    let id = egui::Id::new(("modal_t0", key));
+    let now = ctx.input(|i| i.time);
+    let t0 = ctx.data_mut(|d| *d.get_temp_mut_or_insert_with(id, || now));
+    let p = ((now - t0) / 0.30) as f32;
+    if p < 1.0 {
+        ctx.request_repaint();
+    }
+    ease_out_t(p.clamp(0.0, 1.0))
+}
+
+/// Merkt sich, dass das Fenster geschlossen ist, damit es beim nächsten Öffnen wieder einblendet.
+fn modal_reset(ctx: &egui::Context, key: &str) {
+    let id = egui::Id::new(("modal_t0", key));
+    ctx.data_mut(|d| d.remove::<f64>(id));
+}
+
+fn crash_path() -> Option<std::path::PathBuf> {
+    Some(std::path::PathBuf::from(std::env::var("APPDATA").ok()?).join("overlime").join("crash.txt"))
+}
+
+/// Bei einem Programmfehler eine Datei mit Fehlerbeschreibung ablegen. Beim nächsten Start wird angeboten, sie zu senden.
+fn install_crash_hook() {
+    std::panic::set_hook(Box::new(|info| {
+        let bt = std::backtrace::Backtrace::force_capture();
+        let mut text = format!("OVERLIME {VERSION}\n{info}\n\n{bt}\n");
+        if let Ok(home) = std::env::var("USERPROFILE") {
+            text = text.replace(&home, "%USERPROFILE%");
+        }
+        let text = mask_ips(&text);
+        if let Some(p) = crash_path() {
+            if let Some(d) = p.parent() {
+                let _ = std::fs::create_dir_all(d);
+            }
+            let _ = std::fs::write(p, text);
+        }
+    }));
+}
+
 fn main() -> eframe::Result<()> {
+    install_crash_hook();
+    if std::env::args().any(|a| a == "--crash-test") {
+        panic!("Absturz-Test");
+    }
+    if let Some(i) = std::env::args().position(|a| a == "--rec-selftest") {
+        // overlime --rec-selftest <eingabe.h264> <ausgabe.mp4> <hevc 0/1> <breite> <hoehe>
+        let a: Vec<String> = std::env::args().collect();
+        let (inp, out) = (std::ffi::CString::new(a[i + 1].clone()).unwrap(), std::ffi::CString::new(a[i + 2].clone()).unwrap());
+        let mut err = [0 as std::ffi::c_char; 160];
+        let r = unsafe { ffi::ol_record_selftest(inp.as_ptr(), out.as_ptr(), a[i + 3].parse().unwrap_or(0), a[i + 4].parse().unwrap_or(1280), a[i + 5].parse().unwrap_or(720), err.as_mut_ptr(), err.len()) };
+        std::process::exit(r);
+    }
+    if std::env::args().any(|a| a == "--timing") {
+        use std::io::Write;
+        let mut out = String::new();
+        macro_rules! tm {
+            ($name:expr, $e:expr) => {{
+                let t0 = Instant::now();
+                let r = $e;
+                out.push_str(&format!("{:<22} {:>6.1} ms
+", $name, t0.elapsed().as_secs_f64() * 1000.0));
+                r
+            }};
+        }
+        ffi::init();
+        let _ = tm!("Settings::load", Settings::load());
+        let _ = tm!("store::load", store::load());
+        let _ = tm!("local_ip", discovery::local_ip());
+        let _ = tm!("autostart_enabled", tray::autostart_enabled());
+        let _ = tm!("audio::list_devices", audio::list_devices());
+        let _p = tm!("Pad::new (SDL)", pad::Pad::new());
+        let _ = tm!("theme::all", theme::all());
+        if let Ok(mut f) = std::fs::File::create(std::env::temp_dir().join("ol_timing.txt")) {
+            let _ = f.write_all(out.as_bytes());
+        }
+        return Ok(());
+    }
+    if std::env::args().any(|a| a == "--settings-dump") {
+        let s = Settings::load();
+        let p = store::load();
+        let _ = std::fs::write(std::env::temp_dir().join("ol_dump.txt"), format!("bitrate={} name={} tour={} gekoppelt={}", s.bitrate, s.psn_name, s.tour_done, p.len()));
+        return Ok(());
+    }
+    if std::env::args().any(|a| a == "--discover") {
+        let list = discovery::discover(None, Duration::from_millis(3000)).unwrap_or_default();
+        let mut out = format!("lokale IP: {:?}
+Gefunden: {}
+", discovery::local_ip(), list.len());
+        for c in list {
+            out.push_str(&format!("- {} | {} | {:?} | Software {} | {}
+", c.name, if c.is_ps5 { "PS5" } else { "PS4" }, match c.state { State::Ready => "bereit", State::Standby => "Ruhemodus", State::Unknown => "unbekannt" }, c.system_version, c.addr));
+        }
+        let _ = std::fs::write(std::env::temp_dir().join("ol_discover.txt"), out);
+        return Ok(());
+    }
+    if std::env::args().any(|a| a == "--autostart-status") {
+        std::process::exit(if tray::autostart_enabled() { 0 } else { 4 });
+    }
+    if std::env::args().any(|a| a == "--toast-test") {
+        tray::toast("OVERLIME", "Test: PS5-Wohnzimmer ist bereit. Klick auf das Symbol zum Verbinden.");
+        std::thread::sleep(std::time::Duration::from_secs(3));
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--tray") {
         tray::run();
         return Ok(());

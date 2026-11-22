@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Automatisch neu verbinden, wenn die Verbindung abbricht",
-    "Schärferes Bild beim Hochskalieren (Scharf und Ultra)",
-    "Kleine Verbesserungen an Stabilität und Update",
-    "Weiterhin: Netzwerk-Test, Zeitplan und Klangregler",
+    "Verbinden bricht nicht mehr durch ein Update ab",
+    "Video-Aufnahme mit F9 und neue Menüs im Stream",
+    "Eigene Controller einrichten, Statusanzeige frei wählbar",
+    "Deutlich weniger Last im Leerlauf, schnellerer Start",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

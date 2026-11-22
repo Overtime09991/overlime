@@ -95,6 +95,12 @@ typedef struct {
 } OlCtrlEvents;
 // 1 wenn es neue Ereignisse (Trigger, Licht, Spielerindex) gab
 int ol_stream_take_ctrl_events(OlStream *s, OlCtrlEvents *out);
+// Aufnahme als MP4 (Video unveraendert, Ton als AAC). 0 = ok. Beginnt beim naechsten Schluesselbild.
+int ol_record_start(OlStream *s, const char *path, char *err, size_t err_size);
+void ol_record_stop(OlStream *s);
+int ol_record_state(OlStream *s);       // 0 aus, 1 wartet, 2 laeuft
+uint64_t ol_record_bytes(OlStream *s);
+int ol_record_selftest(const char *in_path, const char *out_path, int hevc, int w, int h, char *err, size_t err_size);
 void ol_stream_stop(OlStream *s);
 
 // Button-Masken (wie ChiakiControllerButton)
