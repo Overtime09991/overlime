@@ -310,7 +310,12 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Hilfe & Diagnose").size(26.0).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new(format!("{} Problem melden", ic::BUG)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                let rep_btn = ui.add(egui::Button::new(format!("{} Problem melden", ic::BUG)).fill(th_card_hover()).rounding(10.0));
+                if rep_btn.clicked() && !RELAY_URL.is_empty() {
+                    self.report_open = true;
+                    self.report_state = 0;
+                }
+                if rep_btn.clicked() && RELAY_URL.is_empty() {
                     ui.ctx().copy_text(self.diag_report());
                     let url = format!(
                         "https://github.com/Overtime09991/overlime/issues/new?title={}&body={}",

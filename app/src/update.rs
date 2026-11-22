@@ -1,5 +1,7 @@
 //! Automatische Updates über GitHub Releases.
-//! Erwartet im neuesten Release die Dateien `overlime.exe` und `overlime.exe.sha256`.
+//! Erwartet im neuesten Release die Dateien `overlime.exe`, `overlime.exe.sha256` und `overlime.exe.sig`.
+//! Installiert wird nur, wenn die Signatur (Ed25519) zum eingebauten öffentlichen Schlüssel passt.
+use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use sha2::{Digest, Sha256};
 use std::io::Read;
 use std::sync::{Arc, Mutex};
@@ -8,11 +10,31 @@ use std::time::{Duration, Instant};
 /// "besitzer/repository" auf GitHub. Leer = Updates aus.
 pub const UPDATE_REPO: &str = "Overtime09991/overlime";
 
+/// Öffentlicher Schlüssel des Entwicklers. Nur Updates, die damit geprüft werden können, werden installiert.
+const UPDATE_PUBKEY: &str = "f29c68e6866db362f59acbe00bbeecb944127e9b344661ea7f1da2a38dbbf6eb";
+
+fn unhex(s: &str) -> Option<Vec<u8>> {
+    let s = s.trim();
+    if s.len() % 2 != 0 {
+        return None;
+    }
+    (0..s.len() / 2).map(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).ok()).collect()
+}
+
+/// Prüft die Signatur über die heruntergeladene Programmdatei.
+pub fn verify_signature(data: &[u8], sig_hex: &str) -> Result<(), String> {
+    let key: [u8; 32] = unhex(UPDATE_PUBKEY).and_then(|v| v.try_into().ok()).ok_or("Interner Schlüsselfehler")?;
+    let key = VerifyingKey::from_bytes(&key).map_err(|_| "Interner Schlüsselfehler".to_string())?;
+    let sig: [u8; 64] = unhex(sig_hex).and_then(|v| v.try_into().ok()).ok_or("Ungültige Signatur")?;
+    key.verify(data, &Signature::from_bytes(&sig)).map_err(|_| "Signatur stimmt nicht – Update abgebrochen".to_string())
+}
+
 #[derive(Clone, Debug)]
 pub struct Release {
     pub version: String,
     pub url: String,
     pub sha_url: String,
+    pub sig_url: String,
     pub notes: String,
 }
 
@@ -62,6 +84,7 @@ pub fn check(current: &str) -> Result<Option<Release>, String> {
     }
     let mut exe = None;
     let mut sha = None;
+    let mut sig = None;
     if let Some(assets) = v["assets"].as_array() {
         for a in assets {
             let name = a["name"].as_str().unwrap_or("");
@@ -70,17 +93,20 @@ pub fn check(current: &str) -> Result<Option<Release>, String> {
                 exe = Some(dl);
             } else if name == "overlime.exe.sha256" {
                 sha = Some(dl);
+            } else if name == "overlime.exe.sig" {
+                sig = Some(dl);
             }
         }
     }
-    match (exe, sha) {
-        (Some(url), Some(sha_url)) => Ok(Some(Release {
+    match (exe, sha, sig) {
+        (Some(url), Some(sha_url), Some(sig_url)) => Ok(Some(Release {
             version: tag.trim_start_matches(['v', 'V']).to_string(),
             url,
             sha_url,
+            sig_url,
             notes: v["body"].as_str().unwrap_or("").chars().take(3000).collect(),
         })),
-        _ => Err("Release ohne overlime.exe/overlime.exe.sha256".into()),
+        _ => Err("Release ohne Programmdatei, Prüfsumme oder Signatur".into()),
     }
 }
 
@@ -110,6 +136,8 @@ pub fn install(rel: &Release) -> Result<(), String> {
     if data.len() < 1_000_000 || &data[..2] != b"MZ" {
         return Err("Heruntergeladene Datei ist keine gültige Programmdatei".into());
     }
+    let sig_txt = String::from_utf8(download(&rel.sig_url, 4096)?).map_err(|e| e.to_string())?;
+    verify_signature(&data, &sig_txt)?;
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let old = exe.with_extension("old");
     let _ = std::fs::remove_file(&old);
@@ -200,6 +228,8 @@ pub fn install_ui(rel: &Release, p: Arc<Mutex<Progress>>) -> Result<(), String> 
         if data.len() < 1_000_000 || &data[..2] != b"MZ" {
             return Err("Heruntergeladene Datei ist keine gültige Programmdatei".into());
         }
+        let sig_txt = String::from_utf8(download(&rel.sig_url, 4096)?).map_err(|e| e.to_string())?;
+        verify_signature(&data, &sig_txt)?;
         hold(t2, Duration::from_millis(3000));
 
         // 3: Installieren

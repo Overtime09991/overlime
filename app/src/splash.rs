@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Neuer Einrichtungs-Assistent beim ersten Start",
-    "Einstellungen mit Suche und Kategorien",
-    "Hilfe und Diagnose in einer Seite mit Reitern",
-    "OVERLIME öffnet sich nur noch einmal",
+    "Probleme direkt aus der App melden",
+    "Updates sind jetzt signiert und damit sicherer",
+    "Koppel-Schlüssel werden verschlüsselt gespeichert",
+    "Mehr Protokoll im Bericht für schnellere Hilfe",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

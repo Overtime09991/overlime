@@ -34,7 +34,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.23";
+const VERSION: &str = "0.24";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -44,6 +44,9 @@ enum Page {
     Settings,
     Help,
 }
+
+/// Adresse des Meldeservers (Cloudflare Worker). Leer = Meldungen laufen über GitHub.
+const RELAY_URL: &str = "https://overlime.info/meldung.php";
 
 enum Msg {
     Found(Vec<Console>),
@@ -58,6 +61,7 @@ enum Msg {
     UpdateAvail(update::Release),
     UpdateNone,
     DiagPort(bool, String),
+    ReportDone(bool, String),
     News(Vec<update::NewsItem>),
     NewsErr(String),
     UpdateCheckFailed(String),
@@ -140,6 +144,11 @@ struct App {
     login_step: usize,
     set_cat: usize,
     help_tab: usize,
+    report_open: bool,
+    report_text: String,
+    report_state: u8,
+    report_msg: String,
+    report_last: f64,
     set_q: String,
     clip_seen: f64,
     login_busy: bool,
@@ -249,6 +258,11 @@ impl App {
             login_pasted: String::new(),
             set_cat: 0,
             help_tab: 0,
+            report_open: std::env::args().any(|a| a == "--report-dialog"),
+            report_text: String::new(),
+            report_state: 0,
+            report_msg: String::new(),
+            report_last: 0.0,
             set_q: String::new(),
             login_step: std::env::args().find_map(|a| a.strip_prefix("--login-step=").and_then(|v| v.parse().ok())).unwrap_or(0),
             clip_seen: 0.0,
@@ -322,12 +336,13 @@ impl App {
                     version: "0.20".into(),
                     url: String::new(),
                     sha_url: String::new(),
+                    sig_url: String::new(),
                     notes: "### Neu in 0.20\n- **Neue Funktion** zum Ausprobieren\n- Schnelleres Verbinden\n- Viele kleine Verbesserungen\n".into(),
                 });
                 app.update_checked = true;
             }
             if std::env::args().any(|a| a == "--demo-update") {
-                app.update = Some(update::Release { version: "0.11".into(), url: String::new(), sha_url: String::new(), notes: String::new() });
+                app.update = Some(update::Release { version: "0.11".into(), url: String::new(), sha_url: String::new(), sig_url: String::new(), notes: String::new() });
                 app.update_busy = true;
                 let prog = app.upd_progress.clone();
                 std::thread::spawn(move || {
@@ -710,6 +725,10 @@ impl App {
                     self.news_loading = false;
                     self.news_err = mask_ips(&e);
                     self.news_fetched = Some(Instant::now());
+                }
+                Msg::ReportDone(ok, text) => {
+                    self.report_state = if ok { 2 } else { 3 };
+                    self.report_msg = text;
                 }
                 Msg::DiagPort(ok, text) => {
                     self.diag_busy = false;
@@ -2052,12 +2071,116 @@ impl App {
             r.push_str(&format!("Verbindungstest: {} - {}\n", if *ok { "ok" } else { "fehlgeschlagen" }, t));
         }
         r.push_str("\n--- Protokoll (letzte Zeilen) ---\n");
-        let tail: Vec<&str> = self.log.lines().rev().take(40).collect();
+        let tail: Vec<&str> = self.log.lines().rev().take(150).collect();
         for l in tail.into_iter().rev() {
             r.push_str(&mask_ips(l));
             r.push('\n');
         }
         r
+    }
+
+    /// Fenster "Problem melden": schickt Beschreibung, Bericht und Protokoll an den Entwickler.
+    fn report_ui(&mut self, ctx: &egui::Context) {
+        if !self.report_open {
+            return;
+        }
+        egui::Area::new(egui::Id::new("rp_dim")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
+            let r = ctx.screen_rect();
+            ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha(170));
+            ui.allocate_rect(r, egui::Sense::click());
+        });
+        let mut close = false;
+        let mut send = false;
+        egui::Window::new("report")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .order(egui::Order::Tooltip)
+            .frame(egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
+            .show(ctx, |ui| {
+                ui.set_width(480.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Problem melden").size(22.0).strong());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if self.report_state != 1 && ui.add(egui::Button::new("X").fill(th_card_hover()).rounding(8.0)).clicked() {
+                            close = true;
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                if self.report_state == 2 {
+                    ui.add_space(10.0);
+                    ui.vertical_centered(|ui| {
+                        ui.label(RichText::new(ic::CHECK_CIRCLE).size(46.0).color(GREEN));
+                        ui.label(RichText::new("Danke, deine Meldung ist angekommen!").size(18.0).strong());
+                        ui.label(RichText::new("Ich schaue sie mir an und melde mich, falls ich etwas wissen muss.").color(TEXT_DIM).size(13.0));
+                    });
+                    ui.add_space(12.0);
+                    if ui.add(big_button("Schließen", th_blue()).min_size(Vec2::new(480.0, 44.0))).clicked() {
+                        close = true;
+                    }
+                    return;
+                }
+                ui.label(RichText::new("Beschreibe kurz, was du tun wolltest und was passiert ist.").color(TEXT_DIM).size(13.5));
+                ui.add_space(6.0);
+                ui.add_enabled(self.report_state != 1, egui::TextEdit::multiline(&mut self.report_text).hint_text("z. B. „Beim Verbinden mit der PS5 bleibt das Bild schwarz“").desired_rows(5).desired_width(480.0));
+                self.report_text.truncate(2000);
+                ui.add_space(8.0);
+                egui::Frame::none().fill(th_bg().gamma_multiply(0.6)).rounding(12.0).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+                    ui.set_width(456.0);
+                    ui.horizontal_top(|ui| {
+                        ui.label(RichText::new(ic::LOCK_KEY).size(18.0).color(GREEN));
+                        ui.add(egui::Label::new(RichText::new("Mitgeschickt werden: OVERLIME-Version, Qualitäts-Einstellungen, Controller, gefundene Konsolen und das Protokoll. IP-Adressen, Passwörter und deine Konto-Nummer sind nicht dabei.").color(TEXT_DIM).size(12.5)).wrap());
+                    });
+                });
+                if self.report_state == 3 {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(&self.report_msg).color(RED).size(13.0));
+                }
+                ui.add_space(10.0);
+                if self.report_state == 1 {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(RichText::new("Sende …").color(TEXT_DIM));
+                    });
+                } else {
+                    let ok = self.report_text.trim().chars().count() >= 5;
+                    if ui.add_enabled(ok, big_button("Senden", th_blue()).min_size(Vec2::new(480.0, 46.0))).clicked() {
+                        send = true;
+                    }
+                    if !ok {
+                        ui.label(RichText::new("Bitte ein paar Worte schreiben.").color(TEXT_DIM).size(12.0));
+                    }
+                }
+            });
+        if close {
+            self.report_open = false;
+            if self.report_state == 2 {
+                self.report_text.clear();
+            }
+            self.report_state = 0;
+        }
+        if send {
+            if self.now - self.report_last < 30.0 && self.report_last > 0.0 {
+                self.report_state = 3;
+                self.report_msg = "Bitte warte kurz, bevor du noch eine Meldung schickst.".to_string();
+            } else {
+                self.report_last = self.now;
+                self.report_state = 1;
+                let report = self.diag_report();
+                let text = self.report_text.trim().to_string();
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    let body = serde_json::json!({ "version": VERSION, "message": text, "report": report });
+                    let m = match ureq::post(RELAY_URL).timeout(Duration::from_secs(15)).set("X-Overlime", "1").send_json(body) {
+                        Ok(_) => Msg::ReportDone(true, String::new()),
+                        Err(e) => Msg::ReportDone(false, format!("Senden nicht möglich ({}). Prüfe die Internetverbindung.", mask_ips(&e.to_string()))),
+                    };
+                    let _ = tx.send(m);
+                });
+            }
+        }
     }
 
     /// Kopiert den Bericht und öffnet die Meldeseite auf GitHub.
@@ -3004,6 +3127,7 @@ impl eframe::App for App {
             self.feedback_ui(ctx);
         }
         self.dialog_ui(ctx);
+        self.report_ui(ctx);
         self.draw_toasts(ctx, t);
     }
 }
@@ -3090,6 +3214,12 @@ fn main() -> eframe::Result<()> {
     }
     if !std::env::args().any(|a| a.starts_with("--") && a != "--connect-now") && !winui::single_instance() {
         return Ok(());
+    }
+    if let Some(i) = std::env::args().position(|a| a == "--verify-sig") {
+        let a: Vec<String> = std::env::args().collect();
+        let data = std::fs::read(&a[i + 1]).unwrap_or_default();
+        let sig = std::fs::read_to_string(&a[i + 2]).unwrap_or_default();
+        std::process::exit(if update::verify_signature(&data, &sig).is_ok() { 0 } else { 3 });
     }
     ffi::init();
     if std::env::args().any(|a| a == "--audio-test") {
