@@ -442,6 +442,68 @@ pub fn fetch_news() -> Result<Vec<NewsItem>, String> {
     if !enabled() {
         return Ok(Vec::new());
     }
+    let first = if std::env::var_os("OL_NO_API").is_some() { Err("API aus (Test)".to_string()) } else { fetch_news_api() };
+    match first {
+        Ok(v) if !v.is_empty() => Ok(v),
+        Ok(v) => fetch_news_feed().or(Ok(v)),
+        Err(e) => fetch_news_feed().map_err(|e2| format!("{e} / {e2}")),
+    }
+}
+
+fn unescape(s: &str) -> String {
+    s.replace("&lt;", "<").replace("&gt;", ">").replace("&quot;", "\"").replace("&#39;", "'").replace("&amp;", "&")
+}
+
+/// Wandelt den HTML-Teil eines Feed-Eintrags in einfachen Text mit "###" und "- " um.
+fn html_to_notes(html: &str) -> String {
+    let h = unescape(html).replace("<h3", "
+### <h3").replace("<li", "
+- <li");
+    let mut out = String::new();
+    let mut in_tag = false;
+    for c in h.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    unescape(&out)
+}
+
+/// Ausweg ohne GitHub-API: der Release-Feed der Seite (kein Zugriffslimit).
+fn fetch_news_feed() -> Result<Vec<NewsItem>, String> {
+    let url = format!("https://github.com/{UPDATE_REPO}/releases.atom");
+    let xml = ureq::get(&url)
+        .set("User-Agent", "overlime-news")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_string()
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    for entry in xml.split("<entry>").skip(1).take(15) {
+        let between = |a: &str, b: &str| -> String {
+            entry.find(a).and_then(|i| entry[i + a.len()..].find(b).map(|j| entry[i + a.len()..i + a.len() + j].to_string())).unwrap_or_default()
+        };
+        let link = between("<link rel=\"alternate\" type=\"text/html\" href=\"", "\"");
+        let tag = link.rsplit_once("/tag/").map(|(_, t)| t.trim_start_matches(['v', 'V']).to_string()).unwrap_or_default();
+        let content = between("<content type=\"html\">", "</content>");
+        let items = highlights_all(&html_to_notes(&content));
+        if tag.is_empty() || items.is_empty() {
+            continue;
+        }
+        let date = between("<updated>", "<").chars().take(10).collect();
+        out.push(NewsItem { version: tag, date, items });
+    }
+    if out.is_empty() {
+        return Err("Feed ohne Neuigkeiten".into());
+    }
+    Ok(out)
+}
+
+fn fetch_news_api() -> Result<Vec<NewsItem>, String> {
     let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases?per_page=15");
     let v: serde_json::Value = ureq::get(&url)
         .set("User-Agent", "overlime-news")

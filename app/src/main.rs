@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.34";
+const VERSION: &str = "0.35";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -4322,6 +4322,13 @@ Gefunden: {}
         }
     }
     if std::env::args().any(|a| a == "--check-test") {
+        if std::env::args().any(|a| a == "--news-test") {
+            match update::fetch_news() {
+                Ok(v) => v.iter().for_each(|n| println!("{} {} {:?}", n.version, n.date, n.items)),
+                Err(e) => println!("fehler: {e}"),
+            }
+            return Ok(());
+        }
         match update::check("0.30") {
             Ok(Some(r)) => println!("neu: {} {} {}", r.version, r.url, r.sig_url),
             Ok(None) => println!("aktuell"),

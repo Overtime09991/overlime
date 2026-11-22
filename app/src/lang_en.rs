@@ -181,6 +181,7 @@ pub const EN: &[(&str, &str)] = &[
     (r##"Ruhige Vorschau der Statusanzeige"##, r##"Calm status display preview"##),
     (r##"Neuer, ruhiger Update-Abschlussbildschirm"##, r##"New, calm update completion screen"##),
     (r##"Updateprüfung klappt auch bei GitHub-Limit"##, r##"Update check also works under GitHub rate limits"##),
+    (r##"Neuigkeiten laden auch bei GitHub-Limit"##, r##"News also load under GitHub rate limits"##),
     (r##"Mit Windows starten (Symbol im Hintergrund)"##, r##"Start with Windows (icon in the background)"##),
     (r##"Mit einem Klick schickst du den Fehlerbericht ab, damit wir den Grund finden. Er enthält keine IP-Adressen und keine Passwörter."##, r##"With one click you send the error report so we can find the cause. It contains no IP addresses and no passwords."##),
     (r##"Mit {} Mbit/s läuft es vermutlich ruhiger."##, r##"It will probably run smoother at {} Mbit/s."##),
