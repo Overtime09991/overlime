@@ -8,7 +8,8 @@ pub fn tile(ui: &mut egui::Ui, w: f32, title: &str, value: &str, sub: &str, colo
     p.rect_filled(Rect::from_min_size(rect.min + Vec2::new(0.0, 16.0), Vec2::new(4.0, 72.0)), Rounding::same(2.0), color);
     p.circle_filled(rect.right_top() + Vec2::new(-10.0, 10.0), 46.0, color.gamma_multiply(0.10));
     p.text(rect.min + Vec2::new(20.0, 14.0), Align2::LEFT_TOP, title, FontId::proportional(12.5), TEXT_DIM);
-    p.text(rect.min + Vec2::new(20.0, 36.0), Align2::LEFT_TOP, value, FontId::proportional(28.0), Color32::WHITE);
+    let vsize = if value.chars().count() > 9 { 21.0 } else { 28.0 };
+    p.text(rect.min + Vec2::new(20.0, 36.0 + (28.0 - vsize) / 2.0), Align2::LEFT_TOP, value, FontId::proportional(vsize), Color32::WHITE);
     p.text(rect.min + Vec2::new(20.0, 76.0), Align2::LEFT_TOP, sub, FontId::proportional(12.0), color);
 }
 

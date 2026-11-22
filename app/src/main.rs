@@ -161,6 +161,7 @@ impl App {
             rx,
         };
         if std::env::args().any(|a| a == "--demo") {
+            app.local_ip = "192.168.0.10".into();
             let mk = |name: &str, ps5: bool, state: State, ip: &str, a: &str| Console {
                 addr: ip.into(),
                 name: name.into(),
@@ -198,7 +199,7 @@ impl App {
                     console: app.consoles[0].clone(),
                     step: Step::Pin,
                     pasted: String::new(),
-                    pin: "1234".into(),
+                    pin: "48271953".into(),
                     message: String::new(),
                 });
             }
