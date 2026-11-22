@@ -9,6 +9,7 @@ use std::sync::{Arc, Mutex};
 /// Gemeinsamer Zustand zwischen Oberfläche und Audio-Thread.
 pub struct Shared {
     gain_bits: AtomicU32,
+    eq_bits: [AtomicU32; 3],
     pub frames_played: AtomicU64,
     pub underruns: AtomicU64,
     pub info: Mutex<String>,
@@ -19,6 +20,7 @@ impl Shared {
     fn new(gain: f32) -> Self {
         Self {
             gain_bits: AtomicU32::new(gain.to_bits()),
+            eq_bits: [AtomicU32::new(0f32.to_bits()), AtomicU32::new(0f32.to_bits()), AtomicU32::new(0f32.to_bits())],
             frames_played: AtomicU64::new(0),
             underruns: AtomicU64::new(0),
             info: Mutex::new(String::new()),
@@ -27,6 +29,15 @@ impl Shared {
     }
     pub fn set_gain(&self, g: f32) {
         self.gain_bits.store(g.max(0.0).to_bits(), Ordering::Relaxed);
+    }
+    /// Klang in dB (Bass, Mitten, Höhen), je -8 bis +8.
+    pub fn set_eq(&self, bass: f32, mid: f32, treble: f32) {
+        for (i, v) in [bass, mid, treble].iter().enumerate() {
+            self.eq_bits[i].store(v.clamp(-8.0, 8.0).to_bits(), Ordering::Relaxed);
+        }
+    }
+    fn eq(&self) -> [f32; 3] {
+        [f32::from_bits(self.eq_bits[0].load(Ordering::Relaxed)), f32::from_bits(self.eq_bits[1].load(Ordering::Relaxed)), f32::from_bits(self.eq_bits[2].load(Ordering::Relaxed))]
     }
     fn gain(&self) -> f32 {
         f32::from_bits(self.gain_bits.load(Ordering::Relaxed))
@@ -57,6 +68,108 @@ pub fn start(stream: Arc<Stream>, device_name: &str, gain: f32) -> Result<Audio,
 }
 
 /// Eine einfache lineare Anpassung von 48 kHz auf die Geräte-Abtastrate.
+/// Ein Biquad-Filter (RBJ) für einen Kanal.
+#[derive(Clone, Copy, Default)]
+struct Biquad {
+    b0: f32,
+    b1: f32,
+    b2: f32,
+    a1: f32,
+    a2: f32,
+    z1: [f32; 2],
+    z2: [f32; 2],
+}
+
+impl Biquad {
+    fn set(&mut self, kind: u8, fs: f32, f0: f32, q: f32, db: f32) {
+        let a = 10f32.powf(db / 40.0);
+        let w = 2.0 * std::f32::consts::PI * f0 / fs;
+        let (sn, cs) = (w.sin(), w.cos());
+        let alpha = sn / (2.0 * q);
+        let (b0, b1, b2, a0, a1, a2);
+        match kind {
+            // Tiefen-Regler (Low-Shelf)
+            0 => {
+                let t = 2.0 * a.sqrt() * alpha;
+                b0 = a * ((a + 1.0) - (a - 1.0) * cs + t);
+                b1 = 2.0 * a * ((a - 1.0) - (a + 1.0) * cs);
+                b2 = a * ((a + 1.0) - (a - 1.0) * cs - t);
+                a0 = (a + 1.0) + (a - 1.0) * cs + t;
+                a1 = -2.0 * ((a - 1.0) + (a + 1.0) * cs);
+                a2 = (a + 1.0) + (a - 1.0) * cs - t;
+            }
+            // Mitten (Peaking)
+            1 => {
+                b0 = 1.0 + alpha * a;
+                b1 = -2.0 * cs;
+                b2 = 1.0 - alpha * a;
+                a0 = 1.0 + alpha / a;
+                a1 = -2.0 * cs;
+                a2 = 1.0 - alpha / a;
+            }
+            // Höhen-Regler (High-Shelf)
+            _ => {
+                let t = 2.0 * a.sqrt() * alpha;
+                b0 = a * ((a + 1.0) + (a - 1.0) * cs + t);
+                b1 = -2.0 * a * ((a - 1.0) + (a + 1.0) * cs);
+                b2 = a * ((a + 1.0) + (a - 1.0) * cs - t);
+                a0 = (a + 1.0) - (a - 1.0) * cs + t;
+                a1 = 2.0 * ((a - 1.0) - (a + 1.0) * cs);
+                a2 = (a + 1.0) - (a - 1.0) * cs - t;
+            }
+        }
+        self.b0 = b0 / a0;
+        self.b1 = b1 / a0;
+        self.b2 = b2 / a0;
+        self.a1 = a1 / a0;
+        self.a2 = a2 / a0;
+    }
+    #[inline]
+    fn run(&mut self, ch: usize, x: f32) -> f32 {
+        let y = self.b0 * x + self.z1[ch];
+        self.z1[ch] = self.b1 * x - self.a1 * y + self.z2[ch];
+        self.z2[ch] = self.b2 * x - self.a2 * y;
+        y
+    }
+}
+
+/// Dreiband-Klangregler (Bass, Mitten, Höhen).
+struct Eq {
+    f: [Biquad; 3],
+    cur: [f32; 3],
+    pre: f32,
+}
+
+impl Eq {
+    fn new() -> Self {
+        Eq { f: [Biquad::default(); 3], cur: [0.0; 3], pre: 1.0 }
+    }
+    fn process(&mut self, out: &mut [f32], channels: usize, fs: f32, want: [f32; 3]) {
+        if want != self.cur {
+            self.cur = want;
+            self.f[0].set(0, fs, 120.0, 0.8, want[0]);
+            self.f[1].set(1, fs, 1000.0, 0.9, want[1]);
+            self.f[2].set(2, fs, 6000.0, 0.8, want[2]);
+            // Verstärkungen vorab absenken, damit nichts übersteuert
+            let boost = want.iter().cloned().fold(0.0f32, f32::max);
+            self.pre = 10f32.powf(-boost / 20.0);
+        }
+        if want == [0.0, 0.0, 0.0] {
+            return;
+        }
+        let frames = out.len() / channels.max(1);
+        for fr in 0..frames {
+            for ch in 0..channels.min(2) {
+                let mut x = out[fr * channels + ch] * self.pre;
+                for b in self.f.iter_mut() {
+                    x = b.run(ch, x);
+                }
+                out[fr * channels + ch] = x;
+            }
+        }
+    }
+}
+
 struct Resampler {
     q: VecDeque<[f32; 2]>,
     h: [[f32; 2]; 4],
@@ -123,6 +236,7 @@ pub fn start_with(pull: Pull, device_name: &str, gain: f32) -> Result<Audio, Str
 
     let mut tmp = vec![0i16; 16384];
     let mut rs = Resampler { q: VecDeque::new(), h: [[0.0; 2]; 4], t: 0.0 };
+    let mut eq = Eq::new();
 
     let mut render = move |out: &mut [f32]| {
         let frames = out.len() / channels;
@@ -183,6 +297,7 @@ pub fn start_with(pull: Pull, device_name: &str, gain: f32) -> Result<Audio, Str
                 sh.underruns.fetch_add(1, Ordering::Relaxed);
             }
         }
+        eq.process(out, channels, rate as f32, sh.eq());
     };
 
     let name = |f: cpal::SampleFormat| format!("{f:?}");

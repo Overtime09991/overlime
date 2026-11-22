@@ -61,6 +61,16 @@ pub fn enabled() -> bool {
 pub fn cleanup_old() {
     if let Ok(exe) = std::env::current_exe() {
         let _ = std::fs::remove_file(exe.with_extension("old"));
+        if let (Some(dir), Some(stem)) = (exe.parent(), exe.file_stem().map(|s| s.to_string_lossy().to_string())) {
+            if let Ok(rd) = std::fs::read_dir(dir) {
+                for e in rd.flatten() {
+                    let n = e.file_name().to_string_lossy().to_string();
+                    if n.starts_with(&format!("{stem}.old")) {
+                        let _ = std::fs::remove_file(e.path());
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -121,6 +131,39 @@ fn download(url: &str, limit: u64) -> Result<Vec<u8>, String> {
     Ok(buf)
 }
 
+
+/// Beendet andere laufende OVERLIME-Prozesse (z. B. das Symbol neben der Uhr), damit die Datei ersetzt werden kann.
+fn stop_other_instances() {
+    use std::os::windows::process::CommandExt;
+    let Ok(exe) = std::env::current_exe() else { return };
+    let Some(name) = exe.file_name().map(|n| n.to_string_lossy().to_string()) else { return };
+    let me = std::process::id();
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/FI", &format!("PID ne {me}"), "/IM", &name])
+        .creation_flags(0x0800_0000)
+        .output();
+    std::thread::sleep(Duration::from_millis(600));
+}
+
+/// Ersetzt die laufende exe durch `data`. Die alte Datei bleibt als .old liegen (wird beim nächsten Start gelöscht).
+fn swap_in(data: &[u8]) -> Result<std::path::PathBuf, String> {
+    stop_other_instances();
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let mut old = exe.with_extension("old");
+    let _ = std::fs::remove_file(&old);
+    if old.exists() {
+        // alte Datei noch gesperrt: anderen Namen nehmen
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        old = exe.with_extension(format!("old{secs}"));
+    }
+    std::fs::rename(&exe, &old).map_err(|e| format!("Ersetzen nicht möglich: {e}"))?;
+    if let Err(e) = std::fs::write(&exe, data) {
+        let _ = std::fs::rename(&old, &exe);
+        return Err(format!("Schreiben fehlgeschlagen: {e}"));
+    }
+    Ok(exe)
+}
+
 /// Lädt das Update, prüft die Prüfsumme, ersetzt die laufende exe und startet neu.
 pub fn install(rel: &Release) -> Result<(), String> {
     let sha_txt = String::from_utf8(download(&rel.sha_url, 4096)?).map_err(|e| e.to_string())?;
@@ -138,14 +181,7 @@ pub fn install(rel: &Release) -> Result<(), String> {
     }
     let sig_txt = String::from_utf8(download(&rel.sig_url, 4096)?).map_err(|e| e.to_string())?;
     verify_signature(&data, &sig_txt)?;
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let old = exe.with_extension("old");
-    let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old).map_err(|e| format!("Ersetzen nicht möglich: {e}"))?;
-    if let Err(e) = std::fs::write(&exe, &data) {
-        let _ = std::fs::rename(&old, &exe);
-        return Err(format!("Schreiben fehlgeschlagen: {e}"));
-    }
+    let exe = swap_in(&data)?;
     std::process::Command::new(&exe).spawn().map_err(|e| e.to_string())?;
     std::process::exit(0);
 }
@@ -235,14 +271,7 @@ pub fn install_ui(rel: &Release, p: Arc<Mutex<Progress>>) -> Result<(), String> 
         // 3: Installieren
         let t3 = Instant::now();
         set(&p, 3, 0.0);
-        let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let old = exe.with_extension("old");
-        let _ = std::fs::remove_file(&old);
-        std::fs::rename(&exe, &old).map_err(|e| format!("Ersetzen nicht möglich: {e}"))?;
-        if let Err(e) = std::fs::write(&exe, &data) {
-            let _ = std::fs::rename(&old, &exe);
-            return Err(format!("Schreiben fehlgeschlagen: {e}"));
-        }
+        let exe = swap_in(&data)?;
         hold(t3, Duration::from_millis(3000));
 
         // 4: Neustart

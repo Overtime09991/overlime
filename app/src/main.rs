@@ -34,7 +34,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.24";
+const VERSION: &str = "0.25";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -47,6 +47,30 @@ enum Page {
 
 /// Adresse des Meldeservers (Cloudflare Worker). Leer = Meldungen laufen über GitHub.
 const RELAY_URL: &str = "https://overlime.info/meldung.php";
+
+/// Ergebnis des Netzwerk-Tests (Latenz zur Konsole).
+#[derive(Clone)]
+pub struct NetResult {
+    pub avg: f32,
+    pub jitter: f32,
+    pub fails: u32,
+    pub n: u32,
+}
+
+/// Empfehlung aus dem Netzwerk-Test: (Auflösung, FPS-Index, Mbit/s, Bewertung).
+pub fn net_recommend(r: &NetResult) -> (usize, usize, f32, &'static str) {
+    if r.fails > 0 && r.fails * 4 > r.n {
+        (1, 0, 8.0, "Unruhig")
+    } else if r.avg <= 10.0 && r.jitter <= 4.0 && r.fails == 0 {
+        (2, 1, 50.0, "Sehr gut")
+    } else if r.avg <= 25.0 && r.jitter <= 10.0 {
+        (2, 1, 35.0, "Gut")
+    } else if r.avg <= 50.0 && r.jitter <= 20.0 {
+        (1, 1, 20.0, "Mittel")
+    } else {
+        (1, 0, 10.0, "Schwach")
+    }
+}
 
 enum Msg {
     Found(Vec<Console>),
@@ -61,6 +85,7 @@ enum Msg {
     UpdateAvail(update::Release),
     UpdateNone,
     DiagPort(bool, String),
+    NetTest(NetResult),
     ReportDone(bool, String),
     News(Vec<update::NewsItem>),
     NewsErr(String),
@@ -145,6 +170,10 @@ struct App {
     set_cat: usize,
     help_tab: usize,
     report_open: bool,
+    net_res: Option<NetResult>,
+    profile_active: Option<String>,
+    saved_global: Option<(usize, usize, f32, usize)>,
+    net_hint: Option<f32>,
     report_text: String,
     report_state: u8,
     report_msg: String,
@@ -258,6 +287,10 @@ impl App {
             login_pasted: String::new(),
             set_cat: 0,
             help_tab: 0,
+            net_res: None,
+            profile_active: None,
+            saved_global: None,
+            net_hint: None,
             report_open: std::env::args().any(|a| a == "--report-dialog"),
             report_text: String::new(),
             report_state: 0,
@@ -491,6 +524,7 @@ impl App {
             return;
         }
         self.start_error = None;
+        self.profile_apply(&c.id);
         self.starting = Some(c.name.clone());
         self.last_connect = Some((c.clone(), p.clone(), (self.settings.resolution, self.settings.fps, self.settings.bitrate as i32, self.settings.codec)));
         let (w, h) = [(960, 540), (1280, 720), (1920, 1080)][self.settings.resolution];
@@ -522,12 +556,51 @@ impl App {
         });
     }
 
+    /// Wendet die eigene Qualität der Konsole an (falls eingerichtet) und merkt sich die allgemeinen Werte.
+    fn profile_apply(&mut self, console_id: &str) {
+        self.profile_release();
+        let Some(pr) = self.settings.profiles.iter().find(|(id, _)| id == console_id).map(|(_, p)| p.clone()) else { return };
+        self.saved_global = Some((self.settings.resolution, self.settings.fps, self.settings.bitrate, self.settings.codec));
+        self.profile_active = Some(console_id.to_string());
+        self.settings.resolution = pr.resolution;
+        self.settings.fps = pr.fps;
+        self.settings.bitrate = pr.bitrate;
+        self.settings.codec = pr.codec;
+    }
+
+    /// Speichert Änderungen im Profil und stellt die allgemeinen Werte wieder her.
+    fn profile_release(&mut self) {
+        if let Some(id) = self.profile_active.take() {
+            let cur = settings::Profile { resolution: self.settings.resolution, fps: self.settings.fps, bitrate: self.settings.bitrate, codec: self.settings.codec };
+            if let Some(e) = self.settings.profiles.iter_mut().find(|(i, _)| *i == id) {
+                e.1 = cur;
+            }
+            if let Some((r, f, b, c)) = self.saved_global.take() {
+                self.settings.resolution = r;
+                self.settings.fps = f;
+                self.settings.bitrate = b;
+                self.settings.codec = c;
+            }
+        }
+    }
+
     fn stop_stream(&mut self, ctx: &egui::Context) {
         let info = self.session.as_ref().map(|s| (s.state, s.ended_error, s.started.elapsed().as_secs()));
+        if let Some(s) = self.session.as_ref() {
+            let secs = s.started.elapsed().as_secs();
+            if s.state == 1 && secs >= 30 && s.lost >= 40 {
+                let rec = (self.settings.bitrate * 0.7).round().max(5.0);
+                if rec < self.settings.bitrate {
+                    self.net_hint = Some(rec);
+                    self.toasts.push((format!("Viele Pakete verloren. Tipp: Bitrate auf {rec} Mbit/s senken (Hilfe & Diagnose > Prüfung)."), 1, self.now));
+                }
+            }
+        }
         self.stream_menu = false;
         self.show_keys = false;
         self.close_hint = false;
         self.session = None; // Drop beendet die Sitzung
+        self.profile_release();
         if self.settings.ask_feedback {
             if let Some((state, err, secs)) = info {
                 if err {
@@ -729,6 +802,9 @@ impl App {
                 Msg::ReportDone(ok, text) => {
                     self.report_state = if ok { 2 } else { 3 };
                     self.report_msg = text;
+                }
+                Msg::NetTest(r) => {
+                    self.net_res = Some(r);
                 }
                 Msg::DiagPort(ok, text) => {
                     self.diag_busy = false;
@@ -1273,6 +1349,28 @@ impl App {
                                 if !c.running_app.is_empty() {
                                     ui.label(RichText::new(format!("{} {}", ic::GAME_CONTROLLER, c.running_app)).color(TEXT_DIM).size(13.0));
                                 }
+                                if paired.is_some() {
+                                    let idx = self.settings.profiles.iter().position(|(id, _)| *id == c.id);
+                                    let mut on = idx.is_some();
+                                    if ui.checkbox(&mut on, RichText::new("Eigene Qualität für diese Konsole").size(13.0).color(TEXT_DIM)).changed() {
+                                        if on {
+                                            self.settings.profiles.push((c.id.clone(), settings::Profile { resolution: self.settings.resolution, fps: self.settings.fps, bitrate: self.settings.bitrate, codec: self.settings.codec }));
+                                        } else if let Some(i) = idx {
+                                            self.settings.profiles.remove(i);
+                                        }
+                                    }
+                                    if let Some(i) = self.settings.profiles.iter().position(|(id, _)| *id == c.id) {
+                                        let pr = &mut self.settings.profiles[i].1;
+                                        let summary = format!("{} • {} FPS • {} Mbit/s • {}", ["540p", "720p", "1080p"][pr.resolution], [30, 60][pr.fps], pr.bitrate as i32, ["Auto", "H.264", "HEVC"][pr.codec]);
+                                        egui::CollapsingHeader::new(RichText::new(summary).size(13.0).color(th_blue_light())).id_source(("prof", i)).show(ui, |ui| {
+                                            segmented(ui, &mut pr.resolution, &["540p", "720p", "1080p"]);
+                                            segmented(ui, &mut pr.fps, &["30 FPS", "60 FPS"]);
+                                            ui.spacing_mut().slider_width = 220.0;
+                                            ui.add(egui::Slider::new(&mut pr.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
+                                            segmented(ui, &mut pr.codec, &["Auto", "H.264", "HEVC"]);
+                                        });
+                                    }
+                                }
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| match &paired {
                                 None => {
@@ -1426,6 +1524,31 @@ impl App {
                         Err(e) => self.toasts.push((format!("Nicht möglich: {e}"), 1, self.now)),
                     }
                 }
+                ui.add_space(6.0);
+                ui.checkbox(&mut st.wake_on, "Konsole zu einer festen Zeit aufwecken");
+                if st.wake_on {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Uhrzeit").size(13.0).color(TEXT_DIM));
+                        let mut h = st.wake_hour as u32;
+                        let mut mi = st.wake_min as u32;
+                        ui.add(egui::DragValue::new(&mut h).range(0..=23).custom_formatter(|v, _| format!("{:02}", v as u32)));
+                        ui.label(":");
+                        ui.add(egui::DragValue::new(&mut mi).range(0..=59).custom_formatter(|v, _| format!("{:02}", v as u32)));
+                        st.wake_hour = h as u8;
+                        st.wake_min = mi as u8;
+                    });
+                    ui.horizontal(|ui| {
+                        for (i, d) in ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"].iter().enumerate() {
+                            let on = st.wake_days & (1 << i) != 0;
+                            let b = egui::Button::new(RichText::new(*d).size(13.0).color(if on { Color32::WHITE } else { TEXT_DIM })).fill(if on { th_blue() } else { th_card_hover() }).rounding(8.0).min_size(Vec2::new(36.0, 28.0));
+                            if ui.add(b).clicked() {
+                                st.wake_days ^= 1 << i;
+                            }
+                        }
+                    });
+                    ui.label(RichText::new("Das klappt, solange das Symbol neben der Uhr läuft (Haken „Mit Windows starten“) und der PC an ist.").color(TEXT_DIM).size(12.0));
+                }
+                ui.add_space(6.0);
                 if ui.add(egui::Button::new("Symbol jetzt starten").fill(th_card_hover()).rounding(10.0)).clicked() {
                     tray::spawn_tray();
                     self.toasts.push(("Symbol neben der Uhr gestartet (evtl. unter dem Pfeil ^).".to_string(), 0, self.now));
@@ -1498,6 +1621,20 @@ impl App {
                     ui.label("Lautstärke");
                     ui.add(egui::Slider::new(&mut st.volume, 0.0..=1.5).custom_formatter(|v, _| format!("{} %", (v * 100.0).round() as i32)));
                 });
+                ui.add_space(6.0);
+                ui.label(RichText::new("Klang (wirkt sofort im Stream)").size(14.0).strong());
+                for (lbl, v) in [("Bass", &mut st.eq_bass), ("Mitten", &mut st.eq_mid), ("Höhen", &mut st.eq_treble)] {
+                    ui.horizontal(|ui| {
+                        ui.add_sized([60.0, 20.0], egui::Label::new(RichText::new(lbl).size(13.0)));
+                        ui.add(egui::Slider::new(v, -8.0..=8.0).custom_formatter(|x, _| format!("{:+.0} dB", x)));
+                    });
+                }
+                if (st.eq_bass != 0.0 || st.eq_mid != 0.0 || st.eq_treble != 0.0) && ui.add(egui::Button::new("Klang zurücksetzen").fill(th_card_hover()).rounding(10.0)).clicked() {
+                    st.eq_bass = 0.0;
+                    st.eq_mid = 0.0;
+                    st.eq_treble = 0.0;
+                }
+                ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new(format!("{} Ton testen", ic::SPEAKER_HIGH)).fill(th_card_hover()).rounding(10.0)).clicked() {
                         match audio::start_with(tone_pull(), &st.audio_device, 0.6 * st.volume.max(0.2)) {
@@ -2640,6 +2777,7 @@ impl App {
         if let Some(s) = self.session.as_ref() {
             if let Some(a) = &s.audio {
                 a.shared.set_gain(gain);
+                a.shared.set_eq(self.settings.eq_bass, self.settings.eq_mid, self.settings.eq_treble);
             }
         }
         let want_shot = ctx.input(|i| i.key_pressed(Key::F12)) || self.shot_requested;
@@ -3212,8 +3350,14 @@ fn main() -> eframe::Result<()> {
         tray::run();
         return Ok(());
     }
-    if !std::env::args().any(|a| a.starts_with("--") && a != "--connect-now") && !winui::single_instance() {
-        return Ok(());
+    if !std::env::args().any(|a| a.starts_with("--") && a != "--connect-now") {
+        if !winui::single_instance() {
+            return Ok(());
+        }
+        // Nach einem Update wieder das Symbol neben der Uhr starten (falls gewünscht)
+        if tray::autostart_enabled() {
+            tray::spawn_tray();
+        }
     }
     if let Some(i) = std::env::args().position(|a| a == "--verify-sig") {
         let a: Vec<String> = std::env::args().collect();

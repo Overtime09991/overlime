@@ -424,14 +424,34 @@ impl App {
                         let tx = self.tx.clone();
                         let addr = c.addr.clone();
                         std::thread::spawn(move || {
-                            let r = match format!("{addr}:9295").parse::<std::net::SocketAddr>() {
-                                Ok(sa) => match std::net::TcpStream::connect_timeout(&sa, Duration::from_millis(2500)) {
-                                    Ok(_) => (true, "Der Remote-Play-Port der Konsole ist erreichbar.".to_string()),
-                                    Err(e) => (false, format!("Der Port ist nicht erreichbar ({:?}). Ist Remote Play an der Konsole aktiviert und die Konsole an? Blockiert eine Firewall?", e.kind())),
-                                },
-                                Err(_) => (false, "Ungültige Adresse".to_string()),
+                            let sa = format!("{addr}:9295").parse::<std::net::SocketAddr>();
+                            let Ok(sa) = sa else {
+                                let _ = tx.send(Msg::DiagPort(false, "Ungültige Adresse".to_string()));
+                                return;
                             };
-                            let _ = tx.send(Msg::DiagPort(r.0, r.1));
+                            let mut times: Vec<f32> = Vec::new();
+                            let mut fails = 0u32;
+                            let mut last_err = String::new();
+                            let n = 12u32;
+                            for _ in 0..n {
+                                let t0 = Instant::now();
+                                match std::net::TcpStream::connect_timeout(&sa, Duration::from_millis(1500)) {
+                                    Ok(_) => times.push(t0.elapsed().as_secs_f32() * 1000.0),
+                                    Err(e) => {
+                                        fails += 1;
+                                        last_err = format!("{:?}", e.kind());
+                                    }
+                                }
+                                std::thread::sleep(Duration::from_millis(80));
+                            }
+                            if times.is_empty() {
+                                let _ = tx.send(Msg::DiagPort(false, format!("Der Port ist nicht erreichbar ({last_err}). Ist Remote Play an der Konsole aktiviert und die Konsole an? Blockiert eine Firewall?")));
+                                return;
+                            }
+                            let avg = times.iter().sum::<f32>() / times.len() as f32;
+                            let var = times.iter().map(|t| (t - avg) * (t - avg)).sum::<f32>() / times.len() as f32;
+                            let _ = tx.send(Msg::DiagPort(true, "Der Remote-Play-Port der Konsole ist erreichbar.".to_string()));
+                            let _ = tx.send(Msg::NetTest(NetResult { avg, jitter: var.sqrt(), fails, n }));
                         });
                     }
                 }
@@ -446,6 +466,39 @@ impl App {
             if let Some((ok, txt)) = &self.diag_port {
                 ui.add_space(6.0);
                 status_row(ui, if *ok { 0 } else { 2 }, if *ok { "Erreichbar" } else { "Nicht erreichbar" }, txt);
+            }
+            if let Some(r) = self.net_res.clone() {
+                let (res, fps, mbit, label) = net_recommend(&r);
+                ui.add_space(8.0);
+                egui::Frame::none().fill(th_bg().gamma_multiply(0.6)).rounding(12.0).inner_margin(egui::Margin::same(14.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new(format!("Verbindung zur Konsole: {label}")).size(16.0).strong());
+                    ui.label(RichText::new(format!("Antwortzeit Ø {:.1} ms  •  Schwankung {:.1} ms  •  Ausfälle {} von {}", r.avg, r.jitter, r.fails, r.n)).color(TEXT_DIM).size(12.5));
+                    ui.add_space(4.0);
+                    ui.label(RichText::new(format!("Empfehlung: {}, {} FPS, {} Mbit/s", ["540p", "720p", "1080p"][res], [30, 60][fps], mbit as i32)).size(14.0));
+                    ui.label(RichText::new("Der Test misst Antwortzeit und Schwankung, nicht die Geschwindigkeit deiner Leitung. Bei Rucklern die Bitrate weiter senken.").color(TEXT_DIM).size(12.0));
+                    ui.add_space(6.0);
+                    if ui.add(egui::Button::new(format!("{} Empfehlung übernehmen", ic::CHECK)).fill(th_blue()).rounding(10.0)).clicked() {
+                        self.settings.resolution = res;
+                        self.settings.fps = fps;
+                        self.settings.bitrate = mbit;
+                        self.toasts.push(("Empfehlung übernommen.".to_string(), 2, self.now));
+                    }
+                });
+            }
+            if let Some(h) = self.net_hint {
+                ui.add_space(8.0);
+                egui::Frame::none().fill(YELLOW.gamma_multiply(0.12)).rounding(12.0).stroke(Stroke::new(1.0, YELLOW.gamma_multiply(0.5))).inner_margin(egui::Margin::same(14.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.label(RichText::new("Beim letzten Spiel gingen viele Pakete verloren").size(15.0).strong());
+                    ui.label(RichText::new(format!("Mit {} Mbit/s läuft es vermutlich ruhiger.", h as i32)).color(TEXT_DIM).size(13.0));
+                    ui.add_space(6.0);
+                    if ui.add(egui::Button::new(format!("{} Bitrate auf {} Mbit/s senken", ic::CHECK, h as i32)).fill(th_blue()).rounding(10.0)).clicked() {
+                        self.settings.bitrate = h;
+                        self.net_hint = None;
+                        self.toasts.push(("Bitrate gesenkt.".to_string(), 2, self.now));
+                    }
+                });
             }
         });
     }
@@ -551,6 +604,7 @@ impl App {
         section(ui, &format!("{}  Über OVERLIME", ic::INFO), |ui| {
             ui.label(RichText::new(format!("Version {VERSION}  •  PS4 & PS5  •  bis 1080p60 (Sony-Limit), Hochskalierung auf 4K")).color(TEXT_DIM));
             ui.label(RichText::new("Der Stream-Kern basiert auf dem Open-Source-Projekt chiaki-ng (AGPL-3.0).").color(TEXT_DIM).size(12.5));
+            ui.label(RichText::new("Nicht mit Sony verbunden. „PlayStation“ ist eine Marke von Sony Interactive Entertainment.").color(TEXT_DIM).size(12.5));
             ui.add_space(6.0);
             if ui.add(egui::Button::new(format!("{} Projektseite auf GitHub", ic::GITHUB_LOGO)).fill(th_card_hover()).rounding(10.0)).clicked() {
                 ui.ctx().open_url(egui::OpenUrl::new_tab("https://github.com/Overtime09991/overlime"));
@@ -628,6 +682,10 @@ impl App {
                                 if ui.add(big_button("Los geht's", th_blue()).min_size(Vec2::new(440.0, 48.0))).clicked() {
                                     self.login_step = 1;
                                 }
+                                ui.add_space(8.0);
+                                ui.vertical_centered(|ui| {
+                                    ui.label(RichText::new("Nicht mit Sony verbunden. „PlayStation“ ist eine Marke von Sony Interactive Entertainment.").color(TEXT_DIM).size(11.5));
+                                });
                             }
                             1 => {
                                 ui.label(RichText::new("Konto verbinden").size(24.0).strong());

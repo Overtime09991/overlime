@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Probleme direkt aus der App melden",
-    "Updates sind jetzt signiert und damit sicherer",
-    "Koppel-Schlüssel werden verschlüsselt gespeichert",
-    "Mehr Protokoll im Bericht für schnellere Hilfe",
+    "Update-Fehler mit dem Symbol neben der Uhr behoben",
+    "Netzwerk-Test mit Empfehlung für die Qualität",
+    "Eigene Qualität pro Konsole und Zeitplan zum Aufwecken",
+    "Klangregler für Bass, Mitten und Höhen",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

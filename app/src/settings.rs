@@ -1,8 +1,25 @@
 //! Einstellungen, gespeichert in %APPDATA%\overlime\settings.txt (key=value).
 use std::path::PathBuf;
 
+/// Eigene Qualität für eine einzelne Konsole.
+#[derive(Clone, PartialEq, Debug)]
+pub struct Profile {
+    pub resolution: usize,
+    pub fps: usize,
+    pub bitrate: f32,
+    pub codec: usize,
+}
+
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
+    pub eq_bass: f32,
+    pub eq_mid: f32,
+    pub eq_treble: f32,
+    pub wake_on: bool,
+    pub wake_hour: u8,
+    pub wake_min: u8,
+    pub wake_days: u8, // Bit 0 = Montag ... Bit 6 = Sonntag
+    pub profiles: Vec<(String, Profile)>,
     pub resolution: usize, // 0=540p 1=720p 2=1080p
     pub fps: usize,        // 0=30 1=60
     pub bitrate: f32,      // Mbit/s
@@ -35,6 +52,14 @@ pub struct Settings {
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            profiles: vec![],
+            eq_bass: 0.0,
+            eq_mid: 0.0,
+            eq_treble: 0.0,
+            wake_on: false,
+            wake_hour: 19,
+            wake_min: 0,
+            wake_days: 127,
             resolution: 2,
             fps: 1,
             bitrate: 30.0,
@@ -115,6 +140,27 @@ impl Settings {
                 "volume" => s.volume = v.trim().parse().unwrap_or(1.0f32).clamp(0.0, 1.5),
                 "audio_device" => s.audio_device = v.trim().to_string(),
                 "welcome_anim" => s.welcome_anim = v.trim() != "false",
+                "eq_bass" => s.eq_bass = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
+                "eq_mid" => s.eq_mid = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
+                "eq_treble" => s.eq_treble = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
+                "wake_on" => s.wake_on = v.trim() == "true",
+                "wake_hour" => s.wake_hour = v.trim().parse().unwrap_or(19u8).min(23),
+                "wake_min" => s.wake_min = v.trim().parse().unwrap_or(0u8).min(59),
+                "wake_days" => s.wake_days = v.trim().parse().unwrap_or(127u8) & 127,
+                "profile" => {
+                    let f: Vec<&str> = v.trim().split('|').collect();
+                    if f.len() == 5 {
+                        s.profiles.push((
+                            f[0].to_string(),
+                            Profile {
+                                resolution: f[1].parse().unwrap_or(2usize).min(2),
+                                fps: f[2].parse().unwrap_or(1usize).min(1),
+                                bitrate: f[3].parse().unwrap_or(30.0f32).clamp(2.0, 50.0),
+                                codec: f[4].parse().unwrap_or(0usize).min(2),
+                            },
+                        ));
+                    }
+                }
                 k if k.starts_with("key_") => {
                     if let Ok(i) = k[4..].parse::<usize>() {
                         if i < s.keys.len() {
@@ -150,6 +196,11 @@ impl Settings {
         text.push_str(&format!("ui_scale={}\nnews_seen={}\n", self.ui_scale, self.news_seen));
         for (i, k) in self.keys.iter().enumerate() {
             text.push_str(&format!("key_{i}={k}\n"));
+        }
+        text.push_str(&format!("wake_on={}\nwake_hour={}\nwake_min={}\nwake_days={}\n", self.wake_on, self.wake_hour, self.wake_min, self.wake_days));
+        text.push_str(&format!("eq_bass={}\neq_mid={}\neq_treble={}\n", self.eq_bass, self.eq_mid, self.eq_treble));
+        for (id, p) in &self.profiles {
+            text.push_str(&format!("profile={}|{}|{}|{}|{}\n", id, p.resolution, p.fps, p.bitrate, p.codec));
         }
         let _ = std::fs::write(p, text);
     }

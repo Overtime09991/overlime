@@ -22,6 +22,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Aus dem Ruhemodus aufwecken.** Ein Klick, und die Konsole startet, ohne dass du aufstehen musst.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
+- **Pro Konsole und nach Zeitplan.** Eigene Qualität für jede Konsole, Netzwerk-Test mit Empfehlung, Klangregler und auf Wunsch die Konsole zu einer festen Uhrzeit aufwecken.
 - **Sicherheit.** Updates sind signiert (Ed25519): OVERLIME installiert nur Versionen, die zum eingebauten Schlüssel passen. Die Koppel-Schlüssel der Konsole liegen verschlüsselt (Windows-Benutzerkonto). Probleme lassen sich direkt aus der App melden.
 - **Übersichtlich aufgebaut.** Ein Assistent führt durch die erste Anmeldung, die Einstellungen haben Suche und Kategorien, Hilfe und Diagnose sind eine Seite mit Reitern. OVERLIME öffnet sich nur einmal gleichzeitig.
 - **Symbol neben der Uhr.** Ein kleines Hintergrundsymbol (startet auf Wunsch mit Windows): Ein Klick weckt die Konsole und OVERLIME verbindet sich automatisch.
