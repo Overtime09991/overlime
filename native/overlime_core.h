@@ -111,6 +111,16 @@ enum {
 	OL_BTN_OPTIONS = (1 << 12), OL_BTN_SHARE = (1 << 13), OL_BTN_TOUCHPAD = (1 << 14), OL_BTN_PS = (1 << 15)
 };
 
+
+// ---- Video-Wiedergabe fuer die Galerie
+typedef struct OlPlayer OlPlayer;
+OlPlayer *ol_play_open(const char *path, int max_w, int want, char *err, size_t err_size);
+void ol_play_info(OlPlayer *p, int *w, int *h, int64_t *duration_ms, int *has_audio);
+int ol_play_step(OlPlayer *p, uint8_t *rgba, size_t rgba_cap, int64_t *vpts_ms, int16_t *aud, size_t aud_cap, size_t *aud_n, int64_t *apts_ms);
+int ol_play_seek(OlPlayer *p, int64_t ms);
+void ol_play_close(OlPlayer *p);
+int ol_play_thumb(const char *path, int max_w, uint8_t *rgba, size_t cap, int *w, int *h, int64_t *duration_ms);
+
 #ifdef __cplusplus
 }
 #endif

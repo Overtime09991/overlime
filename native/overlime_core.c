@@ -1077,3 +1077,246 @@ int ol_record_selftest(const char *in_path, const char *out_path, int hevc, int 
 	free(s);
 	return 0;
 }
+
+// ---------------------------------------------------------------- Video-Wiedergabe (Galerie)
+#include <libswresample/swresample.h>
+
+struct OlPlayer
+{
+	AVFormatContext *fc;
+	int vi, ai;
+	AVCodecContext *vdec, *adec;
+	struct SwsContext *sws;
+	struct SwrContext *swr;
+	AVPacket *pkt;
+	AVFrame *frame;
+	int out_w, out_h;
+	int src_w, src_h, src_fmt;
+	int64_t duration_ms;
+	int draining;
+	int has_audio;
+};
+
+static int play_open_decoder(AVFormatContext *fc, int idx, AVCodecContext **out)
+{
+	AVStream *st = fc->streams[idx];
+	const AVCodec *c = avcodec_find_decoder(st->codecpar->codec_id);
+	if(!c) return -1;
+	AVCodecContext *ctx = avcodec_alloc_context3(c);
+	if(!ctx) return -1;
+	if(avcodec_parameters_to_context(ctx, st->codecpar) < 0) { avcodec_free_context(&ctx); return -1; }
+	ctx->thread_count = 0;
+	if(avcodec_open2(ctx, c, NULL) < 0) { avcodec_free_context(&ctx); return -1; }
+	*out = ctx;
+	return 0;
+}
+
+OlPlayer *ol_play_open(const char *path, int max_w, int want, char *err, size_t err_size)
+{
+	OlPlayer *p = (OlPlayer *)calloc(1, sizeof(*p));
+	if(!p) return NULL;
+	p->vi = p->ai = -1;
+	if(avformat_open_input(&p->fc, path, NULL, NULL) < 0)
+	{
+		snprintf(err, err_size, "Datei kann nicht geöffnet werden.");
+		goto fail;
+	}
+	if(avformat_find_stream_info(p->fc, NULL) < 0)
+	{
+		snprintf(err, err_size, "Keine Stream-Informationen.");
+		goto fail;
+	}
+	p->vi = av_find_best_stream(p->fc, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
+	p->ai = av_find_best_stream(p->fc, AVMEDIA_TYPE_AUDIO, -1, -1, NULL, 0);
+	if(p->vi < 0)
+	{
+		snprintf(err, err_size, "Kein Videobild in der Datei.");
+		goto fail;
+	}
+	p->has_audio = p->ai >= 0;
+	if(want & 1)
+	{
+		if(play_open_decoder(p->fc, p->vi, &p->vdec) < 0)
+		{
+			snprintf(err, err_size, "Video-Decoder fehlt (Codec nicht unterstützt).");
+			goto fail;
+		}
+	}
+	if((want & 2) && p->ai >= 0)
+	{
+		if(play_open_decoder(p->fc, p->ai, &p->adec) < 0)
+			p->ai = -1;
+	}
+	// nicht gewollte Spuren gar nicht erst lesen (so laeuft jede Spur unabhaengig von der Anordnung in der Datei)
+	for(unsigned int i = 0; i < p->fc->nb_streams; i++)
+		if((int)i != ((want & 1) ? p->vi : -1) && (int)i != ((want & 2) ? p->ai : -1))
+			p->fc->streams[i]->discard = AVDISCARD_ALL;
+	int w = p->vi >= 0 ? p->fc->streams[p->vi]->codecpar->width : 0, h = p->vi >= 0 ? p->fc->streams[p->vi]->codecpar->height : 0;
+	if(w <= 0 || h <= 0)
+	{
+		snprintf(err, err_size, "Ungültige Bildgröße.");
+		goto fail;
+	}
+	if(max_w < 160) max_w = 160;
+	if(w > max_w)
+	{
+		h = (int)((int64_t)h * max_w / w);
+		w = max_w;
+	}
+	p->out_w = w & ~1;
+	p->out_h = h & ~1;
+	if(p->out_w < 2) p->out_w = 2;
+	if(p->out_h < 2) p->out_h = 2;
+	p->duration_ms = p->fc->duration > 0 ? p->fc->duration / 1000 : 0;
+	p->pkt = av_packet_alloc();
+	p->frame = av_frame_alloc();
+	if(!p->pkt || !p->frame)
+		goto fail;
+	return p;
+fail:
+	ol_play_close(p);
+	return NULL;
+}
+
+void ol_play_info(OlPlayer *p, int *w, int *h, int64_t *duration_ms, int *has_audio)
+{
+	if(w) *w = p->out_w;
+	if(h) *h = p->out_h;
+	if(duration_ms) *duration_ms = p->duration_ms;
+	if(has_audio) *has_audio = p->has_audio;
+}
+
+static int play_convert_video(OlPlayer *p, uint8_t *rgba, size_t cap)
+{
+	AVFrame *f = p->frame;
+	if((size_t)p->out_w * p->out_h * 4 > cap)
+		return -1;
+	if(!p->sws || p->src_w != f->width || p->src_h != f->height || p->src_fmt != f->format)
+	{
+		sws_freeContext(p->sws);
+		p->sws = sws_getContext(f->width, f->height, f->format, p->out_w, p->out_h, AV_PIX_FMT_RGBA, SWS_BILINEAR, NULL, NULL, NULL);
+		p->src_w = f->width; p->src_h = f->height; p->src_fmt = f->format;
+		if(!p->sws) return -1;
+	}
+	uint8_t *dst[4] = { rgba, NULL, NULL, NULL };
+	int stride[4] = { p->out_w * 4, 0, 0, 0 };
+	sws_scale(p->sws, (const uint8_t *const *)f->data, f->linesize, 0, f->height, dst, stride);
+	return 0;
+}
+
+static int play_convert_audio(OlPlayer *p, int16_t *aud, size_t cap, size_t *n)
+{
+	AVFrame *f = p->frame;
+	if(!p->swr)
+	{
+		AVChannelLayout out;
+		av_channel_layout_default(&out, 2);
+		if(swr_alloc_set_opts2(&p->swr, &out, AV_SAMPLE_FMT_S16, 48000, &f->ch_layout, (enum AVSampleFormat)f->format, f->sample_rate, 0, NULL) < 0 || swr_init(p->swr) < 0)
+		{
+			swr_free(&p->swr);
+			return -1;
+		}
+	}
+	int max_frames = (int)(cap / 2);
+	uint8_t *out[1] = { (uint8_t *)aud };
+	int got = swr_convert(p->swr, out, max_frames, (const uint8_t **)f->extended_data, f->nb_samples);
+	if(got < 0) return -1;
+	*n = (size_t)got * 2;
+	return 0;
+}
+
+// Rueckgabe: 1 = Videobild, 2 = Ton, 0 = nichts (weitermachen), -1 = Ende, -2 = Fehler
+int ol_play_step(OlPlayer *p, uint8_t *rgba, size_t rgba_cap, int64_t *vpts_ms, int16_t *aud, size_t aud_cap, size_t *aud_n, int64_t *apts_ms)
+{
+	*aud_n = 0;
+	for(;;)
+	{
+		int r = p->vdec ? avcodec_receive_frame(p->vdec, p->frame) : -1;
+		if(r == 0)
+		{
+			int64_t ts = p->frame->best_effort_timestamp;
+			AVRational tb = p->fc->streams[p->vi]->time_base;
+			*vpts_ms = ts == AV_NOPTS_VALUE ? -1 : av_rescale_q(ts, tb, (AVRational){1, 1000});
+			int ok = play_convert_video(p, rgba, rgba_cap);
+			av_frame_unref(p->frame);
+			return ok < 0 ? -2 : 1;
+		}
+		if(p->adec)
+		{
+			r = avcodec_receive_frame(p->adec, p->frame);
+			if(r == 0)
+			{
+				int64_t ts = p->frame->best_effort_timestamp;
+				AVRational tb = p->fc->streams[p->ai]->time_base;
+				*apts_ms = ts == AV_NOPTS_VALUE ? -1 : av_rescale_q(ts, tb, (AVRational){1, 1000});
+				int ok = play_convert_audio(p, aud, aud_cap, aud_n);
+				av_frame_unref(p->frame);
+				return ok < 0 ? -2 : 2;
+			}
+		}
+		if(p->draining)
+			return -1;
+		r = av_read_frame(p->fc, p->pkt);
+		if(r < 0)
+		{
+			p->draining = 1;
+			if(p->vdec) avcodec_send_packet(p->vdec, NULL);
+			if(p->adec) avcodec_send_packet(p->adec, NULL);
+			continue;
+		}
+		if(p->vdec && p->pkt->stream_index == p->vi)
+			avcodec_send_packet(p->vdec, p->pkt);
+		else if(p->adec && p->pkt->stream_index == p->ai)
+			avcodec_send_packet(p->adec, p->pkt);
+		av_packet_unref(p->pkt);
+	}
+}
+
+int ol_play_seek(OlPlayer *p, int64_t ms)
+{
+	if(ms < 0) ms = 0;
+	if(av_seek_frame(p->fc, -1, ms * 1000, AVSEEK_FLAG_BACKWARD) < 0)
+		return -1;
+	if(p->vdec) avcodec_flush_buffers(p->vdec);
+	if(p->adec) avcodec_flush_buffers(p->adec);
+	if(p->swr) swr_free(&p->swr);
+	p->draining = 0;
+	return 0;
+}
+
+void ol_play_close(OlPlayer *p)
+{
+	if(!p) return;
+	if(p->sws) sws_freeContext(p->sws);
+	if(p->swr) swr_free(&p->swr);
+	if(p->vdec) avcodec_free_context(&p->vdec);
+	if(p->adec) avcodec_free_context(&p->adec);
+	if(p->pkt) av_packet_free(&p->pkt);
+	if(p->frame) av_frame_free(&p->frame);
+	if(p->fc) avformat_close_input(&p->fc);
+	free(p);
+}
+
+// Vorschaubild: ein Bild nach etwa einer Sekunde, passend in max_w x max_h verkleinert.
+int ol_play_thumb(const char *path, int max_w, uint8_t *rgba, size_t cap, int *w, int *h, int64_t *duration_ms)
+{
+	char err[128];
+	OlPlayer *p = ol_play_open(path, max_w, 1, err, sizeof(err));
+	if(!p) return -1;
+	if(duration_ms) *duration_ms = p->duration_ms;
+	if(p->duration_ms > 3000)
+		ol_play_seek(p, p->duration_ms > 20000 ? 5000 : 1500);
+	int res = -1;
+	int16_t aud[16384];
+	for(int i = 0; i < 400; i++)
+	{
+		int64_t vp = 0, ap = 0;
+		size_t an = 0;
+		int r = ol_play_step(p, rgba, cap, &vp, aud, 16384, &an, &ap);
+		if(r == 1) { res = 0; break; }
+		if(r < 0) break;
+	}
+	if(res == 0) { *w = p->out_w; *h = p->out_h; }
+	ol_play_close(p);
+	return res;
+}

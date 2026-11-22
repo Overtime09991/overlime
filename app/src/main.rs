@@ -1,10 +1,12 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod audio;
+mod gallery;
 mod discord;
 mod discovery;
 mod ffi;
 mod keys;
 mod pad;
+mod player;
 mod pages;
 mod psn;
 mod settings;
@@ -36,13 +38,14 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.42";
+const VERSION: &str = "0.43";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
     Home,
     News,
     Consoles,
+    Gallery,
     Settings,
     Help,
 }
@@ -259,6 +262,21 @@ struct App {
     media_t: f64,
     media_del: Option<std::path::PathBuf>,
     viewer: Option<std::path::PathBuf>,
+    viewer_video: bool,
+    player: Option<player::Player>,
+    player_tex: Option<egui::TextureHandle>,
+    vp_ctrl_t: f64,
+    share_open: bool,
+    open_req: Option<std::path::PathBuf>,
+    intro_on: bool,
+    intro_t0: Option<f64>,
+    gal_items: Vec<MediaItem>,
+    gal_t: f64,
+    gal_filter: usize,
+    gal_thumbs: HashMap<std::path::PathBuf, gallery::Thumb>,
+    gal_tx: Sender<gallery::ThumbMsg>,
+    gal_rx: Receiver<gallery::ThumbMsg>,
+    gal_inflight: usize,
     viewer_tex: Option<(std::path::PathBuf, egui::TextureHandle)>,
     viewer_err: String,
     demo_stream: bool,
@@ -286,6 +304,7 @@ impl App {
         }
         setup_style(&cc.egui_ctx);
         let (tx, rx) = channel();
+        let (gal_tx, gal_rx) = channel::<gallery::ThumbMsg>();
         {
             // Tonausgänge im Hintergrund suchen (dauert ca. 0,3 s)
             let txa = tx.clone();
@@ -410,6 +429,21 @@ impl App {
             media_t: -100.0,
             media_del: None,
             viewer: None,
+            viewer_video: false,
+            player: None,
+            player_tex: None,
+            vp_ctrl_t: 0.0,
+            share_open: false,
+            open_req: None,
+            intro_on: std::env::args().any(|a| a == "--intro"),
+            intro_t0: None,
+            gal_items: Vec::new(),
+            gal_t: -100.0,
+            gal_filter: 0,
+            gal_thumbs: HashMap::new(),
+            gal_tx,
+            gal_rx,
+            gal_inflight: 0,
             viewer_tex: None,
             viewer_err: String::new(),
             demo_stream: false,
@@ -421,6 +455,12 @@ impl App {
             tx,
             rx,
         };
+        if std::env::args().any(|a| a == "--demo-gallery") {
+            app.page = Page::Gallery;
+        }
+        if std::env::args().any(|a| a == "--demo-open-video") {
+            app.open_req = list_media(50).into_iter().find(|m| m.video).map(|m| m.path);
+        }
         if std::env::args().any(|a| a == "--demo-viewer") {
             app.viewer = list_media(50).into_iter().find(|m| !m.video).map(|m| m.path);
         }
@@ -641,101 +681,6 @@ impl App {
             self.demo_stream = false;
         }
         ctx.request_repaint();
-    }
-
-    /// Vollbild-Anzeige für Screenshots: Pfeiltasten blättern, Esc schließt.
-    fn media_viewer(&mut self, ctx: &egui::Context) {
-        let Some(cur) = self.viewer.clone() else { return };
-        let photos: Vec<MediaItem> = list_media(400).into_iter().filter(|m| !m.video).collect();
-        let idx = photos.iter().position(|m| m.path == cur);
-        let mut close = false;
-        let mut go: i32 = 0;
-        ctx.input(|i| {
-            if i.key_pressed(Key::Escape) {
-                close = true;
-            }
-            if i.key_pressed(Key::ArrowLeft) {
-                go = 1; // die Liste ist nach Neuheit sortiert: links = neuer
-            }
-            if i.key_pressed(Key::ArrowRight) {
-                go = -1;
-            }
-        });
-        if let (Some(ix), true) = (idx, go != 0) {
-            let n = ix as i32 - go;
-            if n >= 0 && (n as usize) < photos.len() {
-                self.viewer = Some(photos[n as usize].path.clone());
-                self.viewer_err.clear();
-                self.viewer_tex = None;
-            }
-        }
-        let cur = self.viewer.clone().unwrap_or(cur);
-        if self.viewer_tex.as_ref().map(|(p, _)| p != &cur).unwrap_or(true) && self.viewer_err.is_empty() {
-            match load_png(&cur) {
-                Ok(img) => {
-                    let tex = ctx.load_texture("viewer", img, TextureOptions::LINEAR);
-                    self.viewer_tex = Some((cur.clone(), tex));
-                }
-                Err(e) => self.viewer_err = e,
-            }
-        }
-        let idx = photos.iter().position(|m| m.path == cur);
-        let screen = ctx.screen_rect();
-        egui::Area::new(egui::Id::new("media_viewer")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
-            let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
-            let p = ui.painter();
-            p.rect_filled(rect, Rounding::ZERO, Color32::from_black_alpha(238));
-            if let Some((_, tex)) = &self.viewer_tex {
-                let sz = tex.size_vec2();
-                let area = Rect::from_min_max(rect.min + Vec2::new(70.0, 56.0), rect.max - Vec2::new(70.0, 70.0));
-                let sc = (area.width() / sz.x).min(area.height() / sz.y).min(2.0);
-                let r = Rect::from_center_size(area.center(), sz * sc);
-                p.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
-            } else if !self.viewer_err.is_empty() {
-                p.text(rect.center(), Align2::CENTER_CENTER, format!("Bild kann nicht geladen werden: {}", self.viewer_err), FontId::proportional(15.0), RED);
-            }
-            let name = cur.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-            p.text(Pos2::new(rect.center().x, rect.top() + 26.0), Align2::CENTER_CENTER, &name, FontId::proportional(14.0), Color32::from_white_alpha(210));
-            if let Some(ix) = idx {
-                p.text(Pos2::new(rect.center().x, rect.bottom() - 24.0), Align2::CENTER_CENTER, format!("{} / {}   •   {}", ix + 1, photos.len(), lang::tr("Pfeiltasten blättern, Esc schließt")), FontId::proportional(12.5), Color32::from_white_alpha(150));
-            }
-            // Pfeile links und rechts
-            for (dir, label, pos) in [(1i32, "‹", Pos2::new(rect.left() + 34.0, rect.center().y)), (-1, "›", Pos2::new(rect.right() - 34.0, rect.center().y))] {
-                let target = idx.map(|ix| ix as i32 - dir).filter(|n| *n >= 0 && (*n as usize) < photos.len());
-                if target.is_none() {
-                    continue;
-                }
-                let br = Rect::from_center_size(pos, Vec2::splat(48.0));
-                let hv = ui.rect_contains_pointer(br);
-                p.circle_filled(pos, 24.0, Color32::from_white_alpha(if hv { 40 } else { 18 }));
-                p.text(pos, Align2::CENTER_CENTER, label, FontId::proportional(30.0), Color32::WHITE);
-                if hv && ui.input(|i| i.pointer.any_click()) {
-                    go = dir;
-                }
-            }
-            if go != 0 {
-                if let (Some(ix), Some(n)) = (idx, idx.map(|ix| ix as i32 - go)) {
-                    let _ = ix;
-                    if n >= 0 && (n as usize) < photos.len() {
-                        self.viewer = Some(photos[n as usize].path.clone());
-                        self.viewer_err.clear();
-                        self.viewer_tex = None;
-                    }
-                }
-            }
-            // Schließen: Knopf oben rechts oder Klick auf den dunklen Rand
-            let cr = Rect::from_center_size(Pos2::new(rect.right() - 36.0, rect.top() + 30.0), Vec2::splat(36.0));
-            let chv = ui.rect_contains_pointer(cr);
-            p.circle_filled(cr.center(), 16.0, Color32::from_white_alpha(if chv { 50 } else { 20 }));
-            p.text(cr.center(), Align2::CENTER_CENTER, "×", FontId::proportional(22.0), Color32::WHITE);
-            if (chv && resp.clicked()) || (resp.clicked() && ui.input(|i| i.pointer.interact_pos().map(|p| p.x < 60.0 || p.y > rect.bottom() - 60.0).unwrap_or(false)) && false) {
-                close = true;
-            }
-        });
-        if close {
-            self.viewer = None;
-            self.viewer_tex = None;
-        }
     }
 
     fn open_dialog(&mut self, c: &Console) {
@@ -2370,12 +2315,7 @@ impl App {
                                             let _ = std::process::Command::new("explorer").arg(format!("/select,{}", m.path.display())).spawn();
                                         }
                                         if ui.add(egui::Button::new("Öffnen").fill(th_blue()).rounding(8.0)).clicked() {
-                                            if m.video {
-                                                let _ = std::process::Command::new("explorer").arg(&m.path).spawn();
-                                            } else {
-                                                self.viewer = Some(m.path.clone());
-                                                self.viewer_err.clear();
-                                            }
+                                            self.open_req = Some(m.path.clone());
                                         }
                                     }
                                 });
@@ -3874,13 +3814,25 @@ impl App {
 
 impl eframe::App for App {
     /// Die Menüs werden bewusst nicht per Controller bedient (Controller-Test in der Diagnose).
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
         self.nav_prev = 0;
+        // Für automatische Bildschirmtests: Eingaben von Maus und Tastatur ignorieren (Umgebungsvariable OL_NOINPUT).
+        if std::env::var_os("OL_NOINPUT").is_some() {
+            raw.events.retain(|e| !matches!(e, egui::Event::PointerMoved(_) | egui::Event::PointerButton { .. } | egui::Event::Key { .. } | egui::Event::Text(_) | egui::Event::MouseWheel { .. } | egui::Event::PointerGone));
+        }
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.gl_ok = frame.gl().is_some();
         lang::set(self.settings.language);
+        if self.intro_on {
+            let tnow = ctx.input(|i| i.time);
+            let t0 = *self.intro_t0.get_or_insert(tnow);
+            ctx.request_repaint();
+            if splash::intro_screen(ctx, (tnow - t0) as f32) {
+                self.intro_on = false;
+            }
+        }
         ctx.input(|i| {
             let v = i.viewport();
             if let (Some(o), Some(inn)) = (v.outer_rect, v.inner_rect) {
@@ -3949,13 +3901,13 @@ impl eframe::App for App {
         if self.session.is_none() && self.dialog.is_none() && self.capturing.is_none() && !ctx.wants_keyboard_input() {
             let (f5, nums) = ctx.input(|i| {
                 let c = i.modifiers.ctrl;
-                let ks = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5];
+                let ks = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6];
                 (i.key_pressed(Key::F5), ks.map(|k| c && i.key_pressed(k)))
             });
             if f5 && !self.searching {
                 self.search();
             }
-            let hk = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Help];
+            let hk = [Page::Home, Page::News, Page::Consoles, Page::Gallery, Page::Settings, Page::Help];
             for (i, hit) in nums.iter().enumerate() {
                 if *hit {
                     self.page = hk[i];
@@ -4235,6 +4187,7 @@ impl eframe::App for App {
                     Page::Home => (ic::HOUSE, "Übersicht"),
                     Page::News => (ic::NEWSPAPER, "Neuigkeiten"),
                     Page::Consoles => (ic::GAME_CONTROLLER, "Konsolen"),
+                    Page::Gallery => (ic::IMAGES, "Galerie"),
                     Page::Settings => (ic::GEAR_SIX, "Einstellungen"),
                     Page::Help => (ic::QUESTION, "Hilfe & Diagnose"),
                 };
@@ -4282,8 +4235,8 @@ impl eframe::App for App {
                 }
                 ui.add_space(18.0);
                 let old = self.page;
-                let pages = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Help];
-                let items = [(ic::HOUSE, "Übersicht"), (ic::NEWSPAPER, "Neuigkeiten"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::GEAR_SIX, "Einstellungen"), (ic::QUESTION, "Hilfe")];
+                let pages = [Page::Home, Page::News, Page::Consoles, Page::Gallery, Page::Settings, Page::Help];
+                let items = [(ic::HOUSE, "Übersicht"), (ic::NEWSPAPER, "Neuigkeiten"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::IMAGES, "Galerie"), (ic::GEAR_SIX, "Einstellungen"), (ic::QUESTION, "Hilfe")];
                 let unseen = self.unseen_news();
                 let top_y = ui.cursor().top();
                 let sel_idx = pages.iter().position(|p| *p == self.page).unwrap_or(0) as f32;
@@ -4296,7 +4249,7 @@ impl eframe::App for App {
                     ui.painter().rect_filled(bar, Rounding::same(2.0), th_blue_light());
                 }
                 for (i, (icon, label)) in items.iter().enumerate() {
-                    let badge = if i == 3 && self.update.is_some() {
+                    let badge = if i == 4 && self.update.is_some() {
                         Some("!".to_string())
                     } else if i == 1 && unseen > 0 && self.page != Page::News {
                         Some(unseen.min(9).to_string())
@@ -4379,11 +4332,18 @@ impl eframe::App for App {
                 Page::Home => self.home_page(ui, t),
                 Page::News => self.news_page(ui, t),
                 Page::Consoles => self.consoles_page(ui, t),
+                Page::Gallery => self.gallery_page(ui, t),
                 Page::Settings => self.settings_page(ui),
                 Page::Help => self.help_page(ui, t),
             }
         });
 
+        if let Some(p) = self.open_req.take() {
+            self.open_viewer(ctx, p);
+        }
+        if self.viewer.is_some() && std::env::args().any(|a| a == "--demo-share") {
+            self.share_open = true;
+        }
         self.media_viewer(ctx);
         if self.dialog.is_none() {
             self.feedback_ui(ctx);
@@ -4623,6 +4583,63 @@ Gefunden: {}
         let ic = winui::app_icon();
         if let Some(p) = std::env::args().nth(i + 1) {
             let _ = image_dump(&p, &ic.rgba, ic.width, ic.height);
+        }
+        return Ok(());
+    }
+    if let Some(i) = std::env::args().position(|a| a == "--play-test") {
+        let a: Vec<String> = std::env::args().collect();
+        let path = std::path::PathBuf::from(a.get(i + 1).cloned().unwrap_or_default());
+        let secs: f32 = a.get(i + 2).and_then(|v| v.parse().ok()).unwrap_or(4.0);
+        match player::Player::open(&path, 0.0, "") {
+            Ok(mut p) => {
+                println!("offen: {}x{}  Dauer {} ms  Ton {}", p.w, p.h, p.duration_ms, p.has_audio);
+                let t0 = std::time::Instant::now();
+                let mut frames = 0;
+                let mut last = std::time::Instant::now();
+                while t0.elapsed().as_secs_f32() < secs {
+                    let dt = last.elapsed().as_secs_f32();
+                    last = std::time::Instant::now();
+                    if p.poll(dt).is_some() {
+                        frames += 1;
+                    }
+                    if t0.elapsed().as_millis() % 1000 < 12 {
+                        println!("{}", p.debug_state());
+                    }
+                    if p.ended() {
+                        println!("Ende erreicht");
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(8));
+                }
+                println!("Bilder {frames}  Position {} ms  Fehler '{}'", p.position_ms(), p.error());
+                if a.iter().any(|x| x == "--seek") {
+                    p.seek(p.duration_ms / 2);
+                    std::thread::sleep(std::time::Duration::from_millis(600));
+                    let mut got = 0;
+                    for _ in 0..40 {
+                        if p.poll(0.016).is_some() {
+                            got += 1;
+                        }
+                        std::thread::sleep(std::time::Duration::from_millis(16));
+                    }
+                    println!("nach Sprung: Bilder {got}  Position {} ms", p.position_ms());
+                }
+            }
+            Err(e) => println!("Fehler: {e}"),
+        }
+        return Ok(());
+    }
+    if let Some(i) = std::env::args().position(|a| a == "--thumb-test") {
+        let a: Vec<String> = std::env::args().collect();
+        let path = std::path::PathBuf::from(a.get(i + 1).cloned().unwrap_or_default());
+        match player::thumbnail(&path, 480) {
+            Some(t) => {
+                println!("Vorschau {}x{} Dauer {} ms", t.w, t.h, t.duration_ms);
+                if let Some(o) = a.get(i + 2) {
+                    let _ = image_dump(o, &t.rgba, t.w as u32, t.h as u32);
+                }
+            }
+            None => println!("keine Vorschau"),
         }
         return Ok(());
     }

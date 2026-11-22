@@ -4,6 +4,8 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Neue Galerie: Videos abspielen und Screenshots ansehen",
+    "Teilen per Zwischenablage",
     "Aufnahmen und Screenshots in der App ansehen",
     "Account-ID zum Kopieren für andere Apps",
     "Klarer Fokus auf Controller, ohne Tastatur-Steuerung",
@@ -699,4 +701,208 @@ pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> boo
         }
     });
     done
+}
+
+// ---------------------------------------------------------------- Intro (nur lokal, mit --intro)
+
+fn ease_back(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    let c1 = 1.70158;
+    let c3 = c1 + 1.0;
+    1.0 + c3 * (x - 1.0).powi(3) + c1 * (x - 1.0).powi(2)
+}
+
+fn sm(x: f32) -> f32 {
+    let x = x.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
+}
+
+/// Startbild: Lichtstreifen laufen zusammen, das Symbol zeichnet sich, ein Lichtring bricht aus,
+/// der Schriftzug erscheint Buchstabe für Buchstabe. Gibt true zurück, wenn es zu Ende ist (oder übersprungen wurde).
+pub fn intro_screen(ctx: &egui::Context, t: f32) -> bool {
+    let total = 4.2;
+    let screen = ctx.screen_rect();
+    let mut skip = ctx.input(|i| i.key_pressed(Key::Escape) || i.key_pressed(Key::Enter) || i.key_pressed(Key::Space));
+    // Das Symbol als Bild (einmal anlegen)
+    let tex = ctx.data_mut(|d| d.get_temp::<egui::TextureHandle>(egui::Id::new("intro_icon")));
+    let tex = match tex {
+        Some(t) => t,
+        None => {
+            let ic = winui::app_icon();
+            let img = egui::ColorImage::from_rgba_unmultiplied([ic.width as usize, ic.height as usize], &ic.rgba);
+            let t = ctx.load_texture("intro_icon", img, TextureOptions::LINEAR);
+            ctx.data_mut(|d| d.insert_temp(egui::Id::new("intro_icon"), t.clone()));
+            t
+        }
+    };
+    egui::Area::new(egui::Id::new("intro")).order(egui::Order::Tooltip).fixed_pos(screen.min).show(ctx, |ui| {
+        let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+        if resp.clicked() {
+            skip = true;
+        }
+        let p = ui.painter().clone();
+        let ga = 1.0 - sm((t - 3.5) / 0.7); // Gesamt-Ausblendung
+        if ga <= 0.0 {
+            return;
+        }
+        let c = Pos2::new(rect.center().x, rect.center().y - 36.0);
+        let sz = (rect.height().min(rect.width() * 0.6) * 0.30).clamp(110.0, 190.0);
+
+        // Hintergrund mit sanftem Licht
+        p.rect_filled(rect, Rounding::ZERO, Color32::from_rgb(5, 7, 14).gamma_multiply(ga));
+        let glow = sm(t / 1.6);
+        radial(&p, c, rect.width().min(900.0) * (0.35 + 0.25 * glow), th_blue(), 0.22 * glow * ga);
+        radial(&p, c + Vec2::new(rect.width() * 0.18, rect.height() * 0.12), 420.0, Color32::from_rgb(120, 70, 240), 0.14 * glow * ga);
+
+        // Lichtstreifen von links und rechts, die zur Mitte laufen
+        for i in 0..11u32 {
+            let off = (i as f32 - 5.0) * 16.0 + (rnd(i, 3) - 0.5) * 10.0;
+            let y = c.y + off;
+            let dir = if i % 2 == 0 { 1.0 } else { -1.0 };
+            let delay = rnd(i, 5) * 0.35;
+            let k = ease_out((t - delay) / 0.95);
+            let edge = if dir > 0.0 { rect.left() - 40.0 } else { rect.right() + 40.0 };
+            let head = edge + (c.x - edge) * k;
+            let len = 260.0 + rnd(i, 7) * 220.0;
+            let tail = head - dir * len * (1.0 - 0.6 * k);
+            let alpha = (1.0 - sm((t - 0.85 - delay) / 0.3)) * sm((t - delay) / 0.12) * ga;
+            if alpha > 0.01 {
+                let steps = 14;
+                for s in 0..steps {
+                    let f0 = s as f32 / steps as f32;
+                    let f1 = (s + 1) as f32 / steps as f32;
+                    let x0 = tail + (head - tail) * f0;
+                    let x1 = tail + (head - tail) * f1;
+                    let col = if i % 3 == 0 { Color32::from_rgb(150, 200, 255) } else { th_blue_light() };
+                    p.line_segment([Pos2::new(x0, y), Pos2::new(x1, y)], Stroke::new(1.5 + 1.5 * f1, col.gamma_multiply(alpha * f1 * f1)));
+                }
+                p.circle_filled(Pos2::new(head, y), 2.5, Color32::WHITE.gamma_multiply(alpha));
+            }
+        }
+
+        // Dreieck zeichnet sich als Linie
+        let s = sz / 256.0;
+        let tri = [Vec2::new(-28.0, -58.0) * s, Vec2::new(-28.0, 58.0) * s, Vec2::new(68.0, 0.0) * s];
+        let tri_k = ease_out((t - 0.35) / 0.8);
+        let icon_a = sm((t - 1.05) / 0.45);
+        if tri_k > 0.0 && icon_a < 1.0 {
+            let pts = [c + tri[0], c + tri[1], c + tri[2], c + tri[0]];
+            let total_len: f32 = (0..3).map(|i| (pts[i + 1] - pts[i]).length()).sum();
+            let mut remain = total_len * tri_k;
+            let mut line = vec![pts[0]];
+            for i in 0..3 {
+                let seg = pts[i + 1] - pts[i];
+                let l = seg.length();
+                if remain >= l {
+                    line.push(pts[i + 1]);
+                    remain -= l;
+                } else {
+                    line.push(pts[i] + seg * (remain / l));
+                    break;
+                }
+            }
+            let a = (1.0 - icon_a) * ga;
+            for (w, al) in [(14.0, 0.10), (8.0, 0.22), (3.5, 1.0)] {
+                p.add(Shape::line(line.clone(), Stroke::new(w, Color32::from_rgb(160, 205, 255).gamma_multiply(al * a))));
+            }
+            if let Some(tip) = line.last() {
+                p.circle_filled(*tip, 7.0, Color32::from_rgb(160, 205, 255).gamma_multiply(0.35 * a));
+                p.circle_filled(*tip, 3.2, Color32::WHITE.gamma_multiply(a));
+            }
+        }
+
+        // Lichtring beim Erscheinen
+        let wave = (t - 1.05) / 1.1;
+        if (0.0..1.0).contains(&wave) {
+            let r = sz * 0.4 + sz * 3.2 * ease_out(wave);
+            let a = (1.0 - wave).powi(2) * ga;
+            p.circle_stroke(c, r, Stroke::new(2.5, Color32::from_rgb(140, 190, 255).gamma_multiply(0.7 * a)));
+            p.circle_stroke(c, r * 0.82, Stroke::new(1.0, Color32::WHITE.gamma_multiply(0.25 * a)));
+        }
+
+        // Symbol: erscheint mit leichtem Überschwingen, mit Glanzstreifen
+        if icon_a > 0.0 {
+            let k = 0.62 + 0.38 * ease_back((t - 1.05) / 0.65);
+            let half = sz * 0.5 * k;
+            radial(&p, c, sz * 1.25 * k, Color32::from_rgb(90, 130, 255), 0.35 * icon_a * ga);
+            let ir = Rect::from_center_size(c, Vec2::splat(half * 2.0));
+            p.image(tex.id(), ir, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE.gamma_multiply(icon_a * ga));
+            // Glanzstreifen, der einmal über das Symbol wandert
+            let sh = (t - 1.45) / 0.7;
+            if (0.0..1.0).contains(&sh) {
+                let sx = ir.left() - 30.0 + (ir.width() + 60.0) * sh;
+                let band = 26.0;
+                let mut m = egui::epaint::Mesh::default();
+                let top = Color32::from_white_alpha((70.0 * (1.0 - (sh - 0.5).abs() * 2.0) * ga) as u8);
+                let clear = Color32::from_white_alpha(0);
+                let (x0, x1, x2) = (sx - band, sx, sx + band);
+                let slant = 18.0;
+                m.colored_vertex(Pos2::new(x0 + slant, ir.top() + 4.0), clear);
+                m.colored_vertex(Pos2::new(x1 + slant, ir.top() + 4.0), top);
+                m.colored_vertex(Pos2::new(x2 + slant, ir.top() + 4.0), clear);
+                m.colored_vertex(Pos2::new(x0 - slant, ir.bottom() - 4.0), clear);
+                m.colored_vertex(Pos2::new(x1 - slant, ir.bottom() - 4.0), top);
+                m.colored_vertex(Pos2::new(x2 - slant, ir.bottom() - 4.0), clear);
+                m.add_triangle(0, 1, 3);
+                m.add_triangle(1, 4, 3);
+                m.add_triangle(1, 2, 4);
+                m.add_triangle(2, 5, 4);
+                // auf das Symbol begrenzen
+                p.with_clip_rect(ir.shrink(sz * 0.04)).add(Shape::mesh(m));
+            }
+        }
+
+        // Funken
+        let st = t - 1.05;
+        if st > 0.0 {
+            for i in 0..46u32 {
+                let ang = rnd(i, 1) * 2.0 * PI;
+                let spd = 120.0 + rnd(i, 2) * 360.0;
+                let life = 0.9 + rnd(i, 3) * 0.9;
+                if st > life {
+                    continue;
+                }
+                let f = st / life;
+                let d = spd * (1.0 - (-st * 2.4).exp()) / 2.4 * 2.0;
+                let pos = c + Vec2::new(ang.cos(), ang.sin()) * (sz * 0.35 + d) + Vec2::new(0.0, 18.0 * st * st);
+                let col = [th_blue_light(), Color32::WHITE, Color32::from_rgb(170, 120, 255)][(i % 3) as usize];
+                p.circle_filled(pos, 1.2 + rnd(i, 4) * 2.2, col.gamma_multiply((1.0 - f) * 0.9 * ga));
+            }
+        }
+
+        // Schriftzug Buchstabe für Buchstabe
+        let word = "OVERLIME";
+        let fs = (sz * 0.34).clamp(36.0, 64.0);
+        let track = fs * 0.28;
+        let font = FontId::proportional(fs);
+        let widths: Vec<f32> = word.chars().map(|ch| p.layout_no_wrap(ch.to_string(), font.clone(), Color32::WHITE).size().x).collect();
+        let total_w: f32 = widths.iter().sum::<f32>() + track * (word.len() as f32 - 1.0);
+        let wy = c.y + sz * 0.5 + fs * 1.15;
+        let mut x = c.x - total_w / 2.0;
+        for (i, ch) in word.chars().enumerate() {
+            let k = ease_out((t - 1.75 - i as f32 * 0.07) / 0.55);
+            if k > 0.0 {
+                let yo = (1.0 - k) * 26.0;
+                let col = Color32::WHITE.gamma_multiply(k * ga);
+                p.text(Pos2::new(x, wy + yo), Align2::LEFT_CENTER, ch.to_string(), font.clone(), col);
+                // kurzer Lichtblitz auf dem Buchstaben
+                let fl = (1.0 - ((t - 1.75 - i as f32 * 0.07 - 0.35) / 0.25).abs()).clamp(0.0, 1.0);
+                if fl > 0.0 {
+                    p.text(Pos2::new(x, wy + yo), Align2::LEFT_CENTER, ch.to_string(), font.clone(), th_blue_light().gamma_multiply(fl * 0.8 * ga));
+                }
+            }
+            x += widths[i] + track;
+        }
+        // Linie und Untertitel
+        let lk = ease_out((t - 2.45) / 0.6);
+        if lk > 0.0 {
+            let ly = wy + fs * 0.78;
+            let hw = total_w * 0.5 * lk;
+            p.line_segment([Pos2::new(c.x - hw, ly), Pos2::new(c.x + hw, ly)], Stroke::new(1.5, th_blue().gamma_multiply(0.9 * ga)));
+            let sub = "R E M O T E   P L A Y";
+            p.text(Pos2::new(c.x, ly + 22.0), Align2::CENTER_CENTER, sub, FontId::proportional((fs * 0.27).max(12.0)), th_blue_light().gamma_multiply(ease_out((t - 2.6) / 0.6) * ga));
+        }
+        p.text(Pos2::new(rect.right() - 16.0, rect.bottom() - 14.0), Align2::RIGHT_CENTER, "Klick oder Esc überspringt", FontId::proportional(11.0), Color32::from_white_alpha((46.0 * ga) as u8));
+    });
+    t > total || skip
 }
