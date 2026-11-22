@@ -32,7 +32,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.14";
+const VERSION: &str = "0.15";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -150,6 +150,7 @@ struct App {
     now: f64,
     pad_name_cache: String,
     shot_requested: bool,
+    feedback: Option<bool>,
     close_hint: bool,
     fullscreen: bool,
     status: String,
@@ -232,6 +233,7 @@ impl App {
             now: 0.0,
             pad_name_cache: String::new(),
             shot_requested: false,
+            feedback: None,
             close_hint: false,
             fullscreen: false,
             status: String::new(),
@@ -278,6 +280,12 @@ impl App {
             app.last_scan = Instant::now() + Duration::from_secs(100_000);
             if std::env::args().any(|a| a == "--settings") {
                 app.page = Page::Settings;
+            }
+            if std::env::args().any(|a| a == "--demo-feedback") {
+                app.feedback = Some(false);
+            }
+            if std::env::args().any(|a| a == "--demo-feedback-error") {
+                app.feedback = Some(true);
             }
             if std::env::args().any(|a| a == "--diag-page") {
                 app.page = Page::Diagnose;
@@ -413,10 +421,20 @@ impl App {
     }
 
     fn stop_stream(&mut self, ctx: &egui::Context) {
+        let info = self.session.as_ref().map(|s| (s.state, s.ended_error, s.started.elapsed().as_secs()));
         self.stream_menu = false;
         self.show_keys = false;
         self.close_hint = false;
         self.session = None; // Drop beendet die Sitzung
+        if self.settings.ask_feedback {
+            if let Some((state, err, secs)) = info {
+                if err {
+                    self.feedback = Some(true);
+                } else if state == 1 && secs >= 15 {
+                    self.feedback = Some(false);
+                }
+            }
+        }
         self.starting = None;
         if self.fullscreen {
             self.fullscreen = false;
@@ -1147,6 +1165,7 @@ impl App {
                 ui.add(egui::TextEdit::singleline(&mut st.manual_ip).hint_text("IP-Adresse der Konsole").desired_width(260.0));
                 ui.add_space(6.0);
                 ui.checkbox(&mut st.auto_update, "Updates automatisch installieren");
+                ui.checkbox(&mut st.ask_feedback, "Nach dem Streamen kurz fragen, wie es lief");
                 ui.checkbox(&mut st.autoconnect, "Beim Start automatisch mit meiner Konsole verbinden (weckt sie bei Bedarf auf)");
                 ui.checkbox(&mut st.welcome_anim, "Willkommensbild nach einem Update zeigen");
                 ui.horizontal(|ui| {
@@ -1556,6 +1575,86 @@ impl App {
         r
     }
 
+    /// Kopiert den Bericht und öffnet die Meldeseite auf GitHub.
+    fn report_problem(&mut self, ctx: &egui::Context, title: &str) {
+        ctx.copy_text(self.diag_report());
+        let url = format!(
+            "https://github.com/Overtime09991/overlime/issues/new?title={}&body={}",
+            psn::enc(title),
+            psn::enc("Bitte hier den Bericht aus der Zwischenablage einfügen (Strg+V) und kurz beschreiben, was nicht klappt.\n\nWas habe ich getan?\n\nWas ist passiert?\n")
+        );
+        ctx.open_url(egui::OpenUrl::new_tab(url));
+        self.toasts.push(("Bericht kopiert. Auf der GitHub-Seite mit Strg+V einfügen.".to_string(), 0, self.now));
+    }
+
+    /// Hält das Test-Ergebnis lokal fest (nur auf diesem PC, wird nirgends hingeschickt).
+    fn save_feedback(&self, result: &str) {
+        use std::io::Write;
+        let Ok(base) = std::env::var("APPDATA") else { return };
+        let dir = std::path::PathBuf::from(base).join("overlime");
+        let _ = std::fs::create_dir_all(&dir);
+        let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("feedback.txt")) {
+            let _ = writeln!(f, "{secs} | Version {VERSION} | {result}");
+        }
+    }
+
+    /// Kurze Abfrage nach dem Streamen: gut oder schlecht.
+    fn feedback_ui(&mut self, ctx: &egui::Context) {
+        let Some(err) = self.feedback else { return };
+        egui::Area::new(egui::Id::new("fb_dim")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
+            let r = ctx.screen_rect();
+            ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha(150));
+            ui.allocate_rect(r, egui::Sense::click());
+        });
+        let (mut good, mut bad, mut later) = (false, false, false);
+        egui::Window::new("feedback")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+            .order(egui::Order::Tooltip)
+            .frame(egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
+            .show(ctx, |ui| {
+                ui.set_width(400.0);
+                if err {
+                    ui.label(RichText::new("Die Verbindung hat nicht geklappt").size(21.0).strong().color(RED));
+                    ui.label(RichText::new("Mit einem Klick schickst du den Fehlerbericht ab, damit wir den Grund finden. Er enthält keine IP-Adressen und keine Passwörter.").color(TEXT_DIM).size(13.0));
+                    ui.add_space(10.0);
+                    if ui.add(big_button("Problem melden", th_blue()).min_size(Vec2::new(400.0, 46.0))).clicked() {
+                        bad = true;
+                    }
+                } else {
+                    ui.label(RichText::new("Wie lief das Streamen?").size(22.0).strong());
+                    ui.label(RichText::new("Eine kurze Rückmeldung hilft uns sehr beim Testen.").color(TEXT_DIM).size(13.0));
+                    ui.add_space(10.0);
+                    if ui.add(big_button("Es lief gut", GREEN.gamma_multiply(0.75)).min_size(Vec2::new(400.0, 46.0))).clicked() {
+                        good = true;
+                    }
+                    if ui.add(big_button("Es gab Probleme", RED.gamma_multiply(0.6)).min_size(Vec2::new(400.0, 46.0))).clicked() {
+                        bad = true;
+                    }
+                }
+                ui.add_space(4.0);
+                ui.vertical_centered(|ui| {
+                    if ui.add(egui::Button::new(RichText::new("Später").color(TEXT_DIM)).frame(false)).clicked() {
+                        later = true;
+                    }
+                });
+            });
+        if good {
+            self.save_feedback("gut");
+            self.toasts.push(("Danke fürs Testen!".to_string(), 2, self.now));
+            self.feedback = None;
+        } else if bad {
+            self.save_feedback(if err { "fehler" } else { "schlecht" });
+            self.feedback = None;
+            self.report_problem(ctx, if err { "Verbindung fehlgeschlagen" } else { "Problem beim Streamen" });
+        } else if later {
+            self.feedback = None;
+        }
+    }
+
     fn keyboard_input(&self, ctx: &egui::Context) -> pad::Input {
         let neutral = pad::Input { buttons: 0, l2: 0, r2: 0, lx: 0, ly: 0, rx: 0, ry: 0 };
         if self.stream_menu || self.show_keys || ctx.wants_keyboard_input() || !ctx.input(|i| i.focused) {
@@ -1570,6 +1669,7 @@ impl App {
         let show_hud = self.show_hud;
         let mut toggle_fs = false;
         let mut copy_log = false;
+        let mut report = false;
         let opts = match self.settings.upscale {
             0 => TextureOptions::NEAREST,
             _ => TextureOptions::LINEAR,
@@ -1658,9 +1758,14 @@ impl App {
                                         ui.set_width(ui.available_width());
                                         ui.label(RichText::new(&log_tail).monospace().size(11.0).color(TEXT_DIM));
                                     });
-                                    if ui.button("Protokoll kopieren").clicked() {
-                                        copy_log = true;
-                                    }
+                                    ui.horizontal(|ui| {
+                                        if ui.button("Protokoll kopieren").clicked() {
+                                            copy_log = true;
+                                        }
+                                        if ui.button("Problem melden").clicked() {
+                                            report = true;
+                                        }
+                                    });
                                 }
                                 ui.add_space(8.0);
                                 if ui.add(big_button("Zurück", th_blue()).min_size(Vec2::new(380.0, 46.0))).clicked() {
@@ -1772,6 +1877,9 @@ impl App {
         }
         if copy_log {
             ctx.copy_text(self.log.clone());
+        }
+        if report {
+            self.report_problem(ctx, "Verbindung fehlgeschlagen");
         }
         if toggle_fs {
             self.fullscreen = !self.fullscreen;
@@ -2088,6 +2196,9 @@ impl eframe::App for App {
             }
         });
 
+        if self.dialog.is_none() {
+            self.feedback_ui(ctx);
+        }
         self.dialog_ui(ctx);
         self.draw_toasts(ctx, t);
     }

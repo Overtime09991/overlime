@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Neue Diagnose-Seite mit Problem-melden-Knopf",
-    "Automatisch verbinden beim Start (optional)",
-    "Screenshots im Stream mit F12",
-    "Neues Design: Profilbereich, animierte Konsole",
+    "Kurze Rückmeldung nach dem Streamen (gut / schlecht)",
+    "„Problem melden“ direkt bei Verbindungsfehlern",
+    "Neue Diagnose-Seite und Screenshots mit F12",
+    "Ein einziges Setup für alle, Updates automatisch",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {
