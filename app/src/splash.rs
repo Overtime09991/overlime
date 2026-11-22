@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Neuer Update-Bildschirm mit Animation",
-    "Frei belegbare Tastatur und Pause-Menü",
-    "PS5- und PS4-Controller per Bluetooth",
-    "Keine IP-Adressen mehr in der Oberfläche",
+    "Neues Design mit einheitlichen Symbolen",
+    "Farbschemata und eigene Themes",
+    "Sanfte Animationen und Einblend-Hinweise",
+    "Discord-Status: „Spielt OVERLIME“ (optional)",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {
@@ -43,9 +43,9 @@ fn ease_out(x: f32) -> f32 {
 }
 
 fn background(p: &egui::Painter, r: Rect, t: f64) {
-    p.rect_filled(r, Rounding::ZERO, BG);
+    p.rect_filled(r, Rounding::ZERO, th_bg());
     let a = (t * 0.35) as f32;
-    p.circle_filled(Pos2::new(r.width() * (0.2 + 0.06 * a.sin()), r.height() * 0.3), 340.0, BLUE.gamma_multiply(0.10));
+    p.circle_filled(Pos2::new(r.width() * (0.2 + 0.06 * a.sin()), r.height() * 0.3), 340.0, th_blue().gamma_multiply(0.10));
     p.circle_filled(Pos2::new(r.width() * (0.85 + 0.05 * (a * 1.3).cos()), r.height() * 0.75), 380.0, Color32::from_rgb(100, 60, 230).gamma_multiply(0.09));
     // aufsteigende Lichtpunkte
     for i in 0..46u32 {
@@ -54,7 +54,7 @@ fn background(p: &egui::Painter, r: Rect, t: f64) {
         let y = r.bottom() - ((t as f32 * speed + rnd(i, 3) * r.height()) % (r.height() + 40.0)) + 20.0;
         let size = 1.0 + rnd(i, 4) * 2.2;
         let tw = 0.4 + 0.6 * (t as f32 * (0.6 + rnd(i, 5)) + rnd(i, 6) * 6.0).sin().abs();
-        p.circle_filled(Pos2::new(x, y), size, BLUE_LIGHT.gamma_multiply(0.45 * tw));
+        p.circle_filled(Pos2::new(x, y), size, th_blue_light().gamma_multiply(0.45 * tw));
     }
 }
 
@@ -98,7 +98,7 @@ const STAGES: [&str; 5] = ["Verbindung zu GitHub", "Update herunterladen", "Prü
 /// Zeigt die Update-Animation. Gibt true zurück, wenn bei einem Fehler auf "Zurück" geklickt wurde.
 pub fn update_screen(ctx: &egui::Context, t: f64, stage: u8, pct: f32, shown: f32, from: &str, to: &str, err: Option<&str>) -> bool {
     let mut back = false;
-    egui::CentralPanel::default().frame(egui::Frame::none().fill(BG)).show(ctx, |ui| {
+    egui::CentralPanel::default().frame(egui::Frame::none().fill(th_bg())).show(ctx, |ui| {
         let r = ui.max_rect();
         let p = ui.painter().clone();
         background(&p, r, t);
@@ -107,10 +107,10 @@ pub fn update_screen(ctx: &egui::Context, t: f64, stage: u8, pct: f32, shown: f3
         let pulse = 0.5 + 0.5 * (t as f32 * 2.0).sin();
 
         p.text(Pos2::new(cx, top), Align2::CENTER_TOP, "OVERLIME", FontId::proportional(40.0), Color32::WHITE);
-        p.text(Pos2::new(cx, top + 48.0), Align2::CENTER_TOP, "UPDATE", FontId::proportional(13.0), BLUE_LIGHT);
+        p.text(Pos2::new(cx, top + 48.0), Align2::CENTER_TOP, "UPDATE", FontId::proportional(13.0), th_blue_light());
 
         let c = Pos2::new(cx, top + 170.0);
-        let col = if err.is_some() { RED } else { BLUE_LIGHT };
+        let col = if err.is_some() { RED } else { th_blue_light() };
         p.circle_filled(c, 100.0 + 6.0 * pulse, col.gamma_multiply(0.07 + 0.05 * pulse));
         p.circle_filled(c, 82.0, col.gamma_multiply(0.07));
         ring(&p, c, 76.0, shown, 9.0, col);
@@ -128,7 +128,7 @@ pub fn update_screen(ctx: &egui::Context, t: f64, stage: u8, pct: f32, shown: f3
         let total = wf + gap + wt;
         let left = cx - total / 2.0;
         chip(&p, Pos2::new(left + wf / 2.0, y), from, false, 1.0);
-        chevrons(&p, Pos2::new(left + wf + gap / 2.0, y), t, BLUE_LIGHT);
+        chevrons(&p, Pos2::new(left + wf + gap / 2.0, y), t, th_blue_light());
         let glow = 0.75 + 0.25 * pulse;
         chip(&p, Pos2::new(left + wf + gap + wt / 2.0, y), to, true, glow);
 
@@ -147,7 +147,7 @@ pub fn update_screen(ctx: &egui::Context, t: f64, stage: u8, pct: f32, shown: f3
             } else if i == stage {
                 p.circle_stroke(ic, 10.0, Stroke::new(2.0, Color32::from_white_alpha(25)));
                 let a0 = (t as f32 * 4.5) % (2.0 * PI);
-                p.add(Shape::line(arc(ic, 10.0, a0, PI * 1.1), Stroke::new(2.6, BLUE_LIGHT)));
+                p.add(Shape::line(arc(ic, 10.0, a0, PI * 1.1), Stroke::new(2.6, th_blue_light())));
             } else {
                 p.circle_stroke(ic, 10.0, Stroke::new(1.5, Color32::from_white_alpha(28)));
             }
@@ -167,7 +167,7 @@ pub fn update_screen(ctx: &egui::Context, t: f64, stage: u8, pct: f32, shown: f3
         if let Some(e) = err {
             p.text(Pos2::new(cx, ly + 12.0), Align2::CENTER_TOP, e, FontId::proportional(13.0), RED);
             egui::Area::new(egui::Id::new("upd_back")).order(egui::Order::Foreground).fixed_pos(Pos2::new(cx - 100.0, ly + 42.0)).show(ctx, |ui| {
-                if ui.add(big_button("Zurück", BLUE).min_size(Vec2::new(200.0, 44.0))).clicked() {
+                if ui.add(big_button("Zurück", th_blue()).min_size(Vec2::new(200.0, 44.0))).clicked() {
                     back = true;
                 }
             });
@@ -181,7 +181,7 @@ pub fn update_screen(ctx: &egui::Context, t: f64, stage: u8, pct: f32, shown: f3
 /// Willkommens-Animation nach einem Update. Gibt true zurück, wenn sie beendet ist.
 pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> bool {
     let mut done = false;
-    egui::CentralPanel::default().frame(egui::Frame::none().fill(BG)).show(ctx, |ui| {
+    egui::CentralPanel::default().frame(egui::Frame::none().fill(th_bg())).show(ctx, |ui| {
         let r = ui.max_rect();
         let p = ui.painter().clone();
         background(&p, r, ts + 3.0);
@@ -190,7 +190,7 @@ pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> boo
         let tsf = ts as f32;
 
         // Konfetti
-        let palette = [BLUE_LIGHT, GREEN, YELLOW, Color32::from_rgb(170, 120, 255), Color32::WHITE, Color32::from_rgb(255, 120, 150)];
+        let palette = [th_blue_light(), GREEN, YELLOW, Color32::from_rgb(170, 120, 255), Color32::WHITE, Color32::from_rgb(255, 120, 150)];
         let fade = (1.0 - ((tsf - 6.5) / 2.5).clamp(0.0, 1.0)).max(0.0);
         if tsf > 0.5 && fade > 0.0 {
             let ct = tsf - 0.5;
@@ -250,7 +250,7 @@ pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> boo
 
         // Neuigkeiten
         let mut ny = y + 52.0;
-        p.text(Pos2::new(cx, ny), Align2::CENTER_TOP, "NEU IN DIESER VERSION", FontId::proportional(11.5), BLUE_LIGHT.gamma_multiply(a(2.4)));
+        p.text(Pos2::new(cx, ny), Align2::CENTER_TOP, "NEU IN DIESER VERSION", FontId::proportional(11.5), th_blue_light().gamma_multiply(a(2.4)));
         ny += 24.0;
         for (i, line) in NEWS.iter().enumerate() {
             let d = 2.6 + i as f32 * 0.35;
@@ -265,7 +265,7 @@ pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> boo
         if ab > 0.01 {
             egui::Area::new(egui::Id::new("welcome_btn")).order(egui::Order::Foreground).fixed_pos(Pos2::new(cx - 110.0, ny + 18.0)).show(ctx, |ui| {
                 ui.set_opacity(ab);
-                if ui.add(big_button("Los geht's", BLUE).min_size(Vec2::new(220.0, 46.0))).clicked() {
+                if ui.add(big_button("Los geht's", th_blue()).min_size(Vec2::new(220.0, 46.0))).clicked() {
                     done = true;
                 }
             });

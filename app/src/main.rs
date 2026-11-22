@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod audio;
+mod discord;
 mod discovery;
 mod ffi;
 mod keys;
@@ -9,6 +10,7 @@ mod psn;
 mod settings;
 mod splash;
 mod store;
+mod theme;
 mod update;
 
 use discovery::{Console, State};
@@ -18,22 +20,18 @@ use eframe::egui::{
 };
 use ffi::{Paired, Stream, StreamParams};
 use settings::Settings;
+use theme::*;
+use egui_phosphor::regular as ic;
 use std::collections::HashMap;
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-const BG: Color32 = Color32::from_rgb(8, 11, 22);
-const SIDEBAR: Color32 = Color32::from_rgb(12, 17, 32);
-const CARD: Color32 = Color32::from_rgb(19, 26, 46);
-const CARD_HOVER: Color32 = Color32::from_rgb(28, 38, 66);
-const BLUE: Color32 = Color32::from_rgb(0, 112, 224);
-const BLUE_LIGHT: Color32 = Color32::from_rgb(80, 165, 255);
 const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.11";
+const VERSION: &str = "0.12";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -93,6 +91,7 @@ struct Session {
     size: (i32, i32),
     lost: i32,
     last_input: Instant,
+    started_unix: i64,
 }
 
 struct App {
@@ -132,6 +131,11 @@ struct App {
     capture_since: f64,
     key_note: String,
     allow_close: bool,
+    themes: Vec<theme::Preset>,
+    discord: discord::Handle,
+    applied_theme: String,
+    toasts: Vec<(String, u8, f64)>,
+    now: f64,
     close_hint: bool,
     fullscreen: bool,
     status: String,
@@ -147,6 +151,13 @@ fn log_path() -> Option<std::path::PathBuf> {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
+        setup_fonts(&cc.egui_ctx);
+        theme::ensure_example();
+        let themes = theme::all();
+        let st0 = Settings::load();
+        if let Some(p) = themes.iter().find(|p| p.name == st0.theme) {
+            theme::set(p.theme);
+        }
         setup_style(&cc.egui_ctx);
         let (tx, rx) = channel();
         let settings0 = Settings::load();
@@ -190,6 +201,11 @@ impl App {
             capture_since: 0.0,
             key_note: String::new(),
             allow_close: false,
+            themes,
+            discord: discord::spawn(),
+            applied_theme: String::new(),
+            toasts: Vec::new(),
+            now: 0.0,
             close_hint: false,
             fullscreen: false,
             status: String::new(),
@@ -417,11 +433,16 @@ impl App {
                     }
                 }
                 Msg::Error(e) => {
+                    self.toasts.push((format!("Fehler: {}", mask_ips(&e)), 1, self.now));
                     self.status = format!("Fehler: {}", mask_ips(&e));
                     self.searching = false;
                 }
-                Msg::Info(s) => self.status = s,
+                Msg::Info(s) => {
+                    self.toasts.push((s.clone(), 0, self.now));
+                    self.status = s;
+                }
                 Msg::PsnOk(id, name) => {
+                    self.toasts.push(("Bei PlayStation angemeldet".to_string(), 2, self.now));
                     self.settings.psn_account = psn::id_to_b64(id);
                     self.settings.psn_name = name;
                     self.login_busy = false;
@@ -440,6 +461,7 @@ impl App {
                     }
                 }
                 Msg::PairOk(p) => {
+                    self.toasts.push((format!("{} gekoppelt", p.nickname), 2, self.now));
                     self.paired.retain(|x| x.console_id != p.console_id);
                     self.paired.push(p);
                     store::save(&self.paired);
@@ -478,6 +500,7 @@ impl App {
                         size: (0, 0),
                         lost: 0,
                         last_input: Instant::now(),
+                        started_unix: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
                     });
                     if self.settings.fullscreen {
                         self.fullscreen = true;
@@ -603,18 +626,32 @@ fn german_reason(msg: &str) -> String {
 
 fn setup_style(ctx: &egui::Context) {
     let mut v = egui::Visuals::dark();
-    v.panel_fill = BG;
-    v.window_fill = CARD;
+    v.panel_fill = th_bg();
+    v.window_fill = th_card();
     v.override_text_color = Some(Color32::from_rgb(236, 241, 255));
-    v.widgets.inactive.bg_fill = CARD_HOVER;
-    v.widgets.hovered.bg_fill = CARD_HOVER;
-    v.selection.bg_fill = BLUE;
+    v.widgets.inactive.bg_fill = th_card_hover();
+    v.widgets.hovered.bg_fill = th_card_hover();
+    v.widgets.hovered.expansion = 1.5;
+    v.widgets.hovered.bg_stroke = Stroke::new(1.2, th_blue_light().gamma_multiply(0.6));
+    v.widgets.active.expansion = -0.5;
+    v.selection.bg_fill = th_blue();
     ctx.set_visuals(v);
     let mut s = (*ctx.style()).clone();
     s.spacing.item_spacing = Vec2::new(10.0, 10.0);
     s.spacing.button_padding = Vec2::new(18.0, 9.0);
     s.spacing.slider_width = 260.0;
+    s.animation_time = 0.14;
     ctx.set_style(s);
+}
+
+fn setup_fonts(ctx: &egui::Context) {
+    let mut fonts = egui::FontDefinitions::default();
+    egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
+    ctx.set_fonts(fonts);
+}
+
+fn ease_out_t(x: f32) -> f32 {
+    1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3)
 }
 
 fn fade(t: f64, since: f64, dur: f64) -> f32 {
@@ -634,10 +671,10 @@ fn draw_console(ui: &mut egui::Ui, ps5: bool, on: bool, t: f64, hover: f32) {
     let p = ui.painter_at(rect);
     let c = rect.center();
     let pulse = if on { 0.5 + 0.5 * (t * 2.0).sin() as f32 } else { 0.0 };
-    let glow = if on { BLUE } else { Color32::from_rgb(60, 70, 100) };
+    let glow = if on { th_blue() } else { Color32::from_rgb(60, 70, 100) };
     p.circle_filled(c, 60.0 + 3.0 * pulse + 3.0 * hover, glow.gamma_multiply(0.10 + 0.06 * pulse));
     p.circle_filled(c, 44.0, glow.gamma_multiply(0.12));
-    let led = if on { BLUE_LIGHT.gamma_multiply(0.65 + 0.35 * pulse) } else { Color32::from_rgb(90, 98, 120) };
+    let led = if on { th_blue_light().gamma_multiply(0.65 + 0.35 * pulse) } else { Color32::from_rgb(90, 98, 120) };
 
     if ps5 {
         let w = Color32::from_rgb(242, 244, 250);
@@ -669,6 +706,27 @@ fn draw_console(ui: &mut egui::Ui, ps5: bool, on: bool, t: f64, hover: f32) {
     }
 }
 
+/// Platzhalter-Karte mit wanderndem Glanz, solange gesucht wird.
+fn skeleton_card(ui: &mut egui::Ui, t: f64, phase: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 130.0), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, Rounding::same(18.0), th_card());
+    let block = |x: f32, y: f32, w: f32, h: f32, r: f32| {
+        p.rect_filled(Rect::from_min_size(rect.min + Vec2::new(x, y), Vec2::new(w, h)), Rounding::same(r), Color32::from_white_alpha(12));
+    };
+    p.circle_filled(rect.min + Vec2::new(83.0, 65.0), 48.0, Color32::from_white_alpha(10));
+    block(160.0, 28.0, 120.0, 12.0, 6.0);
+    block(160.0, 52.0, 240.0, 22.0, 8.0);
+    block(160.0, 86.0, 170.0, 12.0, 6.0);
+    block(rect.width() - 190.0, 42.0, 160.0, 46.0, 12.0);
+    // Glanz
+    let x = ((t as f32 * 0.55 + phase) % 1.6 - 0.3) * rect.width();
+    let shine = Rect::from_min_max(Pos2::new((rect.min.x + x).max(rect.min.x), rect.min.y), Pos2::new((rect.min.x + x + 140.0).min(rect.max.x), rect.max.y));
+    if shine.width() > 1.0 {
+        p.rect_filled(shine, Rounding::same(18.0), Color32::from_white_alpha(7));
+    }
+}
+
 fn pill(ui: &mut egui::Ui, text: &str, color: Color32) {
     let galley = ui.painter().layout_no_wrap(text.to_string(), FontId::proportional(13.0), color);
     let size = galley.size() + Vec2::new(28.0, 10.0);
@@ -683,7 +741,7 @@ fn segmented(ui: &mut egui::Ui, value: &mut usize, labels: &[&str]) {
         for (i, l) in labels.iter().enumerate() {
             let sel = *value == i;
             let b = egui::Button::new(RichText::new(*l).size(14.0).color(if sel { Color32::WHITE } else { TEXT_DIM }))
-                .fill(if sel { BLUE } else { CARD_HOVER })
+                .fill(if sel { th_blue() } else { th_card_hover() })
                 .rounding(10.0)
                 .min_size(Vec2::new(90.0, 34.0));
             if ui.add(b).clicked() {
@@ -694,7 +752,7 @@ fn segmented(ui: &mut egui::Ui, value: &mut usize, labels: &[&str]) {
 }
 
 fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
-    egui::Frame::none().fill(CARD).rounding(16.0).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
+    egui::Frame::none().fill(th_card()).rounding(16.0).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new(title).size(17.0).strong());
         ui.add_space(4.0);
@@ -712,22 +770,20 @@ fn label(ui: &mut egui::Ui, title: &str, desc: &str) {
 fn nav_item(ui: &mut egui::Ui, icon: &str, text: &str, selected: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), egui::Sense::click());
     let h = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
-    let sel = ui.ctx().animate_bool_with_time(resp.id.with("s"), selected, 0.2);
-    let bg = CARD_HOVER.gamma_multiply(0.35 * h + 0.65 * sel);
-    ui.painter().rect_filled(rect, Rounding::same(12.0), bg);
-    if sel > 0.01 {
-        let bar = Rect::from_min_size(rect.min + Vec2::new(0.0, 10.0), Vec2::new(4.0, 24.0));
-        ui.painter().rect_filled(bar, Rounding::same(2.0), BLUE_LIGHT.gamma_multiply(sel));
+    if !selected && h > 0.01 {
+        ui.painter().rect_filled(rect, Rounding::same(12.0), th_card_hover().gamma_multiply(0.45 * h));
     }
     let col = if selected { Color32::WHITE } else { TEXT_DIM.lerp_to_gamma(Color32::WHITE, h) };
-    ui.painter().text(rect.left_center() + Vec2::new(18.0, 0.0), Align2::LEFT_CENTER, format!("{icon}   {text}"), FontId::proportional(15.0), col);
+    let ic_col = if selected { th_blue_light() } else { col };
+    ui.painter().text(rect.left_center() + Vec2::new(18.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(18.0), ic_col);
+    ui.painter().text(rect.left_center() + Vec2::new(48.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(15.0), col);
     resp.clicked()
 }
 
 fn step_row(ui: &mut egui::Ui, n: &str, text: &str) {
     ui.horizontal_top(|ui| {
         let (r, _) = ui.allocate_exact_size(Vec2::splat(26.0), egui::Sense::hover());
-        ui.painter().circle_filled(r.center(), 13.0, BLUE.gamma_multiply(0.35));
+        ui.painter().circle_filled(r.center(), 13.0, th_blue().gamma_multiply(0.35));
         ui.painter().text(r.center(), Align2::CENTER_CENTER, n, FontId::proportional(14.0), Color32::WHITE);
         ui.add(egui::Label::new(RichText::new(text).size(14.5)).wrap());
     });
@@ -741,7 +797,7 @@ impl App {
                 if self.searching {
                     ui.spinner();
                     ui.label(RichText::new("Suche …").color(TEXT_DIM));
-                } else if ui.add(egui::Button::new("⟳ Neu suchen").fill(CARD).rounding(10.0)).clicked() {
+                } else if ui.add(egui::Button::new(format!("{} Neu suchen", ic::ARROWS_CLOCKWISE)).fill(th_card()).rounding(10.0)).clicked() {
                     self.search();
                 }
             });
@@ -760,8 +816,14 @@ impl App {
 
         let list = self.consoles.clone();
         egui::ScrollArea::vertical().show(ui, |ui| {
+            if list.is_empty() && self.searching {
+                for k in 0..2 {
+                    skeleton_card(ui, t, k as f32 * 0.4);
+                    ui.add_space(4.0);
+                }
+            }
             if list.is_empty() {
-                egui::Frame::none().fill(CARD).rounding(18.0).inner_margin(egui::Margin::same(34.0)).show(ui, |ui| {
+                egui::Frame::none().fill(th_card()).rounding(18.0).inner_margin(egui::Margin::same(34.0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.vertical_centered(|ui| {
                         if self.searching {
@@ -790,7 +852,7 @@ impl App {
                             ui.add_space(8.0);
                             ui.vertical(|ui| {
                                 ui.add_space(8.0);
-                                ui.label(RichText::new(if c.is_ps5 { "PlayStation 5" } else { "PlayStation 4" }).color(BLUE_LIGHT).size(13.0).strong());
+                                ui.label(RichText::new(if c.is_ps5 { "PlayStation 5" } else { "PlayStation 4" }).color(th_blue_light()).size(13.0).strong());
                                 ui.label(RichText::new(&c.name).size(24.0).strong());
                                 ui.label(RichText::new(format!("Systemsoftware {}", pretty_version(&c.system_version))).color(TEXT_DIM).size(13.0));
                                 ui.horizontal(|ui| {
@@ -800,28 +862,28 @@ impl App {
                                         State::Unknown => pill(ui, "Unbekannt", TEXT_DIM),
                                     }
                                     if paired.is_some() {
-                                        pill(ui, "Gekoppelt", BLUE_LIGHT);
+                                        pill(ui, "Gekoppelt", th_blue_light());
                                     }
                                 });
                                 if !c.running_app.is_empty() {
-                                    ui.label(RichText::new(format!("🎮 {}", c.running_app)).color(TEXT_DIM).size(13.0));
+                                    ui.label(RichText::new(format!("{} {}", ic::GAME_CONTROLLER, c.running_app)).color(TEXT_DIM).size(13.0));
                                 }
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| match &paired {
                                 None => {
-                                    if ui.add(big_button("Koppeln", BLUE)).clicked() {
+                                    if ui.add(big_button("Koppeln", th_blue())).clicked() {
                                         self.open_dialog(&c);
                                     }
                                 }
                                 Some(p) if c.state == State::Standby => {
-                                    if ui.add(big_button("Aufwecken", BLUE)).clicked() {
+                                    if ui.add(big_button("Aufwecken", th_blue())).clicked() {
                                         self.wake(&c, p);
                                     }
                                 }
                                 Some(p) => {
                                     let busy = self.starting.is_some();
-                                    let txt = if busy { "Verbinde …" } else { "▶  Verbinden" };
-                                    if ui.add_enabled(!busy, big_button(txt, BLUE)).clicked() {
+                                    let txt: &str = if busy { "Verbinde …" } else { &format!("{}  Verbinden", ic::PLAY) };
+                                    if ui.add_enabled(!busy, big_button(txt, th_blue())).clicked() {
                                         self.connect(&c, p);
                                     }
                                 }
@@ -831,8 +893,8 @@ impl App {
                     });
                     let hv = inner.inner;
                     let rect = inner.response.rect;
-                    let fill = CARD.lerp_to_gamma(CARD_HOVER, hv);
-                    let stroke = Stroke::new(1.5, BLUE.gamma_multiply(0.7 * hv));
+                    let fill = th_card().lerp_to_gamma(th_card_hover(), hv);
+                    let stroke = Stroke::new(1.5, th_blue().gamma_multiply(0.7 * hv));
                     ui.painter().set(bg, RectShape::new(rect, Rounding::same(18.0), fill, stroke));
                 });
                 ui.add_space(4.0);
@@ -848,7 +910,7 @@ impl App {
         ui.horizontal(|ui| {
             ui.label(RichText::new("Einstellungen").size(26.0).strong());
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let b = egui::Button::new(RichText::new("⚡ Maximale Qualität").strong()).fill(BLUE).rounding(10.0);
+                let b = egui::Button::new(RichText::new(format!("{} Maximale Qualität", ic::LIGHTNING)).strong()).fill(th_blue()).rounding(10.0);
                 if ui.add(b).clicked() {
                     self.settings.max_quality();
                 }
@@ -858,7 +920,7 @@ impl App {
         ui.add_space(8.0);
         let st = &mut self.settings;
         egui::ScrollArea::vertical().show(ui, |ui| {
-            section(ui, "🎞  Videoqualität", |ui| {
+            section(ui, &format!("{}  Videoqualität", ic::FILM_STRIP), |ui| {
                 label(ui, "Auflösung", "Sony erlaubt im Remote Play höchstens 1080p.");
                 segmented(ui, &mut st.resolution, &["540p", "720p", "1080p"]);
                 ui.add_space(6.0);
@@ -872,19 +934,54 @@ impl App {
                 segmented(ui, &mut st.codec, &["Automatisch", "H.264", "HEVC"]);
             });
             ui.add_space(6.0);
-            section(ui, "🖥  Darstellung", |ui| {
+            section(ui, &format!("{}  Darstellung", ic::MONITOR), |ui| {
                 label(ui, "Hochskalierung auf 4K", "Die Konsole sendet max. 1080p. „Aus“ zeigt harte Pixel, „Weich“ glättet.");
                 segmented(ui, &mut st.upscale, &["Aus", "Weich", "Scharf", "Ultra"]);
                 ui.add_space(6.0);
                 ui.checkbox(&mut st.fullscreen, "Vollbild beim Streamen");
             });
             ui.add_space(6.0);
-            section(ui, "🎮  Steuerung", |ui| {
+            section(ui, &format!("{}  Farbschema", ic::PALETTE), |ui| {
+                ui.label(RichText::new("Wähle ein Farbschema. Eigene Schemata legst du als Textdatei in den Themes-Ordner.").color(TEXT_DIM).size(12.5));
+                ui.add_space(4.0);
+                ui.horizontal_wrapped(|ui| {
+                    for p in self.themes.iter() {
+                        let sel = st.theme == p.name;
+                        let (rect, resp) = ui.allocate_exact_size(Vec2::new(128.0, 74.0), egui::Sense::click());
+                        let h = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
+                        let pr = ui.painter_at(rect);
+                        pr.rect_filled(rect, Rounding::same(14.0), p.theme.bg);
+                        pr.rect_filled(Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(rect.width() - 20.0, 24.0)), Rounding::same(8.0), p.theme.card);
+                        pr.rect_filled(Rect::from_min_size(rect.min + Vec2::new(10.0, 10.0), Vec2::new(34.0, 24.0)), Rounding::same(8.0), p.theme.accent);
+                        pr.circle_filled(rect.min + Vec2::new(rect.width() - 24.0, 22.0), 6.0, p.theme.accent_light);
+                        pr.text(rect.min + Vec2::new(12.0, 52.0), Align2::LEFT_CENTER, &p.name, FontId::proportional(12.5), Color32::WHITE);
+                        let stroke = if sel { Stroke::new(2.2, p.theme.accent_light) } else { Stroke::new(1.0 + h, Color32::from_white_alpha((30.0 + 60.0 * h) as u8)) };
+                        pr.rect_stroke(rect, Rounding::same(14.0), stroke);
+                        if resp.clicked() {
+                            st.theme = p.name.clone();
+                        }
+                    }
+                });
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new("Themes-Ordner öffnen").fill(th_card_hover()).rounding(10.0)).clicked() {
+                        theme::ensure_example();
+                        if let Some(d) = theme::themes_dir() {
+                            let _ = std::process::Command::new("explorer").arg(d).spawn();
+                        }
+                    }
+                    if ui.add(egui::Button::new("Themes neu laden").fill(th_card_hover()).rounding(10.0)).clicked() {
+                        self.themes = theme::all();
+                    }
+                });
+            });
+            ui.add_space(6.0);
+            section(ui, &format!("{}  Steuerung", ic::GAME_CONTROLLER), |ui| {
                 ui.checkbox(&mut st.rumble, "Controller-Vibration");
                 ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt. Die Tastatur stellst du weiter unten ein.").color(TEXT_DIM).size(12.5));
             });
             ui.add_space(6.0);
-            section(ui, "⌨  Tastatur", |ui| {
+            section(ui, &format!("{}  Tastatur", ic::KEYBOARD), |ui| {
                 ui.label(RichText::new("Alle Tasten sind frei belegbar: Auf eine Taste klicken, dann die neue Taste drücken (Esc bricht ab).").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
                 egui::Grid::new("kbgrid").num_columns(2).spacing([20.0, 6.0]).show(ui, |ui| {
@@ -893,7 +990,7 @@ impl App {
                         let cap = self.capturing == Some(i);
                         let text = if cap { "Drücke eine Taste …".to_string() } else { keys::pretty(&st.keys[i]) };
                         let b = egui::Button::new(RichText::new(text).monospace())
-                            .fill(if cap { BLUE } else { CARD_HOVER })
+                            .fill(if cap { th_blue() } else { th_card_hover() })
                             .rounding(8.0)
                             .min_size(Vec2::new(180.0, 28.0));
                         if ui.add(b).clicked() {
@@ -907,20 +1004,39 @@ impl App {
                 if !self.key_note.is_empty() {
                     ui.label(RichText::new(&self.key_note).color(YELLOW).size(12.5));
                 }
-                if ui.add(egui::Button::new("Auf Standard zurücksetzen").fill(CARD_HOVER).rounding(10.0)).clicked() {
+                if ui.add(egui::Button::new("Auf Standard zurücksetzen").fill(th_card_hover()).rounding(10.0)).clicked() {
                     st.keys = keys::defaults();
                     self.capturing = None;
                     self.key_note.clear();
                 }
             });
             ui.add_space(6.0);
-            section(ui, "🌐  Verbindung", |ui| {
+            section(ui, &format!("{}  Discord", ic::DISCORD_LOGO), |ui| {
+                let ready = !discord::DEFAULT_APP_ID.is_empty() || !st.discord_id.trim().is_empty();
+                ui.add_enabled_ui(ready, |ui| {
+                    ui.checkbox(&mut st.discord, "Meinen Status auf Discord anzeigen");
+                    ui.checkbox(&mut st.discord_game, "Spielnamen anzeigen");
+                });
+                ui.label(RichText::new("Zeigt auf Discord „Spielt OVERLIME“ mit dem Spiel und der Spielzeit. IP-Adressen oder Konsolennamen werden nie gesendet. Die Discord-App muss auf diesem PC laufen.").color(TEXT_DIM).size(12.5));
+                if !ready {
+                    ui.label(RichText::new("Noch nicht verfügbar: OVERLIME ist bei Discord noch nicht registriert.").color(YELLOW).size(12.5));
+                } else if st.discord {
+                    let (txt, col) = if self.discord.state() == discord::ST_CONNECTED {
+                        ("Mit Discord verbunden.", GREEN)
+                    } else {
+                        ("Discord nicht gefunden – läuft die Discord-App?", YELLOW)
+                    };
+                    ui.label(RichText::new(txt).color(col).size(12.5));
+                }
+            });
+            ui.add_space(6.0);
+            section(ui, &format!("{}  Verbindung", ic::GLOBE), |ui| {
                 label(ui, "Konsole per IP hinzufügen", "Nur für Internet/VPN (z. B. Tailscale). Im Heimnetz wird alles automatisch gefunden.");
                 ui.add(egui::TextEdit::singleline(&mut st.manual_ip).hint_text("IP-Adresse der Konsole").desired_width(260.0));
                 ui.add_space(6.0);
                 ui.checkbox(&mut st.auto_update, "Updates automatisch installieren");
                 ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new("Nach Updates suchen").fill(CARD_HOVER).rounding(10.0)).clicked() {
+                    if ui.add(egui::Button::new("Nach Updates suchen").fill(th_card_hover()).rounding(10.0)).clicked() {
                         self.update_msg = "Suche …".into();
                         let tx = self.tx.clone();
                         std::thread::spawn(move || {
@@ -967,13 +1083,13 @@ impl App {
             .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
             .fixed_size([520.0, 0.0])
             .order(egui::Order::Tooltip)
-            .frame(egui::Frame::none().fill(CARD).rounding(20.0).stroke(Stroke::new(1.0, BLUE.gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
+            .frame(egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
             .show(ctx, |ui| {
                 ui.set_width(468.0);
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("{} koppeln", d.console.name)).size(22.0).strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                        if d.step != Step::Busy && ui.add(egui::Button::new("X").fill(CARD_HOVER).rounding(8.0)).clicked() {
+                        if d.step != Step::Busy && ui.add(egui::Button::new("X").fill(th_card_hover()).rounding(8.0)).clicked() {
                             close = true;
                         }
                     });
@@ -987,7 +1103,7 @@ impl App {
                         step_row(ui, "2", "Danach zeigt die Seite „redirect“ oder leer an. Kopiere die komplette Adresse aus der Adressleiste.");
                         step_row(ui, "3", "Füge sie hier ein und klicke auf „Weiter“.");
                         ui.add_space(6.0);
-                        if ui.add(big_button("Bei PlayStation anmelden", CARD_HOVER).min_size(Vec2::new(468.0, 44.0))).clicked() {
+                        if ui.add(big_button("Bei PlayStation anmelden", th_card_hover()).min_size(Vec2::new(468.0, 44.0))).clicked() {
                             ctx.open_url(egui::OpenUrl::new_tab(psn::login_url()));
                         }
                         ui.add(egui::TextEdit::singleline(&mut d.pasted).hint_text("Adresse hier einfügen (…redirect?code=…)").desired_width(468.0));
@@ -995,7 +1111,7 @@ impl App {
                             ui.label(RichText::new(&d.message).color(RED));
                         }
                         let code = psn::parse_code(&d.pasted);
-                        if ui.add_enabled(code.is_some(), big_button("Weiter", BLUE).min_size(Vec2::new(468.0, 46.0))).clicked() {
+                        if ui.add_enabled(code.is_some(), big_button("Weiter", th_blue()).min_size(Vec2::new(468.0, 46.0))).clicked() {
                             if let Some(code) = code {
                                 let tx = self.tx.clone();
                                 std::thread::spawn(move || {
@@ -1031,7 +1147,7 @@ impl App {
                         d.pin.retain(|c| c.is_ascii_digit());
                         d.pin.truncate(8);
                         let ok = d.pin.len() == 8;
-                        if ui.add_enabled(ok, big_button("Koppeln", BLUE).min_size(Vec2::new(468.0, 46.0))).clicked() {
+                        if ui.add_enabled(ok, big_button("Koppeln", th_blue()).min_size(Vec2::new(468.0, 46.0))).clicked() {
                             let tx = self.tx.clone();
                             let acct = psn::id_from_b64(&self.settings.psn_account);
                             let (host, ver, ps5, id) = (d.console.addr.clone(), d.console.system_version.clone(), d.console.is_ps5, d.console.id.clone());
@@ -1066,7 +1182,7 @@ impl App {
                             ui.label(RichText::new("Du kannst jetzt „Verbinden“ drücken.").color(TEXT_DIM));
                         });
                         ui.add_space(10.0);
-                        if ui.add(big_button("Fertig", BLUE).min_size(Vec2::new(468.0, 46.0))).clicked() {
+                        if ui.add(big_button("Fertig", th_blue()).min_size(Vec2::new(468.0, 46.0))).clicked() {
                             close = true;
                         }
                     }
@@ -1076,7 +1192,7 @@ impl App {
                         ui.add_space(4.0);
                         ui.label(RichText::new("Tipp: Der Code gilt nur kurz. Öffne „Gerät koppeln“ an der Konsole neu und gib den neuen Code ein.").color(TEXT_DIM).size(13.0));
                         ui.add_space(8.0);
-                        if ui.add(big_button("Nochmal versuchen", BLUE).min_size(Vec2::new(468.0, 46.0))).clicked() {
+                        if ui.add(big_button("Nochmal versuchen", th_blue()).min_size(Vec2::new(468.0, 46.0))).clicked() {
                             d.pin.clear();
                             next = Some(Step::Pin);
                         }
@@ -1107,7 +1223,7 @@ impl App {
                 .resizable(false)
                 .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
                 .order(egui::Order::Tooltip)
-                .frame(egui::Frame::none().fill(CARD).rounding(20.0).stroke(Stroke::new(1.0, BLUE.gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
+                .frame(egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
                 .show(ctx, |ui| {
                     ui.set_width(360.0);
                     ui.label(RichText::new("Pause-Menü").size(22.0).strong());
@@ -1117,13 +1233,13 @@ impl App {
                         ui.label(RichText::new("Dein Spiel läuft auf der Konsole weiter.").color(TEXT_DIM).size(13.0));
                     }
                     ui.add_space(8.0);
-                    if ui.add(big_button("Weiter (Esc)", BLUE).min_size(Vec2::new(360.0, 46.0))).clicked() {
+                    if ui.add(big_button("Weiter (Esc)", th_blue()).min_size(Vec2::new(360.0, 46.0))).clicked() {
                         resume = true;
                     }
-                    if ui.add(big_button("Vollbild (F11)", CARD_HOVER).min_size(Vec2::new(360.0, 42.0))).clicked() {
+                    if ui.add(big_button("Vollbild (F11)", th_card_hover()).min_size(Vec2::new(360.0, 42.0))).clicked() {
                         fs = true;
                     }
-                    if ui.add(big_button("Tastenbelegung (F1)", CARD_HOVER).min_size(Vec2::new(360.0, 42.0))).clicked() {
+                    if ui.add(big_button("Tastenbelegung (F1)", th_card_hover()).min_size(Vec2::new(360.0, 42.0))).clicked() {
                         keys_btn = true;
                     }
                     ui.add_space(4.0);
@@ -1148,7 +1264,7 @@ impl App {
                     ui.add_space(4.0);
                     egui::Grid::new("keys_ov").num_columns(4).spacing([18.0, 3.0]).show(ui, |ui| {
                         for (n, act) in keys::ACTIONS.iter().enumerate() {
-                            ui.label(RichText::new(keys::pretty(&self.settings.keys[n])).monospace().color(BLUE_LIGHT).size(12.0));
+                            ui.label(RichText::new(keys::pretty(&self.settings.keys[n])).monospace().color(th_blue_light()).size(12.0));
                             ui.label(RichText::new(act.label).size(12.0));
                             if n % 2 == 1 {
                                 ui.end_row();
@@ -1208,7 +1324,67 @@ impl App {
         }
     }
 
-    /// Tastatur nur auswerten, wenn das Fenster aktiv ist und kein Menü offen ist.
+    /// Discord-Status: nur wenn aktiviert. Zeigt keine IP, keinen Konsolennamen.
+    fn update_discord(&mut self) {
+        let want = if !self.settings.discord {
+            None
+        } else {
+            let id = if self.settings.discord_id.trim().is_empty() { discord::DEFAULT_APP_ID.to_string() } else { self.settings.discord_id.trim().to_string() };
+            match self.session.as_ref() {
+                Some(s) if s.state == 1 => {
+                    let con = self.consoles.iter().find(|c| c.name == s.name);
+                    let ps5 = con.map(|c| c.is_ps5).unwrap_or(true);
+                    let game = con.map(|c| c.running_app.clone()).unwrap_or_default();
+                    let state = if self.settings.discord_game && !game.is_empty() { game } else { "Remote Play".to_string() };
+                    Some(discord::Presence {
+                        app_id: id,
+                        details: if ps5 { "Spielt auf PlayStation 5".into() } else { "Spielt auf PlayStation 4".into() },
+                        state,
+                        start: Some(s.started_unix),
+                    })
+                }
+                Some(_) => Some(discord::Presence { app_id: id, details: "Verbindet mit der Konsole".into(), state: "OVERLIME Remote Play".into(), start: None }),
+                None => Some(discord::Presence { app_id: id, details: "In der Übersicht".into(), state: "OVERLIME Remote Play".into(), start: None }),
+            }
+        };
+        self.discord.update(want);
+    }
+
+    /// Einblend-Benachrichtigungen unten rechts.
+    fn draw_toasts(&mut self, ctx: &egui::Context, t: f64) {
+        self.toasts.retain(|(_, _, t0)| t - *t0 < 5.0);
+        let n = self.toasts.len();
+        for (i, (text, kind, t0)) in self.toasts.iter().enumerate() {
+            let age = (t - *t0) as f32;
+            let appear = ease_out_t(age / 0.35);
+            let fade_out = (1.0 - ((age - 4.4) / 0.6).clamp(0.0, 1.0)).max(0.0);
+            let col = match kind { 1 => RED, 2 => GREEN, _ => th_blue_light() };
+            let slot = (n - 1 - i) as f32;
+            egui::Area::new(egui::Id::new(("toast", i)))
+                .order(egui::Order::Tooltip)
+                .anchor(Align2::RIGHT_BOTTOM, [-18.0 + (1.0 - appear) * 60.0, -18.0 - slot * 64.0])
+                .show(ctx, |ui| {
+                    ui.set_opacity(appear * fade_out);
+                    egui::Frame::none()
+                        .fill(th_card())
+                        .rounding(14.0)
+                        .stroke(Stroke::new(1.0, col.gamma_multiply(0.55)))
+                        .inner_margin(egui::Margin { left: 18.0, right: 18.0, top: 12.0, bottom: 12.0 })
+                        .show(ui, |ui| {
+                            ui.set_max_width(340.0);
+                            ui.horizontal(|ui| {
+                                let (r, _) = ui.allocate_exact_size(Vec2::new(5.0, 22.0), egui::Sense::hover());
+                                ui.painter().rect_filled(r, Rounding::same(3.0), col);
+                                ui.label(RichText::new(text).size(13.5));
+                            });
+                        });
+                });
+        }
+        if !self.toasts.is_empty() {
+            ctx.request_repaint();
+        }
+    }
+
     fn keyboard_input(&self, ctx: &egui::Context) -> pad::Input {
         let neutral = pad::Input { buttons: 0, l2: 0, r2: 0, lx: 0, ly: 0, rx: 0, ry: 0 };
         if self.stream_menu || self.show_keys || ctx.wants_keyboard_input() || !ctx.input(|i| i.focused) {
@@ -1294,7 +1470,7 @@ impl App {
             if s.state == 0 || s.state == 2 || s.tex.is_none() {
                 let ended = s.state == 2;
                 egui::Area::new(egui::Id::new("overlay")).order(egui::Order::Foreground).anchor(Align2::CENTER_CENTER, [0.0, 0.0]).show(ctx, |ui| {
-                    egui::Frame::none().fill(CARD).rounding(20.0).stroke(Stroke::new(1.0, if ended && s.ended_error { RED.gamma_multiply(0.6) } else { BLUE.gamma_multiply(0.5) })).inner_margin(egui::Margin::same(28.0)).show(ui, |ui| {
+                    egui::Frame::none().fill(th_card()).rounding(20.0).stroke(Stroke::new(1.0, if ended && s.ended_error { RED.gamma_multiply(0.6) } else { th_blue().gamma_multiply(0.5) })).inner_margin(egui::Margin::same(28.0)).show(ui, |ui| {
                         ui.set_width(440.0);
                         ui.vertical_centered(|ui| {
                             if ended {
@@ -1307,7 +1483,7 @@ impl App {
                                 ui.label(RichText::new(german_reason(&mask_ips(&s.message))).color(TEXT_DIM));
                                 if s.ended_error {
                                     ui.add_space(6.0);
-                                    egui::Frame::none().fill(BG).rounding(10.0).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
+                                    egui::Frame::none().fill(th_bg()).rounding(10.0).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
                                         ui.set_width(ui.available_width());
                                         ui.label(RichText::new(&log_tail).monospace().size(11.0).color(TEXT_DIM));
                                     });
@@ -1316,7 +1492,7 @@ impl App {
                                     }
                                 }
                                 ui.add_space(8.0);
-                                if ui.add(big_button("Zurück", BLUE).min_size(Vec2::new(380.0, 46.0))).clicked() {
+                                if ui.add(big_button("Zurück", th_blue()).min_size(Vec2::new(380.0, 46.0))).clicked() {
                                     stop = true;
                                 }
                             } else {
@@ -1330,7 +1506,7 @@ impl App {
                                     ui.label(RichText::new(format!("Ton nicht verfügbar: {a}")).color(YELLOW).size(12.0));
                                 }
                                 ui.add_space(8.0);
-                                if ui.add(big_button("Abbrechen", CARD_HOVER).min_size(Vec2::new(380.0, 44.0))).clicked() {
+                                if ui.add(big_button("Abbrechen", th_card_hover()).min_size(Vec2::new(380.0, 44.0))).clicked() {
                                     stop = true;
                                 }
                             }
@@ -1347,7 +1523,7 @@ impl App {
                     s.size.1,
                     s.fps,
                     if s.lost > 0 { format!("  •  {} Pakete verloren", s.lost) } else { String::new() },
-                    if pad_connected { "  •  🎮" } else { "" }
+                    if pad_connected { format!("  •  {}", ic::GAME_CONTROLLER) } else { String::new() }
                 );
                 if show_hud {
                     ui.painter().text(full.left_top() + Vec2::new(14.0, 12.0), Align2::LEFT_TOP, hud, FontId::monospace(12.0), Color32::from_white_alpha(150));
@@ -1355,10 +1531,10 @@ impl App {
                 if show_ui {
                     egui::Area::new(egui::Id::new("bar")).order(egui::Order::Foreground).anchor(Align2::RIGHT_TOP, [-14.0, 10.0]).show(ctx, |ui| {
                         ui.horizontal(|ui| {
-                            if ui.add(egui::Button::new("Vollbild (F11)").fill(CARD).rounding(10.0)).clicked() {
+                            if ui.add(egui::Button::new("Vollbild (F11)").fill(th_card()).rounding(10.0)).clicked() {
                                 toggle_fs = true;
                             }
-                            if ui.add(egui::Button::new("Menü (Esc)").fill(CARD).rounding(10.0)).clicked() {
+                            if ui.add(egui::Button::new("Menü (Esc)").fill(th_card()).rounding(10.0)).clicked() {
                                 open_menu = true;
                             }
                         });
@@ -1449,6 +1625,14 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let t = ctx.input(|i| i.time);
+        self.now = t;
+        if self.applied_theme != self.settings.theme {
+            if let Some(p) = self.themes.iter().find(|p| p.name == self.settings.theme) {
+                theme::set(p.theme);
+            }
+            setup_style(ctx);
+            self.applied_theme = self.settings.theme.clone();
+        }
         // Nie aus Versehen mitten im Stream schließen (X-Knopf, Alt+F4)
         if self.session.is_some() && !self.allow_close && ctx.input(|i| i.viewport().close_requested()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1491,6 +1675,7 @@ impl eframe::App for App {
             self.saved = self.settings.clone();
         }
 
+        self.update_discord();
         // Update-Animation
         if self.update_busy && self.update.is_some() {
             ctx.request_repaint();
@@ -1549,38 +1734,43 @@ impl eframe::App for App {
         {
             let r = ctx.screen_rect();
             let p = ctx.layer_painter(egui::LayerId::background());
-            p.rect_filled(r, Rounding::ZERO, BG);
+            p.rect_filled(r, Rounding::ZERO, th_bg());
             let a = (t * 0.25) as f32;
-            p.circle_filled(Pos2::new(r.width() * (0.75 + 0.08 * a.sin()), r.height() * (0.2 + 0.06 * (a * 1.3).cos())), 260.0, BLUE.gamma_multiply(0.07));
+            p.circle_filled(Pos2::new(r.width() * (0.75 + 0.08 * a.sin()), r.height() * (0.2 + 0.06 * (a * 1.3).cos())), 260.0, th_blue().gamma_multiply(0.07));
             p.circle_filled(Pos2::new(r.width() * (0.35 + 0.07 * (a * 0.8).cos()), r.height() * (0.85 + 0.05 * a.sin())), 300.0, Color32::from_rgb(90, 60, 220).gamma_multiply(0.05));
         }
 
         egui::SidePanel::left("nav")
             .exact_width(210.0)
             .resizable(false)
-            .frame(egui::Frame::none().fill(SIDEBAR).inner_margin(egui::Margin::same(16.0)))
+            .frame(egui::Frame::none().fill(th_sidebar()).inner_margin(egui::Margin::same(16.0)))
             .show(ctx, |ui| {
                 ui.add_space(6.0);
                 let (lr, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 56.0), egui::Sense::hover());
                 {
                     let p = ui.painter_at(lr);
-                    p.rect_filled(Rect::from_min_size(lr.min + Vec2::new(0.0, 6.0), Vec2::new(5.0, 44.0)), Rounding::same(3.0), BLUE_LIGHT);
+                    p.rect_filled(Rect::from_min_size(lr.min + Vec2::new(0.0, 6.0), Vec2::new(5.0, 44.0)), Rounding::same(3.0), th_blue_light());
                     p.text(lr.min + Vec2::new(16.0, 4.0), Align2::LEFT_TOP, "OVERLIME", FontId::proportional(27.0), Color32::WHITE);
-                    p.text(lr.min + Vec2::new(17.0, 36.0), Align2::LEFT_TOP, "REMOTE PLAY", FontId::proportional(12.0), BLUE_LIGHT);
+                    p.text(lr.min + Vec2::new(17.0, 36.0), Align2::LEFT_TOP, "REMOTE PLAY", FontId::proportional(12.0), th_blue_light());
                 }
                 ui.add_space(18.0);
                 let old = self.page;
-                if nav_item(ui, "🏠", "Übersicht", self.page == Page::Home) {
-                    self.page = Page::Home;
+                let pages = [Page::Home, Page::Consoles, Page::Settings, Page::Help];
+                let items = [(ic::HOUSE, "Übersicht"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::GEAR_SIX, "Einstellungen"), (ic::QUESTION, "Hilfe")];
+                let top_y = ui.cursor().top();
+                let sel_idx = pages.iter().position(|p| *p == self.page).unwrap_or(0) as f32;
+                let hy = ui.ctx().animate_value_with_time(egui::Id::new("nav_hl"), sel_idx, 0.3);
+                {
+                    let w = ui.available_width();
+                    let rect = Rect::from_min_size(Pos2::new(ui.cursor().left(), top_y + hy * 54.0), Vec2::new(w, 44.0));
+                    ui.painter().rect_filled(rect, Rounding::same(12.0), th_card_hover().gamma_multiply(0.8));
+                    let bar = Rect::from_min_size(rect.min + Vec2::new(0.0, 10.0), Vec2::new(4.0, 24.0));
+                    ui.painter().rect_filled(bar, Rounding::same(2.0), th_blue_light());
                 }
-                if nav_item(ui, "🎮", "Konsolen", self.page == Page::Consoles) {
-                    self.page = Page::Consoles;
-                }
-                if nav_item(ui, "⚙", "Einstellungen", self.page == Page::Settings) {
-                    self.page = Page::Settings;
-                }
-                if nav_item(ui, "❓", "Hilfe", self.page == Page::Help) {
-                    self.page = Page::Help;
+                for (i, (icon, label)) in items.iter().enumerate() {
+                    if nav_item(ui, icon, label, self.page == pages[i]) {
+                        self.page = pages[i];
+                    }
                 }
                 if old != self.page {
                     self.page_since = t;
@@ -1601,14 +1791,15 @@ impl eframe::App for App {
                     }
                     ui.label(RichText::new(if self.local_ip == "?" { "Netzwerk: offline" } else { "Netzwerk: verbunden" }).color(TEXT_DIM).size(12.0));
                     let q = format!("{} • {} FPS", ["540p", "720p", "1080p"][self.settings.resolution], [30, 60][self.settings.fps]);
-                    ui.label(RichText::new(q).color(BLUE_LIGHT).size(12.0));
+                    ui.label(RichText::new(q).color(th_blue_light()).size(12.0));
                 });
             });
 
         egui::CentralPanel::default().frame(egui::Frame::none().inner_margin(egui::Margin::same(28.0))).show(ctx, |ui| {
             ui.set_opacity(fade(t, self.page_since, 0.3));
+            ui.add_space((1.0 - fade(t, self.page_since, 0.4)) * 18.0);
             if let Some(rel) = self.update.clone() {
-                egui::Frame::none().fill(BLUE.gamma_multiply(0.22)).rounding(14.0).stroke(Stroke::new(1.0, BLUE.gamma_multiply(0.6))).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+                egui::Frame::none().fill(th_blue().gamma_multiply(0.22)).rounding(14.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.6))).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
                     ui.set_width(ui.available_width());
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
@@ -1622,7 +1813,7 @@ impl eframe::App for App {
                         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                             if self.update_busy {
                                 ui.spinner();
-                            } else if ui.add(big_button("Jetzt aktualisieren", BLUE).min_size(Vec2::new(170.0, 38.0))).clicked() {
+                            } else if ui.add(big_button("Jetzt aktualisieren", th_blue()).min_size(Vec2::new(170.0, 38.0))).clicked() {
                                 self.update_busy = true;
                                 self.update_err.clear();
                                 let tx = self.tx.clone();
@@ -1650,6 +1841,7 @@ impl eframe::App for App {
         });
 
         self.dialog_ui(ctx);
+        self.draw_toasts(ctx, t);
     }
 }
 
@@ -1684,8 +1876,34 @@ fn selftest() {
     let _ = writeln!(f, "done");
 }
 
+fn discord_test() {
+    use std::io::Write;
+    let out = std::env::temp_dir().join("overlime-discord-test.txt");
+    let mut f = std::fs::File::create(&out).unwrap();
+    let mut h = discord::spawn();
+    h.update(Some(discord::Presence {
+        app_id: discord::DEFAULT_APP_ID.to_string(),
+        details: "Test".into(),
+        state: "OVERLIME Remote Play".into(),
+        start: None,
+    }));
+    for i in 0..9 {
+        std::thread::sleep(Duration::from_secs(2));
+        let _ = writeln!(f, "t={}s status={}", (i + 1) * 2, h.state());
+        if h.state() == discord::ST_CONNECTED {
+            break;
+        }
+    }
+    h.update(None);
+    std::thread::sleep(Duration::from_secs(2));
+}
+
 fn main() -> eframe::Result<()> {
     ffi::init();
+    if std::env::args().any(|a| a == "--discord-test") {
+        discord_test();
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--selftest") {
         selftest();
         return Ok(());

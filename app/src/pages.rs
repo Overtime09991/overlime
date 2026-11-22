@@ -4,7 +4,7 @@ use super::*;
 pub fn tile(ui: &mut egui::Ui, w: f32, title: &str, value: &str, sub: &str, color: Color32) {
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 104.0), egui::Sense::hover());
     let p = ui.painter_at(rect);
-    p.rect_filled(rect, Rounding::same(16.0), CARD);
+    p.rect_filled(rect, Rounding::same(16.0), th_card());
     p.rect_filled(Rect::from_min_size(rect.min + Vec2::new(0.0, 16.0), Vec2::new(4.0, 72.0)), Rounding::same(2.0), color);
     p.circle_filled(rect.right_top() + Vec2::new(-10.0, 10.0), 46.0, color.gamma_multiply(0.10));
     p.text(rect.min + Vec2::new(20.0, 14.0), Align2::LEFT_TOP, title, FontId::proportional(12.5), TEXT_DIM);
@@ -43,6 +43,8 @@ impl App {
             if n.chars().count() > 22 { n.chars().take(21).collect::<String>() + "…" } else { n }
         };
 
+        let found_a = ui.ctx().animate_value_with_time(egui::Id::new("anim_found"), found as f32, 0.7).round() as i32;
+        let paired_a = ui.ctx().animate_value_with_time(egui::Id::new("anim_paired"), paired_found as f32, 0.7).round() as i32;
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Hero
             let w = ui.available_width();
@@ -50,9 +52,9 @@ impl App {
             let p = ui.painter_at(rect);
             p.rect_filled(rect, Rounding::same(22.0), Color32::from_rgb(12, 34, 82));
             let a = (t * 0.4) as f32;
-            p.circle_filled(rect.right_top() + Vec2::new(-80.0 + 20.0 * a.sin(), 40.0), 170.0, BLUE.gamma_multiply(0.38));
+            p.circle_filled(rect.right_top() + Vec2::new(-80.0 + 20.0 * a.sin(), 40.0), 170.0, th_blue().gamma_multiply(0.38));
             p.circle_filled(rect.right_bottom() + Vec2::new(-200.0 + 30.0 * (a * 0.8).cos(), 40.0), 130.0, Color32::from_rgb(110, 70, 240).gamma_multiply(0.25));
-            p.circle_filled(rect.left_bottom() + Vec2::new(60.0, 60.0), 110.0, BLUE_LIGHT.gamma_multiply(0.12));
+            p.circle_filled(rect.left_bottom() + Vec2::new(60.0, 60.0), 110.0, th_blue_light().gamma_multiply(0.12));
             let (hi, line) = if let Some(c) = ready.first() {
                 (format!("{} ist bereit", c.name), "Drück auf Verbinden und leg los.".to_string())
             } else if found > 0 {
@@ -60,7 +62,7 @@ impl App {
             } else {
                 ("Suche nach deiner Konsole …".to_string(), "Konsole einschalten und mit dem Netzwerk verbinden.".to_string())
             };
-            p.text(rect.min + Vec2::new(30.0, 26.0), Align2::LEFT_TOP, "WILLKOMMEN BEI OVERLIME", FontId::proportional(12.5), BLUE_LIGHT);
+            p.text(rect.min + Vec2::new(30.0, 26.0), Align2::LEFT_TOP, "WILLKOMMEN BEI OVERLIME", FontId::proportional(12.5), th_blue_light());
             p.text(rect.min + Vec2::new(30.0, 48.0), Align2::LEFT_TOP, hi, FontId::proportional(32.0), Color32::WHITE);
             p.text(rect.min + Vec2::new(30.0, 94.0), Align2::LEFT_TOP, line, FontId::proportional(15.0), Color32::from_rgb(190, 205, 235));
             let q = format!(
@@ -69,7 +71,7 @@ impl App {
                 [30, 60][self.settings.fps],
                 self.settings.bitrate as i32
             );
-            p.text(rect.min + Vec2::new(30.0, 120.0), Align2::LEFT_TOP, q, FontId::proportional(12.5), BLUE_LIGHT);
+            p.text(rect.min + Vec2::new(30.0, 120.0), Align2::LEFT_TOP, q, FontId::proportional(12.5), th_blue_light());
 
             ui.add_space(14.0);
 
@@ -77,8 +79,8 @@ impl App {
             let tw = ((ui.available_width() - 30.0) / 4.0).max(120.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 10.0;
-                tile(ui, tw, "KONSOLEN IM NETZ", &found.to_string(), if found > 0 { "gefunden" } else { "suche …" }, BLUE_LIGHT);
-                tile(ui, tw, "GEKOPPELT", &paired_found.to_string(), if paired_found > 0 { "bereit zum Streamen" } else { "noch keine" }, GREEN);
+                tile(ui, tw, "KONSOLEN IM NETZ", &found_a.to_string(), if found > 0 { "gefunden" } else { "suche …" }, th_blue_light());
+                tile(ui, tw, "GEKOPPELT", &paired_a.to_string(), if paired_found > 0 { "bereit zum Streamen" } else { "noch keine" }, GREEN);
                 tile(
                     ui,
                     tw,
@@ -95,7 +97,7 @@ impl App {
 
             ui.columns(2, |cols| {
                 // Erste Schritte
-                egui::Frame::none().fill(CARD).rounding(18.0).inner_margin(egui::Margin::same(20.0)).show(&mut cols[0], |ui| {
+                egui::Frame::none().fill(th_card()).rounding(18.0).inner_margin(egui::Margin::same(20.0)).show(&mut cols[0], |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new("Erste Schritte").size(17.0).strong());
                     ui.add_space(6.0);
@@ -109,7 +111,7 @@ impl App {
                 });
 
                 // Schnellstart
-                egui::Frame::none().fill(CARD).rounding(18.0).inner_margin(egui::Margin::same(20.0)).show(&mut cols[1], |ui| {
+                egui::Frame::none().fill(th_card()).rounding(18.0).inner_margin(egui::Margin::same(20.0)).show(&mut cols[1], |ui| {
                     ui.set_width(ui.available_width());
                     ui.label(RichText::new("Schnellstart").size(17.0).strong());
                     ui.add_space(6.0);
@@ -126,13 +128,14 @@ impl App {
                             });
                             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                                 if c.state == State::Standby {
-                                    if ui.add(big_button("Aufwecken", BLUE).min_size(Vec2::new(130.0, 38.0))).clicked() {
+                                    if ui.add(big_button("Aufwecken", th_blue()).min_size(Vec2::new(130.0, 38.0))).clicked() {
                                         self.wake(&c, &pr);
                                     }
                                 } else {
                                     let busy = self.starting.is_some();
-                                    let label = if busy { "Verbinde …" } else { "▶  Verbinden" };
-                                    if ui.add_enabled(!busy, big_button(label, BLUE).min_size(Vec2::new(130.0, 38.0))).clicked() {
+                                    let label_s = format!("{}  Verbinden", ic::PLAY);
+                                    let label: &str = if busy { "Verbinde …" } else { &label_s };
+                                    if ui.add_enabled(!busy, big_button(label, th_blue()).min_size(Vec2::new(130.0, 38.0))).clicked() {
                                         self.connect(&c, &pr);
                                     }
                                 }
@@ -143,7 +146,7 @@ impl App {
                     if !shown {
                         ui.label(RichText::new("Sobald eine Konsole gekoppelt ist, startest du hier mit einem Klick.").color(TEXT_DIM).size(13.5));
                         ui.add_space(6.0);
-                        if ui.add(egui::Button::new("Zu den Konsolen").fill(CARD_HOVER).rounding(10.0)).clicked() {
+                        if ui.add(egui::Button::new("Zu den Konsolen").fill(th_card_hover()).rounding(10.0)).clicked() {
                             self.page = Page::Consoles;
                         }
                     }
@@ -167,19 +170,19 @@ impl App {
         ui.label(RichText::new("Alles, was du für den Start brauchst.").color(TEXT_DIM).size(13.0));
         ui.add_space(8.0);
         egui::ScrollArea::vertical().show(ui, |ui| {
-            section(ui, "▶  Schnellstart", |ui| {
+            section(ui, &format!("{}  Schnellstart", ic::ROCKET_LAUNCH), |ui| {
                 step_row(ui, "1", "Konsole einschalten, Remote Play aktivieren (Einstellungen > System > Remote Play).");
                 step_row(ui, "2", "In OVERLIME bei der Konsole auf „Koppeln“ klicken und dem Pop-up folgen.");
                 step_row(ui, "3", "Danach „Verbinden“ klicken – fertig.");
             });
             ui.add_space(6.0);
-            section(ui, "🎮  Steuerung", |ui| {
+            section(ui, &format!("{}  Steuerung", ic::GAME_CONTROLLER), |ui| {
                 ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere – auch per Bluetooth) wird automatisch erkannt, inklusive Vibration.").color(TEXT_DIM));
                 ui.label(RichText::new("Menüs: Steuerkreuz oder linker Stick = Auswahl, Kreuz-Taste = Bestätigen, L1/R1 = Seite wechseln.").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
                 egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
                     for (i, act) in keys::ACTIONS.iter().enumerate() {
-                        ui.label(RichText::new(keys::pretty(&self.settings.keys[i])).monospace().color(BLUE_LIGHT));
+                        ui.label(RichText::new(keys::pretty(&self.settings.keys[i])).monospace().color(th_blue_light()));
                         ui.label(act.label);
                         ui.end_row();
                     }
@@ -198,7 +201,7 @@ impl App {
                 });
             });
             ui.add_space(6.0);
-            section(ui, "🛠  Probleme lösen", |ui| {
+            section(ui, &format!("{}  Probleme lösen", ic::WRENCH), |ui| {
                 for (q, a) in [
                     ("Konsole wird nicht gefunden", "Gleiches Netzwerk? Konsole an oder im Ruhemodus mit „Mit dem Netzwerk verbunden bleiben“. Firewall-Abfrage von Windows erlauben."),
                     ("Kopplung klappt nicht", "Der 8-stellige Code gilt nur kurz. „Gerät koppeln“ an der Konsole neu öffnen und den neuen Code eingeben."),
@@ -210,7 +213,7 @@ impl App {
                     ui.add_space(4.0);
                 }
                 ui.add_space(4.0);
-                if ui.add(egui::Button::new("Protokoll-Ordner öffnen").fill(CARD_HOVER).rounding(10.0)).clicked() {
+                if ui.add(egui::Button::new("Protokoll-Ordner öffnen").fill(th_card_hover()).rounding(10.0)).clicked() {
                     if let Some(p) = log_path().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
                         let _ = std::fs::create_dir_all(&p);
                         let _ = std::process::Command::new("explorer").arg(p).spawn();
@@ -218,7 +221,7 @@ impl App {
                 }
             });
             ui.add_space(6.0);
-            section(ui, "ℹ  Über OVERLIME", |ui| {
+            section(ui, &format!("{}  Über OVERLIME", ic::INFO), |ui| {
                 ui.label(RichText::new(format!("Version {VERSION}  •  PS4 & PS5  •  bis 1080p60 (Sony-Limit), Hochskalierung auf 4K")).color(TEXT_DIM));
                 ui.label(RichText::new("Der Stream-Kern basiert auf dem Open-Source-Projekt chiaki-ng (AGPL-3.0).").color(TEXT_DIM).size(12.5));
             });
@@ -229,22 +232,22 @@ impl App {
 impl App {
     /// Erster Start: Anmeldung bei PlayStation. Das Konto wird gespeichert.
     pub fn login_screen(&mut self, ctx: &egui::Context, t: f64) {
-        egui::CentralPanel::default().frame(egui::Frame::none().fill(BG)).show(ctx, |ui| {
+        egui::CentralPanel::default().frame(egui::Frame::none().fill(th_bg())).show(ctx, |ui| {
             let r = ui.max_rect();
             let p = ui.painter();
             let a = (t * 0.3) as f32;
-            p.circle_filled(Pos2::new(r.width() * (0.2 + 0.05 * a.sin()), r.height() * 0.25), 320.0, BLUE.gamma_multiply(0.10));
+            p.circle_filled(Pos2::new(r.width() * (0.2 + 0.05 * a.sin()), r.height() * 0.25), 320.0, th_blue().gamma_multiply(0.10));
             p.circle_filled(Pos2::new(r.width() * (0.85 + 0.04 * (a * 1.2).cos()), r.height() * 0.8), 360.0, Color32::from_rgb(100, 60, 230).gamma_multiply(0.08));
 
             ui.vertical_centered(|ui| {
                 ui.add_space((r.height() * 0.5 - 250.0).max(10.0));
                 ui.label(RichText::new("OVERLIME").font(FontId::proportional(44.0)).strong().color(Color32::WHITE));
-                ui.label(RichText::new("REMOTE PLAY").font(FontId::proportional(14.0)).color(BLUE_LIGHT));
+                ui.label(RichText::new("REMOTE PLAY").font(FontId::proportional(14.0)).color(th_blue_light()));
                 ui.add_space(18.0);
                 egui::Frame::none()
-                    .fill(CARD)
+                    .fill(th_card())
                     .rounding(22.0)
-                    .stroke(Stroke::new(1.0, BLUE.gamma_multiply(0.4)))
+                    .stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.4)))
                     .inner_margin(egui::Margin::same(28.0))
                     .show(ui, |ui| {
                         ui.set_width(500.0);
@@ -255,7 +258,7 @@ impl App {
                         step_row(ui, "2", "Danach die komplette Adresse aus der Adressleiste kopieren.");
                         step_row(ui, "3", "Hier einfügen und auf „Anmelden“ klicken.");
                         ui.add_space(8.0);
-                        if ui.add(big_button("Bei PlayStation anmelden", CARD_HOVER).min_size(Vec2::new(444.0, 46.0))).clicked() {
+                        if ui.add(big_button("Bei PlayStation anmelden", th_card_hover()).min_size(Vec2::new(444.0, 46.0))).clicked() {
                             ctx.open_url(egui::OpenUrl::new_tab(psn::login_url()));
                         }
                         ui.add(egui::TextEdit::singleline(&mut self.login_pasted).hint_text("Adresse hier einfügen (…redirect?code=…)").desired_width(444.0));
@@ -269,7 +272,7 @@ impl App {
                                 ui.spinner();
                                 ui.label(RichText::new("Melde an …").color(TEXT_DIM));
                             });
-                        } else if ui.add_enabled(code.is_some(), big_button("Anmelden", BLUE).min_size(Vec2::new(444.0, 48.0))).clicked() {
+                        } else if ui.add_enabled(code.is_some(), big_button("Anmelden", th_blue()).min_size(Vec2::new(444.0, 48.0))).clicked() {
                             if let Some(code) = code {
                                 self.login_busy = true;
                                 self.login_error.clear();

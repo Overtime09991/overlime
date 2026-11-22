@@ -16,6 +16,10 @@ pub struct Settings {
     pub manual_ip: String,
     pub keys: Vec<String>,
     pub last_version: String,
+    pub theme: String,
+    pub discord: bool,
+    pub discord_game: bool,
+    pub discord_id: String,
 }
 
 impl Default for Settings {
@@ -34,6 +38,10 @@ impl Default for Settings {
             manual_ip: String::new(),
             keys: crate::keys::defaults(),
             last_version: String::new(),
+            theme: "Ozean".to_string(),
+            discord: false,
+            discord_game: true,
+            discord_id: String::new(),
         }
     }
 }
@@ -73,6 +81,10 @@ impl Settings {
                 "auto_update" => s.auto_update = v.trim() != "false",
                 "manual_ip" => s.manual_ip = v.trim().to_string(),
                 "last_version" => s.last_version = v.trim().to_string(),
+                "theme" => s.theme = v.trim().to_string(),
+                "discord" => s.discord = v.trim() == "true",
+                "discord_game" => s.discord_game = v.trim() != "false",
+                "discord_id" => s.discord_id = v.trim().to_string(),
                 k if k.starts_with("key_") => {
                     if let Ok(i) = k[4..].parse::<usize>() {
                         if i < s.keys.len() {
@@ -96,7 +108,8 @@ impl Settings {
             self.resolution, self.fps, self.bitrate, self.codec, self.upscale, self.fullscreen, self.rumble, self.psn_account, self.psn_name, self.auto_update, self.manual_ip
         );
         let mut text = text;
-        text.push_str(&format!("last_version={}\n", self.last_version));
+        text.push_str(&format!("last_version={}\ntheme={}\n", self.last_version, self.theme));
+        text.push_str(&format!("discord={}\ndiscord_game={}\ndiscord_id={}\n", self.discord, self.discord_game, self.discord_id));
         for (i, k) in self.keys.iter().enumerate() {
             text.push_str(&format!("key_{i}={k}\n"));
         }

@@ -21,6 +21,8 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
 - **Ton inklusive.** Spielton direkt auf deinem Standard-Wiedergabegerät.
+- **Dein Look.** Fünf Farbschemata (von Ozean bis reines Schwarz) und eigene Themes als einfache Textdatei, dazu sanfte Animationen.
+- **Discord-Status (optional).** Auf Wunsch zeigt Discord „Spielt OVERLIME“ mit Spiel und Spielzeit. Standardmäßig aus, ohne IP-Adressen oder Konsolennamen.
 - **Nichts aus Versehen.** Esc öffnet nur ein Pause-Menü, und das Schließen des Fensters mitten im Stream fragt nach.
 - **Bleibt aktuell.** Neue Versionen lädt die App selbst, prüft sie und startet neu, mit einer eigenen Update-Animation und einem Willkommensbild danach.
 
@@ -68,6 +70,7 @@ Controller werden automatisch erkannt (Menüs: Steuerkreuz/Stick = Auswahl, Kreu
 - Dein Passwort gibst du **nur auf der Seite von Sony** ein. OVERLIME sieht es nie.
 - Gespeichert wird nur deine PlayStation-Konto-Nummer und die Kopplung mit deiner Konsole, lokal auf deinem PC.
 - Es gibt keine Werbung, kein Tracking und keine Nutzerkonten bei uns.
+- Der Discord-Status ist nur aktiv, wenn du ihn in den Einstellungen einschaltest.
 
 ## Häufige Fragen
 
