@@ -12,6 +12,7 @@ mod splash;
 mod store;
 mod winui;
 mod theme;
+mod tray;
 mod update;
 mod video;
 
@@ -33,7 +34,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.21";
+const VERSION: &str = "0.22";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -158,6 +159,8 @@ struct App {
     icon_tex: Option<TextureHandle>,
     prev_ready: HashMap<String, bool>,
     auto_done: bool,
+    connect_now: bool,
+    tray_auto: bool,
     auto_wake_done: bool,
     diag_port: Option<(bool, String)>,
     diag_busy: bool,
@@ -261,6 +264,8 @@ impl App {
             icon_tex: None,
             prev_ready: HashMap::new(),
             auto_done: false,
+            connect_now: std::env::args().any(|a| a == "--connect-now"),
+            tray_auto: tray::autostart_enabled(),
             auto_wake_done: false,
             diag_port: None,
             diag_busy: false,
@@ -1309,6 +1314,27 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.checkbox(&mut st.auto_update, "Beim Start automatisch installieren (während der App-Nutzung nur Hinweis, nie während eines Spiels)");
+                ui.add_space(6.0);
+                ui.label(RichText::new("Symbol neben der Uhr").strong().size(14.0));
+                ui.label(RichText::new("Ein kleines Symbol unten rechts: Ein Klick weckt die PlayStation und öffnet OVERLIME direkt verbunden. Es braucht kaum Speicher und startet auf Wunsch mit Windows.").color(TEXT_DIM).size(12.5));
+                let mut ta = self.tray_auto;
+                if ui.checkbox(&mut ta, "Mit Windows starten (Symbol im Hintergrund)").changed() {
+                    match tray::set_autostart(ta) {
+                        Ok(()) => {
+                            self.tray_auto = ta;
+                            if ta {
+                                tray::spawn_tray();
+                                self.toasts.push(("Symbol neben der Uhr gestartet.".to_string(), 2, self.now));
+                            }
+                        }
+                        Err(e) => self.toasts.push((format!("Nicht möglich: {e}"), 1, self.now)),
+                    }
+                }
+                if ui.add(egui::Button::new("Symbol jetzt starten").fill(th_card_hover()).rounding(10.0)).clicked() {
+                    tray::spawn_tray();
+                    self.toasts.push(("Symbol neben der Uhr gestartet (evtl. unter dem Pfeil ^).".to_string(), 0, self.now));
+                }
+                ui.add_space(6.0);
             });
             ui.add_space(6.0);
             section(ui, &format!("{}  Videoqualität", ic::FILM_STRIP), |ui| {
@@ -1921,10 +1947,11 @@ impl App {
                 }
             }
         }
-        if self.settings.autoconnect && !self.auto_done && self.session.is_none() && self.starting.is_none() {
+        if (self.settings.autoconnect || self.connect_now) && !self.auto_done && self.session.is_none() && self.starting.is_none() {
             if let Some(c) = list.iter().find(|c| c.state == State::Ready && self.paired_for(c).is_some()) {
                 if let Some(p) = self.paired_for(c) {
                     self.auto_done = true;
+                    self.connect_now = false;
                     self.toasts.push((format!("Verbinde automatisch mit {} …", c.name), 0, self.now));
                     self.connect(c, &p);
                 }
@@ -3011,6 +3038,10 @@ fn audio_test() {
 }
 
 fn main() -> eframe::Result<()> {
+    if std::env::args().any(|a| a == "--tray") {
+        tray::run();
+        return Ok(());
+    }
     ffi::init();
     if std::env::args().any(|a| a == "--audio-test") {
         audio_test();

@@ -4,9 +4,9 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Neue Seite „Neuigkeiten“ mit den Änderungen jeder Version",
-    "„Neu in OVERLIME“ direkt auf der Übersicht",
-    "Kompaktere Oberfläche, Größe einstellbar",
+    "Symbol neben der Uhr: Klick weckt die PS5 und verbindet",
+    "Startet auf Wunsch mit Windows, braucht kaum Speicher",
+    "Neuigkeiten-Seite und kompaktere Oberfläche",
     "Updates nur beim Start automatisch, nie im Spiel",
 ];
 
