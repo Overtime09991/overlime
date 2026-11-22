@@ -11,6 +11,8 @@ moderner Oberfläche und einem Start in unter einer Minute.
 
 </div>
 
+> **Hinweis:** OVERLIME ist ein unabhängiges Projekt und nicht mit Sony verbunden. „PlayStation“ ist eine Marke von Sony Interactive Entertainment. Es werden keine Sony-Logos oder -Bilder verwendet.
+
 > **Frühe Testversion.** Oberfläche, Anmeldung und Konsolensuche sind fertig. Das Koppeln und Streamen wird gerade mit echten Konsolen erprobt. Rückmeldungen sind willkommen.
 
 ## Warum OVERLIME?
