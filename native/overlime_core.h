@@ -58,6 +58,8 @@ int ol_stream_take_frame(OlStream *s, uint8_t *buf, size_t buf_size, int *width,
 size_t ol_stream_take_audio(OlStream *s, int16_t *buf, size_t max_samples);
 void ol_stream_set_input(OlStream *s, uint32_t buttons, uint8_t l2, uint8_t r2,
 		int16_t lx, int16_t ly, int16_t rx, int16_t ry);
+// Letzte Vibrationswerte der Konsole (0-255). Rueckgabe 1 wenn seit dem letzten Abruf neu.
+int ol_stream_take_rumble(OlStream *s, uint8_t *left, uint8_t *right);
 void ol_stream_stop(OlStream *s);
 
 // Button-Masken (wie ChiakiControllerButton)

@@ -31,7 +31,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.8";
+const VERSION: &str = "0.9";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -114,6 +114,7 @@ struct App {
     start_error: Option<String>,
     log: String,
     pad: pad::Pad,
+    nav_prev: u32,
     fullscreen: bool,
     status: String,
     searching: bool,
@@ -153,6 +154,7 @@ impl App {
             start_error: None,
             log: String::new(),
             pad: pad::Pad::new(),
+            nav_prev: 0,
             fullscreen: false,
             status: String::new(),
             searching: false,
@@ -1025,6 +1027,11 @@ impl App {
 
         let Some(s) = self.session.as_mut() else { return };
         s.stream.set_input(input.buttons, input.l2, input.r2, input.lx, input.ly, input.rx, input.ry);
+        if let Some((l, r)) = s.stream.take_rumble() {
+            if self.settings.rumble {
+                self.pad.rumble(l, r);
+            }
+        }
         s.last_input = s.last_input.max(Instant::now() - Duration::from_secs(3600));
 
         let (state, err, msg, frames, w, h, _rate, _ch, lost) = s.stream.status();
@@ -1160,6 +1167,31 @@ impl App {
 }
 
 impl eframe::App for App {
+    /// Controller-Bedienung der Menüs: Steuerkreuz/Stick = Auswahl, ✕ = Bestätigen, L1/R1 = Seite wechseln.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if self.session.is_some() {
+            self.nav_prev = 0;
+            return;
+        }
+        let inp = self.pad.poll();
+        let mut b = inp.buttons;
+        if inp.ly > 16000 { b |= 1 << 7; }
+        if inp.ly < -16000 { b |= 1 << 6; }
+        let pressed = b & !self.nav_prev;
+        self.nav_prev = b;
+        let key = |k: Key, shift: bool| {
+            let m = egui::Modifiers { shift, ..Default::default() };
+            [true, false].map(|down| egui::Event::Key { key: k, physical_key: Some(k), pressed: down, repeat: false, modifiers: m })
+        };
+        if pressed & (1 << 7) != 0 { raw.events.extend(key(Key::Tab, false)); }
+        if pressed & (1 << 6) != 0 { raw.events.extend(key(Key::Tab, true)); }
+        if pressed & (1 << 0) != 0 { raw.events.extend(key(Key::Enter, false)); }
+        let pages = [Page::Home, Page::Consoles, Page::Settings, Page::Help];
+        let idx = pages.iter().position(|p| *p == self.page).unwrap_or(0);
+        if pressed & (1 << 9) != 0 && self.dialog.is_none() { self.page = pages[(idx + 1) % 4]; }
+        if pressed & (1 << 8) != 0 && self.dialog.is_none() { self.page = pages[(idx + 3) % 4]; }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let t = ctx.input(|i| i.time);
         self.handle_messages(ctx);

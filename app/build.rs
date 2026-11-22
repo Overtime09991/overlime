@@ -17,14 +17,14 @@ fn main() {
     for lib in [
         "overlime_core", "chiaki", "protobuf-nanopb", "jerasure", "gf_complete",
         "avformat", "avcodec", "swscale", "swresample", "avutil", "opus",
-        "libcurl", "libssl", "libcrypto", "libzs", "json-c", "event", "event_core", "event_extra", "libminiupnpc",
+        "SDL2-static", "libcurl", "libssl", "libcrypto", "libzs", "json-c", "event", "event_core", "event_extra", "libminiupnpc",
     ] {
         println!("cargo:rustc-link-lib=static={lib}");
     }
     for sys in [
         "ws2_32", "crypt32", "bcrypt", "user32", "advapi32", "secur32", "ncrypt", "ole32", "oleaut32",
         "mfplat", "mfuuid", "strmiids", "d3d11", "dxgi", "iphlpapi", "shell32", "gdi32", "wldap32",
-        "normaliz", "psapi", "shlwapi", "uuid", "comdlg32", "winmm", "mf", "mfreadwrite", "vfw32",
+        "normaliz", "psapi", "imm32", "version", "setupapi", "cfgmgr32", "shlwapi", "uuid", "comdlg32", "winmm", "mf", "mfreadwrite", "vfw32",
     ] {
         println!("cargo:rustc-link-lib={sys}");
     }

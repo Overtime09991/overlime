@@ -166,6 +166,10 @@ struct OlStream {
 	struct SwsContext *sws;
 	int sws_w, sws_h, sws_fmt;
 
+	// Vibration
+	uint8_t rumble_l, rumble_r;
+	int rumble_new;
+
 	// Audio
 	int16_t audio[AUDIO_RING_SAMPLES];
 	size_t a_read, a_write; // monoton steigend
@@ -267,6 +271,11 @@ static void event_cb(ChiakiEvent *ev, void *user)
 			s->quit_error = chiaki_quit_reason_is_error(ev->quit.reason);
 			snprintf(s->message, sizeof(s->message), "%s%s%s", chiaki_quit_reason_string(ev->quit.reason),
 				ev->quit.reason_str ? ": " : "", ev->quit.reason_str ? ev->quit.reason_str : "");
+			break;
+		case CHIAKI_EVENT_RUMBLE:
+			s->rumble_l = ev->rumble.left;
+			s->rumble_r = ev->rumble.right;
+			s->rumble_new = 1;
 			break;
 		case CHIAKI_EVENT_LOGIN_PIN_REQUEST:
 			snprintf(s->message, sizeof(s->message), "Die Konsole verlangt eine Login-PIN");
@@ -416,6 +425,21 @@ void ol_stream_set_input(OlStream *s, uint32_t buttons, uint8_t l2, uint8_t r2,
 	st.right_x = rx;
 	st.right_y = ry;
 	chiaki_session_set_controller_state(&s->session, &st);
+}
+
+int ol_stream_take_rumble(OlStream *s, uint8_t *left, uint8_t *right)
+{
+	int r = 0;
+	chiaki_mutex_lock(&s->mtx);
+	if(s->rumble_new)
+	{
+		*left = s->rumble_l;
+		*right = s->rumble_r;
+		s->rumble_new = 0;
+		r = 1;
+	}
+	chiaki_mutex_unlock(&s->mtx);
+	return r;
 }
 
 void ol_stream_stop(OlStream *s)

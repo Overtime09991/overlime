@@ -38,6 +38,10 @@ impl App {
         let paired_found = self.consoles.iter().filter(|c| self.paired_for(c).is_some()).count();
         let have_psn = psn::id_from_b64(&self.settings.psn_account).is_some();
         let pad_ok = self.pad.connected();
+        let pad_name: String = {
+            let n = self.pad.name();
+            if n.chars().count() > 22 { n.chars().take(21).collect::<String>() + "…" } else { n }
+        };
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Hero
@@ -80,7 +84,7 @@ impl App {
                     tw,
                     "CONTROLLER",
                     if pad_ok { "Erkannt" } else { "Keiner" },
-                    if pad_ok { "Gamepad aktiv" } else { "Tastatur möglich" },
+                    &if pad_ok { pad_name.clone() } else { "Tastatur möglich".to_string() },
                     if pad_ok { GREEN } else { YELLOW },
                 );
                 let online = self.local_ip != "?";
@@ -170,7 +174,8 @@ impl App {
             });
             ui.add_space(6.0);
             section(ui, "🎮  Steuerung", |ui| {
-                ui.label(RichText::new("Controller (Xbox, PlayStation, andere) wird automatisch erkannt.").color(TEXT_DIM));
+                ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere – auch per Bluetooth) wird automatisch erkannt, inklusive Vibration.").color(TEXT_DIM));
+                ui.label(RichText::new("Menüs: Steuerkreuz oder linker Stick = Auswahl, Kreuz-Taste = Bestätigen, L1/R1 = Seite wechseln.").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
                 egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
                     for (k, v) in [

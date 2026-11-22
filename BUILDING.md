@@ -17,7 +17,7 @@ Der Stream-Kern (Protokoll, Takion, FEC, Video-/Audio-Empfang) stammt aus
 
 1. Visual Studio Build Tools (C++), Rust (`rustup`), LLVM (clang-cl), Python 3 mit `protobuf grpcio-tools`
 2. vcpkg an einem Pfad **ohne Leerzeichen** (z. B. `C:\vcpkg`):
-   `vcpkg install openssl opus ffmpeg "curl[openssl,websockets]" json-c libevent miniupnpc --triplet x64-windows-static-md`
+   `vcpkg install openssl opus ffmpeg sdl2 "curl[openssl,websockets]" json-c libevent miniupnpc --triplet x64-windows-static-md`
 3. chiaki-ng klonen (mit nanopb, jerasure, gf-complete), `patches/gf_cpu.c` über
    `third-party/gf-complete/src/gf_cpu.c` kopieren und mit `native/build_chiaki.bat` bauen
    (clang-cl + Ninja, `vcpkg.json` im Quellordner entfernen, GUI/CLI/Tests aus)

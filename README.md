@@ -19,7 +19,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Deine Konsole wird automatisch gefunden.** Keine IP-Adressen, keine Einstellungen, kein Fachwissen nötig.
 - **Aus dem Ruhemodus aufwecken.** Ein Klick, und die Konsole startet, ohne dass du aufstehen musst.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
-- **Controller oder Tastatur.** Xbox-, PlayStation- und andere Controller werden automatisch erkannt. Ohne Controller geht es mit der Tastatur.
+- **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
 - **Ton inklusive.** Spielton direkt auf deinem Standard-Wiedergabegerät.
 - **Bleibt aktuell.** Neue Versionen lädt die App selbst, prüft sie und startet neu.
 
@@ -48,7 +48,7 @@ Mit **⚡ Maximale Qualität** stellst du alles auf einmal auf das Beste.
 
 ## Steuerung
 
-Controller werden automatisch erkannt. Ohne Controller:
+Controller werden automatisch erkannt (Menüs: Steuerkreuz/Stick = Auswahl, Kreuz = Bestätigen, L1/R1 = Seite wechseln). Ohne Controller:
 
 | Taste | Funktion |
 | --- | --- |

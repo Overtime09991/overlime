@@ -64,6 +64,7 @@ extern "C" {
     pub fn ol_stream_take_frame(s: *mut OlStream, buf: *mut u8, size: usize, w: *mut c_int, h: *mut c_int) -> c_int;
     pub fn ol_stream_take_audio(s: *mut OlStream, buf: *mut i16, max: usize) -> usize;
     pub fn ol_stream_set_input(s: *mut OlStream, buttons: u32, l2: u8, r2: u8, lx: i16, ly: i16, rx: i16, ry: i16);
+    pub fn ol_stream_take_rumble(s: *mut OlStream, left: *mut u8, right: *mut u8) -> c_int;
     pub fn ol_stream_stop(s: *mut OlStream);
 }
 
@@ -211,6 +212,15 @@ impl Stream {
 
     pub fn take_audio(&self, buf: &mut [i16]) -> usize {
         unsafe { ol_stream_take_audio(self.ptr, buf.as_mut_ptr(), buf.len()) }
+    }
+
+    pub fn take_rumble(&self) -> Option<(u8, u8)> {
+        let (mut l, mut r) = (0u8, 0u8);
+        if unsafe { ol_stream_take_rumble(self.ptr, &mut l, &mut r) } != 0 {
+            Some((l, r))
+        } else {
+            None
+        }
     }
 
     pub fn set_input(&self, buttons: u32, l2: u8, r2: u8, lx: i16, ly: i16, rx: i16, ry: i16) {
