@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Zwischenbilder bei der Bildrate, mit großem Schalter",
+    "Statusanzeige mit Live-Vorschau",
+    "Größere, weich animierte Auswahlfelder und Knöpfe",
     "Neuer Update-Bildschirm im Launcher-Stil",
-    "Animierte Schritte: GitHub, Download, Prüfung, Installation",
-    "Tempo und Restzeit beim Download",
-    "Englisch als zweite Sprache",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {
@@ -80,7 +80,7 @@ fn chevrons(p: &egui::Painter, c: Pos2, t: f64, col: Color32) {
     }
 }
 
-fn tick(p: &egui::Painter, c: Pos2, s: f32, col: Color32, frac: f32) {
+pub fn tick(p: &egui::Painter, c: Pos2, s: f32, col: Color32, frac: f32) {
     let a = c + Vec2::new(-0.45 * s, 0.02 * s);
     let b = c + Vec2::new(-0.12 * s, 0.38 * s);
     let d = c + Vec2::new(0.5 * s, -0.36 * s);

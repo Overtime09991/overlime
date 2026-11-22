@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.30";
+const VERSION: &str = "0.31";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -312,7 +312,7 @@ impl App {
             update_err: String::new(),
             skip_login: false,
             login_pasted: String::new(),
-            set_cat: 0,
+            set_cat: std::env::args().find_map(|a| a.strip_prefix("--set-cat=").and_then(|v| v.parse().ok())).unwrap_or(0),
             help_tab: 0,
             wiz: None,
             news_lang: usize::MAX,
@@ -328,7 +328,7 @@ impl App {
             report_state: 0,
             report_msg: String::new(),
             report_last: 0.0,
-            set_q: String::new(),
+            set_q: std::env::args().find_map(|a| a.strip_prefix("--set-q=").map(|v| v.to_string())).unwrap_or_default(),
             login_step: std::env::args().find_map(|a| a.strip_prefix("--login-step=").and_then(|v| v.parse().ok())).unwrap_or(0),
             clip_seen: 0.0,
             login_busy: false,
@@ -1274,43 +1274,62 @@ pub const HUD_ITEMS: [&str; 10] = ["Auflösung", "FPS", "Ping", "Dekodierzeit", 
 
 /// Auswahl, was die Statusanzeige im Stream zeigt, und wo sie steht.
 fn hud_config_ui(ui: &mut egui::Ui, st: &mut Settings) {
+    ui.add_space(4.0);
     ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = Vec2::new(8.0, 8.0);
         for (i, name) in HUD_ITEMS.iter().enumerate() {
             let on = st.hud_items & (1 << i) != 0;
-            let btn = egui::Button::new(RichText::new(*name).size(12.5).color(if on { Color32::WHITE } else { TEXT_DIM }))
-                .fill(if on { th_blue() } else { th_card_hover() })
-                .rounding(12.0);
-            if ui.add(btn).clicked() {
+            if chip_toggle(ui, name, on) {
                 st.hud_items ^= 1 << i;
             }
         }
     });
-    ui.add_space(4.0);
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Position").size(12.5).color(TEXT_DIM));
-        segmented(ui, &mut st.hud_pos, &["Oben links", "Oben rechts", "Unten links", "Unten rechts"]);
-    });
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Größe").size(12.5).color(TEXT_DIM));
-        segmented(ui, &mut st.hud_size, &["Klein", "Normal", "Groß"]);
-        ui.checkbox(&mut st.hud_box, "Mit Hintergrund");
-    });
+    ui.add_space(8.0);
+    ui.label(RichText::new("Position").size(13.0).color(TEXT_DIM));
+    segmented(ui, &mut st.hud_pos, &["Oben links", "Oben rechts", "Unten links", "Unten rechts"]);
+    ui.add_space(6.0);
+    ui.label(RichText::new("Größe").size(13.0).color(TEXT_DIM));
+    segmented(ui, &mut st.hud_size, &["Klein", "Normal", "Groß"]);
+    ui.add_space(6.0);
+    if chip_toggle(ui, "Mit Hintergrund", st.hud_box) {
+        st.hud_box = !st.hud_box;
+    }
 }
 
 /// Zeichnet die Statusanzeige im Stream an die gewählte Stelle.
 fn paint_hud(painter: &egui::Painter, full: Rect, hud: String, st: &Settings, bar_shift: f32) {
-    let size = [11.0, 12.5, 15.0][st.hud_size.min(2)];
-    let galley = painter.layout_no_wrap(hud, FontId::monospace(size), Color32::from_white_alpha(if st.hud_box { 235 } else { 160 }));
-    let pad_box = if st.hud_box { 9.0 } else { 0.0 };
+    paint_hud_scaled(painter, full, hud, st, bar_shift, 1.0, None);
+}
+
+/// Wie `paint_hud`, aber skaliert (für die Vorschau) und mit weicher Bewegung beim Wechsel der Position.
+fn paint_hud_scaled(painter: &egui::Painter, full: Rect, hud: String, st: &Settings, bar_shift: f32, scale: f32, anim: Option<&egui::Context>) {
+    let base = [11.0, 12.5, 15.0][st.hud_size.min(2)];
+    let margin = 14.0 * scale;
+    let pad_box = if st.hud_box { 9.0 * scale } else { 0.0 };
+    let alpha = if st.hud_box { 235 } else { 190 };
+    let mut size = base * scale;
+    let mut galley = painter.layout_no_wrap(hud.clone(), FontId::monospace(size), Color32::from_white_alpha(alpha));
+    // zu lang für die Vorschau: Schrift verkleinern, bis es passt
+    let max_w = full.width() - 2.0 * (margin + pad_box);
+    if galley.size().x > max_w && max_w > 40.0 {
+        size *= 0.94 * max_w / galley.size().x;
+        galley = painter.layout_no_wrap(hud, FontId::monospace(size), Color32::from_white_alpha(alpha));
+    }
     let (w, h) = (galley.size().x + 2.0 * pad_box, galley.size().y + 2.0 * pad_box);
-    let margin = 14.0;
     let top = st.hud_pos < 2;
     let left = st.hud_pos % 2 == 0;
-    let x = if left { full.left() + margin } else { full.right() - margin - w };
-    let y = if top { full.top() + 12.0 + bar_shift } else { full.bottom() - 12.0 - h };
+    let mut x = if left { full.left() + margin } else { full.right() - margin - w };
+    let mut y = if top { full.top() + 12.0 * scale + bar_shift } else { full.bottom() - 12.0 * scale - h };
+    if let Some(ctx) = anim {
+        x = ctx.animate_value_with_time(egui::Id::new("hud_prev_x"), x, 0.3);
+        y = ctx.animate_value_with_time(egui::Id::new("hud_prev_y"), y, 0.3);
+    }
     let r = Rect::from_min_size(Pos2::new(x, y), Vec2::new(w, h));
     if st.hud_box {
-        painter.rect_filled(r, Rounding::same(10.0), Color32::from_black_alpha(150));
+        painter.rect_filled(r, Rounding::same(10.0 * scale.max(0.6)), Color32::from_black_alpha(150));
+    } else {
+        // ohne Hintergrund: dezenter Schatten für die Lesbarkeit
+        painter.rect_filled(r.expand(4.0 * scale), Rounding::same(6.0), Color32::from_black_alpha(60));
     }
     painter.galley(r.min + Vec2::splat(pad_box), galley, Color32::WHITE);
 }
@@ -1377,18 +1396,196 @@ fn sparkline(ui: &mut egui::Ui, data: &[f32], color: Color32, min_top: f32, unit
 }
 
 fn segmented(ui: &mut egui::Ui, value: &mut usize, labels: &[&str]) {
-    ui.horizontal(|ui| {
-        for (i, l) in labels.iter().enumerate() {
-            let sel = *value == i;
-            let b = egui::Button::new(RichText::new(*l).size(14.0).color(if sel { Color32::WHITE } else { TEXT_DIM }))
-                .fill(if sel { th_blue() } else { th_card_hover() })
-                .rounding(10.0)
-                .min_size(Vec2::new(90.0, 34.0));
-            if ui.add(b).clicked() {
-                *value = i;
+    if labels.is_empty() {
+        return;
+    }
+    let ctx = ui.ctx().clone();
+    let painter = ui.painter().clone();
+    let avail = ui.available_width();
+    let mut font = 14.5;
+    let texts: Vec<String> = labels.iter().map(|l| lang::tr(l)).collect();
+    let measure = |font: f32| -> Vec<f32> { texts.iter().map(|t| (painter.layout_no_wrap(t.clone(), FontId::proportional(font), Color32::WHITE).size().x + 38.0).max(84.0)).collect() };
+    let mut widths = measure(font);
+    let mut total: f32 = widths.iter().sum::<f32>() + 8.0;
+    if total > avail {
+        // zu breit: kleinere Schrift und engere Flächen
+        font = 12.5;
+        widths = texts.iter().map(|t| (painter.layout_no_wrap(t.clone(), FontId::proportional(font), Color32::WHITE).size().x + 22.0).max(52.0)).collect();
+        total = widths.iter().sum::<f32>() + 8.0;
+        if total > avail {
+            let k = (avail - 8.0) / (total - 8.0);
+            for w in widths.iter_mut() {
+                *w *= k;
             }
+            total = avail;
         }
+    }
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(total, 46.0), egui::Sense::hover());
+    let id = ui.id().with(("seg", labels.join("|")));
+    painter.rect_filled(rect, Rounding::same(15.0), Color32::from_rgba_unmultiplied(255, 255, 255, 9));
+    painter.rect_stroke(rect, Rounding::same(15.0), Stroke::new(1.0, Color32::from_white_alpha(16)));
+    let mut x = rect.left() + 4.0;
+    let mut rects = Vec::with_capacity(widths.len());
+    for w in &widths {
+        rects.push(Rect::from_min_size(Pos2::new(x, rect.top() + 4.0), Vec2::new(*w, 38.0)));
+        x += *w;
+    }
+    let sel = (*value).min(rects.len() - 1);
+    // Auswahl gleitet weich zur neuen Stelle
+    let ax = ctx.animate_value_with_time(id.with("x"), rects[sel].left(), 0.24);
+    let aw = ctx.animate_value_with_time(id.with("w"), rects[sel].width(), 0.24);
+    let pill = Rect::from_min_size(Pos2::new(ax, rect.top() + 4.0), Vec2::new(aw, 38.0));
+    for g in 1..4 {
+        painter.rect_filled(pill.expand(g as f32 * 2.0), Rounding::same(12.0 + g as f32 * 2.0), th_blue().gamma_multiply(0.07));
+    }
+    painter.rect_filled(pill, Rounding::same(12.0), th_blue());
+    painter.rect_filled(Rect::from_min_size(pill.min + Vec2::new(6.0, 2.0), Vec2::new(pill.width() - 12.0, 1.5)), Rounding::same(1.0), Color32::from_white_alpha(60));
+    let mut clicked = None;
+    for (i, r) in rects.iter().enumerate() {
+        let resp = ui.interact(*r, id.with(i), egui::Sense::click());
+        let hv = ctx.animate_bool_with_time(id.with(("h", i)), resp.hovered() && i != sel, 0.14);
+        let press = resp.is_pointer_button_down_on();
+        if hv > 0.01 {
+            painter.rect_filled(r.shrink(if press { 2.0 } else { 0.0 }), Rounding::same(11.0), Color32::from_white_alpha((20.0 * hv) as u8));
+        }
+        let near = (pill.center().x - r.center().x).abs() < r.width() * 0.5;
+        let col = if near || i == sel { Color32::WHITE } else { TEXT_DIM.lerp_to_gamma(Color32::WHITE, hv) };
+        painter.text(r.center() + Vec2::new(0.0, if press { 1.0 } else { 0.0 }), Align2::CENTER_CENTER, labels[i], FontId::proportional(font), col);
+        if resp.clicked() {
+            clicked = Some(i);
+        }
+    }
+    if let Some(i) = clicked {
+        *value = i;
+    }
+}
+
+/// Großer, weich animierter Schalter-Chip (Name, Haken, Hover und Druck).
+fn chip_toggle(ui: &mut egui::Ui, name: &str, on: bool) -> bool {
+    let ctx = ui.ctx().clone();
+    let painter = ui.painter().clone();
+    let text = lang::tr(name);
+    let g = painter.layout_no_wrap(text.clone(), FontId::proportional(14.0), Color32::WHITE);
+    let w = g.size().x + 54.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 40.0), egui::Sense::click());
+    let id = resp.id;
+    let a_on = ctx.animate_bool_with_time(id.with("on"), on, 0.2);
+    let hv = ctx.animate_bool_with_time(id.with("hv"), resp.hovered(), 0.14);
+    let press = resp.is_pointer_button_down_on();
+    let rc = if press { rect.shrink(1.5) } else { rect };
+    let base = Color32::from_rgba_unmultiplied(255, 255, 255, 12);
+    let fill = base.lerp_to_gamma(th_blue(), a_on);
+    if a_on > 0.02 {
+        painter.rect_filled(rc.expand(3.0), Rounding::same(16.0), th_blue().gamma_multiply(0.14 * a_on));
+    }
+    painter.rect_filled(rc, Rounding::same(14.0), fill);
+    painter.rect_stroke(rc, Rounding::same(14.0), Stroke::new(1.0, Color32::from_white_alpha((20.0 + 40.0 * hv) as u8)));
+    if hv > 0.01 {
+        painter.rect_filled(rc, Rounding::same(14.0), Color32::from_white_alpha((14.0 * hv) as u8));
+    }
+    // Haken
+    let ic = Pos2::new(rc.left() + 20.0, rc.center().y);
+    painter.circle_stroke(ic, 8.0, Stroke::new(1.6, Color32::from_white_alpha(60).lerp_to_gamma(Color32::WHITE, a_on)));
+    if a_on > 0.02 {
+        painter.circle_filled(ic, 8.0 * a_on, Color32::WHITE.gamma_multiply(0.95));
+        splash::tick(&painter, ic, 9.0, th_blue(), a_on);
+    }
+    painter.text(Pos2::new(rc.left() + 36.0, rc.center().y), Align2::LEFT_CENTER, text, FontId::proportional(14.0), TEXT_DIM.lerp_to_gamma(Color32::WHITE, (a_on * 0.9 + hv * 0.5).min(1.0)));
+    resp.clicked()
+}
+
+/// Großer Schalter mit Titel und Erklärung (zum Beispiel für die Zwischenbilder).
+fn fancy_switch(ui: &mut egui::Ui, value: &mut bool, title: &str, desc: &str, badge: &str) {
+    let ctx = ui.ctx().clone();
+    let width = ui.available_width();
+    let id = ui.id().with(("fsw", title));
+    let a_on = ctx.animate_bool_with_time(id.with("on"), *value, 0.22);
+    let frame = egui::Frame::none()
+        .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 10).lerp_to_gamma(th_blue().gamma_multiply(0.22), a_on))
+        .rounding(16.0)
+        .inner_margin(egui::Margin::symmetric(16.0, 12.0));
+    let inner = frame.show(ui, |ui| {
+        ui.set_width(width - 32.0);
+        ui.horizontal(|ui| {
+            ui.vertical(|ui| {
+                ui.set_width(width - 32.0 - 76.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(title).size(15.5).strong());
+                    if !badge.is_empty() {
+                        let col = YELLOW;
+                        egui::Frame::none().fill(col.gamma_multiply(0.18)).rounding(9.0).inner_margin(egui::Margin::symmetric(8.0, 1.0)).show(ui, |ui| {
+                            ui.label(RichText::new(badge).size(11.0).color(col));
+                        });
+                    }
+                });
+                if !desc.is_empty() {
+                    ui.add(egui::Label::new(RichText::new(desc).size(12.5).color(TEXT_DIM)).wrap());
+                }
+            });
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                let (r, _) = ui.allocate_exact_size(Vec2::new(60.0, 32.0), egui::Sense::hover());
+                let p = ui.painter();
+                let track = Color32::from_white_alpha(28).lerp_to_gamma(th_blue(), a_on);
+                if a_on > 0.02 {
+                    p.rect_filled(r.expand(3.0), Rounding::same(19.0), th_blue().gamma_multiply(0.20 * a_on));
+                }
+                p.rect_filled(r, Rounding::same(16.0), track);
+                let kx = r.left() + 16.0 + (r.width() - 32.0) * a_on;
+                p.circle_filled(Pos2::new(kx, r.center().y + 1.0), 12.5, Color32::from_black_alpha(50));
+                p.circle_filled(Pos2::new(kx, r.center().y), 12.0, Color32::WHITE);
+            });
+        });
     });
+    let resp = ui.interact(inner.response.rect, id, egui::Sense::click());
+    let hv = ctx.animate_bool_with_time(id.with("hv"), resp.hovered(), 0.14);
+    ui.painter().rect_stroke(inner.response.rect, Rounding::same(16.0), Stroke::new(1.2, Color32::from_white_alpha(18).lerp_to_gamma(th_blue_light(), (a_on * 0.7 + hv * 0.5).min(1.0))));
+    if resp.clicked() {
+        *value = !*value;
+    }
+}
+
+/// Vorschau der Statusanzeige auf einem nachgebauten Spielbild.
+fn hud_preview(ui: &mut egui::Ui, st: &Settings) {
+    let ctx = ui.ctx().clone();
+    let w = ui.available_width().min(480.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, w * 9.0 / 16.0), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    // Nachgebautes Spielbild: Himmel, Berge, Straße
+    let mut m = egui::epaint::Mesh::default();
+    let (c_top, c_bot) = (Color32::from_rgb(34, 52, 112), Color32::from_rgb(214, 120, 96));
+    m.colored_vertex(rect.left_top(), c_top);
+    m.colored_vertex(rect.right_top(), c_top);
+    m.colored_vertex(Pos2::new(rect.left(), rect.top() + rect.height() * 0.62), c_bot);
+    m.colored_vertex(Pos2::new(rect.right(), rect.top() + rect.height() * 0.62), c_bot);
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(1, 3, 2);
+    p.add(Shape::mesh(m));
+    let h0 = rect.top() + rect.height() * 0.62;
+    p.circle_filled(Pos2::new(rect.left() + w * 0.72, rect.top() + rect.height() * 0.40), w * 0.06, Color32::from_rgb(255, 226, 170));
+    let mount = |pts: &[(f32, f32)], col: Color32| {
+        let mut v: Vec<Pos2> = pts.iter().map(|(x, y)| Pos2::new(rect.left() + w * x, h0 - rect.height() * y)).collect();
+        v.push(Pos2::new(rect.right(), h0 + 1.0));
+        v.push(Pos2::new(rect.left(), h0 + 1.0));
+        p.add(Shape::convex_polygon(v, col, Stroke::NONE));
+    };
+    mount(&[(0.0, 0.10), (0.18, 0.28), (0.34, 0.12), (0.52, 0.32), (0.70, 0.14), (0.86, 0.26), (1.0, 0.12)], Color32::from_rgb(40, 38, 86));
+    mount(&[(0.0, 0.04), (0.25, 0.14), (0.5, 0.05), (0.78, 0.16), (1.0, 0.05)], Color32::from_rgb(24, 24, 56));
+    let road = Rect::from_min_max(Pos2::new(rect.left(), h0), rect.right_bottom());
+    p.rect_filled(road, Rounding::ZERO, Color32::from_rgb(28, 28, 44));
+    for k in 0..4 {
+        let y = h0 + (rect.bottom() - h0) * (0.2 + 0.2 * k as f32);
+        let l = 18.0 + 26.0 * k as f32;
+        p.line_segment([Pos2::new(rect.center().x - l / 2.0, y), Pos2::new(rect.center().x + l / 2.0, y)], Stroke::new(2.0 + k as f32, Color32::from_white_alpha(90)));
+    }
+    // Statusanzeige an der gewählten Stelle, mit weicher Bewegung
+    let demo = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll"];
+    let parts: Vec<String> = demo.iter().enumerate().filter(|(i, _)| st.hud_items & (1 << i) != 0).map(|(_, s)| lang::tr(s)).collect();
+    if parts.is_empty() {
+        p.text(rect.center(), Align2::CENTER_CENTER, lang::tr("Nichts ausgewählt"), FontId::proportional(14.0), Color32::from_white_alpha(140));
+    } else {
+        paint_hud_scaled(&p, rect, parts.join("  •  "), st, 0.0, w / 900.0, Some(&ctx));
+    }
+    p.rect_stroke(rect, Rounding::ZERO, Stroke::new(1.0, Color32::from_white_alpha(26)));
 }
 
 thread_local! {
@@ -1402,7 +1599,7 @@ fn section_meta(title: &str) -> (usize, &'static str) {
     let table: [(&str, usize, &str); 12] = [
         ("statusanzeige", 3, "hud anzeige ping fps position oben links statistik einblendung uhrzeit"),
         ("aufnahmen", 1, "aufnahme video screenshot ordner mp4 aufnehmen"),
-        ("videoqualität", 1, "auflösung bildrate fps bitrate codec hevc h.264 schärfe qualität 1080p"),
+        ("videoqualität", 1, "auflösung bildrate fps bitrate codec hevc h.264 schärfe qualität 1080p zwischenbilder 120 hz interpolation flüssig"),
         ("ton", 1, "ton lautstärke audio lautsprecher sound"),
         ("steuerung", 2, "controller vibration touchpad gyro bewegung trigger led gamepad"),
         ("tastatur", 2, "tastatur tasten belegung keyboard"),
@@ -1656,7 +1853,11 @@ impl App {
         SET_FILTER.with(|f| *f.borrow_mut() = Some((self.set_cat, self.set_q.trim().to_lowercase())));
         SET_DRAWN.with(|d| d.set(0));
         let st = &mut self.settings;
-        egui::ScrollArea::vertical().show(ui, |ui| {
+        let mut sa = egui::ScrollArea::vertical();
+        if let Some(off) = std::env::args().find_map(|a| a.strip_prefix("--scroll=").and_then(|v| v.parse::<f32>().ok())) {
+            sa = sa.vertical_scroll_offset(off);
+        }
+        sa.show(ui, |ui| {
             section(ui, &format!("{}  Updates", ic::ARROW_CIRCLE_UP), |ui| {
                 ui.horizontal(|ui| {
                     ui.label(RichText::new(format!("Installierte Version: {VERSION}")).size(14.5).strong());
@@ -1766,6 +1967,11 @@ impl App {
                 segmented(ui, &mut st.resolution, &["540p", "720p", "1080p"]);
                     label(ui, "Bildrate", "");
                 segmented(ui, &mut st.fps, &["30 FPS", "60 FPS"]);
+                ui.add_space(8.0);
+                let hz = winui::display_refresh_hz();
+                let badge = if hz > 0 && hz < 100 { "Dein Bildschirm hat nur 60 Hz" } else { "Experimentell" };
+                fancy_switch(ui, &mut st.interp, "Zwischenbilder für 120 Hz", "Die Konsole sendet höchstens 60 Bilder pro Sekunde. Die Grafikkarte berechnet Bilder dazwischen, damit es auf einem Bildschirm mit 120 Hz oder mehr flüssiger wirkt. Kostet etwa 17 ms Verzögerung.", badge);
+                ui.add_space(6.0);
                     label(ui, "Bitrate", "Höher = schärferes Bild, braucht aber eine schnelle Leitung.");
                 ui.add(egui::Slider::new(&mut st.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
                     label(ui, "Videocodec", "HEVC (H.265) ist bei gleicher Bitrate schärfer. Automatisch: HEVC bei der PS5, H.264 bei der PS4.");
@@ -1778,9 +1984,6 @@ impl App {
                 label(ui, "Sprache / Language", "");
                 segmented(ui, &mut st.language, &["Deutsch", "English"]);
                 ui.add_space(6.0);
-                ui.checkbox(&mut st.interp, "Zwischenbilder berechnen (experimentell)");
-                let hz = winui::display_refresh_hz();
-                ui.label(RichText::new(format!("Die Konsole sendet höchstens 60 Bilder pro Sekunde. Mit dieser Option berechnet die Grafikkarte Bilder dazwischen, damit es auf einem Bildschirm mit 120 Hz oder mehr flüssiger wirkt. Das kostet etwa ein Bild (ca. 17 ms) mehr Verzögerung und kann bei schnellen Bewegungen kleine Fehler zeigen. Dein Bildschirm läuft gerade mit {} Hz{}.", if hz > 0 { hz.to_string() } else { "?".to_string() }, if hz > 0 && hz < 100 { " – hier bringt es nichts" } else { "" })).color(TEXT_DIM).size(12.0));
                 ui.add_space(4.0);
                     ui.checkbox(&mut st.fullscreen, "Vollbild beim Streamen");
                     label(ui, "Größe der Oberfläche", "Kompakt zeigt mehr auf einmal und wirkt aufgeräumter.");
@@ -1790,7 +1993,10 @@ impl App {
                 ui.label(RichText::new("Wähle, was im Stream eingeblendet wird (an/aus mit F10), wo es steht und wie groß.").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
                 ui.checkbox(&mut self.show_hud, "Statusanzeige im Stream zeigen");
-                ui.add_space(2.0);
+                ui.add_space(6.0);
+                ui.label(RichText::new("Vorschau").size(13.0).color(TEXT_DIM));
+                hud_preview(ui, st);
+                ui.add_space(4.0);
                 hud_config_ui(ui, st);
             });
             section(ui, &format!("{}  Farbschema", ic::PALETTE), |ui| {
@@ -2220,7 +2426,6 @@ impl App {
                             ui.add(egui::Slider::new(&mut self.settings.sharp, 0.0..=1.0).show_value(false));
                         });
                     });
-                    ui.checkbox(&mut self.settings.interp, "Zwischenbilder (für 120 Hz, experimentell)");
                     ui.checkbox(&mut self.show_hud, "Statusanzeige im Stream (F10)");
                     if self.show_hud {
                         ui.add_space(2.0);
@@ -2253,6 +2458,9 @@ impl App {
                     ui.add_space(4.0);
                     segmented(ui, &mut self.settings.resolution, &["540p", "720p", "1080p"]);
                     segmented(ui, &mut self.settings.fps, &["30 FPS", "60 FPS"]);
+                    ui.add_space(4.0);
+                    fancy_switch(ui, &mut self.settings.interp, "Zwischenbilder für 120 Hz", "", "Experimentell");
+                    ui.add_space(4.0);
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Bitrate").size(12.5).color(TEXT_DIM));
                         ui.spacing_mut().slider_width = 190.0;
