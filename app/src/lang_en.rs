@@ -469,6 +469,7 @@ pub const EN: &[(&str, &str)] = &[
     (r##"Dann mit Strg+V in Discord, WhatsApp oder E-Mail einfügen"##, r##"Then paste into Discord, WhatsApp or email with Ctrl+V"##),
     (r##"Neue Galerie: Videos abspielen und Screenshots ansehen"##, r##"New gallery: play videos and view screenshots"##),
     (r##"Teilen per Zwischenablage"##, r##"Sharing via the clipboard"##),
+    (r##"Aufnahmen werden jetzt richtig gespeichert und lassen sich abspielen"##, r##"Recordings are now saved correctly and can be played"##),
     (r##"{}. Noch nicht geprüft."##, r##"{}. Not checked yet."##),
     (r##"{}. OVERLIME ist auf dem neuesten Stand."##, r##"{}. OVERLIME is up to date."##),
     (r##"{}. Ein Update ist verfügbar."##, r##"{}. An update is available."##),

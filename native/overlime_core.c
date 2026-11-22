@@ -226,6 +226,8 @@ struct OlStream {
 	int64_t rec_apts;
 	uint64_t rec_t0_us;
 	int64_t rec_last_vpts;
+	uint8_t *vhdr;      // Parameter-Sets (SPS/PPS bzw. VPS/SPS/PPS), die die Konsole vor den Bildern schickt
+	size_t vhdr_len;
 	uint64_t rec_bytes;
 	char rec_path[600];
 };
@@ -250,6 +252,22 @@ static int is_keyframe(const uint8_t *b, size_t n, int hevc)
 				if(t >= 16 && t <= 21) return 1;
 				if(t < 16) return 0;
 			}
+			i += 3;
+		}
+	}
+	return 0;
+}
+
+// 1, wenn der Puffer Parameter-Sets enthaelt (H.264: SPS 7 / PPS 8, HEVC: VPS 32 / SPS 33 / PPS 34)
+static int has_param_sets(const uint8_t *b, size_t n, int hevc)
+{
+	for(size_t i = 0; i + 3 < n; i++)
+	{
+		if(b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1)
+		{
+			int t = hevc ? ((b[i + 3] >> 1) & 0x3f) : (b[i + 3] & 0x1f);
+			if(hevc ? (t >= 32 && t <= 34) : (t == 7 || t == 8))
+				return 1;
 			i += 3;
 		}
 	}
@@ -290,6 +308,21 @@ static void rec_write_audio_packets(OlStream *s, AVFrame *frame)
 static void rec_video(OlStream *s, const uint8_t *buf, size_t size)
 {
 	chiaki_mutex_lock(&s->rec_mtx);
+	if(size > 0 && size < 4096)
+	{
+		// Die Konsole schickt SPS/PPS als eigenes kleines Paket vor den Bildern: merken (sonst fehlt der Aufnahme das Videoprofil)
+		if(has_param_sets(buf, size, s->codec_hevc) && !is_keyframe(buf, size, s->codec_hevc))
+		{
+			uint8_t *c = (uint8_t *)malloc(size);
+			if(c)
+			{
+				memcpy(c, buf, size);
+				free(s->vhdr);
+				s->vhdr = c;
+				s->vhdr_len = size;
+			}
+		}
+	}
 	if(s->rec_state == 0 || size == 0)
 	{
 		chiaki_mutex_unlock(&s->rec_mtx);
@@ -304,15 +337,18 @@ static void rec_video(OlStream *s, const uint8_t *buf, size_t size)
 			return;
 		}
 		AVCodecParameters *par = s->rec_vs->codecpar;
-		par->extradata = av_mallocz(size + AV_INPUT_BUFFER_PADDING_SIZE);
+		// Fehlen SPS/PPS im Schluesselbild, den gemerkten Header voranstellen
+		size_t pre = (!has_param_sets(buf, size, s->codec_hevc) && s->vhdr && s->vhdr_len) ? s->vhdr_len : 0;
+		par->extradata = av_mallocz(pre + size + AV_INPUT_BUFFER_PADDING_SIZE);
 		if(!par->extradata)
 		{
 			rec_cleanup_locked(s, 1);
 			chiaki_mutex_unlock(&s->rec_mtx);
 			return;
 		}
-		memcpy(par->extradata, buf, size);
-		par->extradata_size = (int)size;
+		if(pre) memcpy(par->extradata, s->vhdr, pre);
+		memcpy(par->extradata + pre, buf, size);
+		par->extradata_size = (int)(pre + size);
 		AVDictionary *opts = NULL;
 		av_dict_set(&opts, "movflags", "frag_keyframe+empty_moov+default_base_moof", 0);
 		int r = avformat_write_header(s->rec_fc, &opts);
@@ -989,6 +1025,7 @@ int ol_stream_take_rumble(OlStream *s, uint8_t *left, uint8_t *right)
 
 void ol_stream_stop(OlStream *s)
 {
+	/* vhdr wird unten mit s freigegeben */
 	if(!s)
 		return;
 	chiaki_session_stop(&s->session);
@@ -1003,6 +1040,7 @@ void ol_stream_stop(OlStream *s)
 	free(s->rgba);
 	chiaki_mutex_fini(&s->rec_mtx);
 	chiaki_mutex_fini(&s->mtx);
+	free(s->vhdr);
 	free(s);
 }
 
@@ -1059,7 +1097,34 @@ int ol_record_selftest(const char *in_path, const char *out_path, int hevc, int 
 	double ph = 0;
 	for(int k = 0; k < cnt; k++)
 	{
-		rec_video(s, buf + starts[k], (size_t)(starts[k + 1] - starts[k]));
+		{
+			// Wie bei der Konsole: Parameter-Sets als eigenes Paket vor dem ersten Schluesselbild schicken
+			const uint8_t *au = buf + starts[k];
+			size_t aun = (size_t)(starts[k + 1] - starts[k]);
+			size_t sp = 0;
+			if(k == 0)
+			{
+				for(size_t q = 0; q + 3 < aun; q++)
+				{
+					if(au[q] == 0 && au[q + 1] == 0 && au[q + 2] == 1)
+					{
+						int t = hevc ? ((au[q + 3] >> 1) & 0x3f) : (au[q + 3] & 0x1f);
+						if(hevc ? (t >= 16 && t <= 21) : (t == 5))
+						{
+							sp = (q > 0 && au[q - 1] == 0) ? q - 1 : q;
+							break;
+						}
+					}
+				}
+			}
+			if(sp > 0)
+			{
+				rec_video(s, au, sp);
+				rec_video(s, au + sp, aun - sp);
+			}
+			else
+				rec_video(s, au, aun);
+		}
 		for(int i = 0; i < 800; i++)
 		{
 			int16_t v = (int16_t)(sin(ph) * 8000);
@@ -1123,7 +1188,7 @@ OlPlayer *ol_play_open(const char *path, int max_w, int want, char *err, size_t 
 	}
 	if(avformat_find_stream_info(p->fc, NULL) < 0)
 	{
-		snprintf(err, err_size, "Keine Stream-Informationen.");
+		snprintf(err, err_size, "Die Aufnahme ist beschädigt (Videoinformationen fehlen).");
 		goto fail;
 	}
 	p->vi = av_find_best_stream(p->fc, AVMEDIA_TYPE_VIDEO, -1, -1, NULL, 0);
