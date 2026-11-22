@@ -4,9 +4,9 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Neuer, ruhiger Update-Abschlussbildschirm",
     "Update startet OVERLIME nahtlos neu",
     "Schlichteres, flaches Design für Knöpfe und Auswahl",
-    "Ruhige Vorschau der Statusanzeige",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {
@@ -596,58 +596,55 @@ pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> boo
     egui::CentralPanel::default().frame(egui::Frame::none().fill(th_bg())).show(ctx, |ui| {
         let r = ui.max_rect();
         let p = ui.painter().clone();
-        background(&p, r, ts + 3.0);
-        let cx = r.center().x;
-        let top = r.top() + (r.height() * 0.5 - 290.0).max(16.0);
+        background_v2(&p, r, ts + 3.0, 1.0, false);
         let tsf = ts as f32;
+        let a = |delay: f32| ease_out((tsf - delay) / 0.6);
+        let slide = |delay: f32| (1.0 - a(delay)) * 12.0;
 
-        // Konfetti
-        let palette = [th_blue_light(), GREEN, YELLOW, Color32::from_rgb(170, 120, 255), Color32::WHITE, Color32::from_rgb(255, 120, 150)];
-        let fade = (1.0 - ((tsf - 6.5) / 2.5).clamp(0.0, 1.0)).max(0.0);
-        if tsf > 0.5 && fade > 0.0 {
-            let ct = tsf - 0.5;
-            for i in 0..110u32 {
-                let delay = rnd(i, 7) * 1.2;
-                if ct < delay {
-                    continue;
-                }
-                let lt = ct - delay;
-                let x0 = r.left() + rnd(i, 1) * r.width();
-                let sway = (lt * (1.2 + rnd(i, 8) * 1.5) + rnd(i, 9) * 6.0).sin() * (14.0 + rnd(i, 10) * 26.0);
-                let y = r.top() - 20.0 + lt * (110.0 + rnd(i, 2) * 190.0);
-                if y > r.bottom() + 20.0 {
-                    continue;
-                }
-                let ang = lt * (2.0 + rnd(i, 11) * 5.0) + rnd(i, 12) * 6.0;
-                let (w, h) = (5.0 + rnd(i, 13) * 6.0, 3.0 + rnd(i, 14) * 4.0);
-                let col = palette[(i as usize) % palette.len()].gamma_multiply(0.9 * fade);
-                let (s, c) = (ang.sin(), ang.cos());
-                let pts: Vec<Pos2> = [(-w, -h), (w, -h), (w, h), (-w, h)]
-                    .iter()
-                    .map(|(px, py)| Pos2::new(x0 + sway + px * c - py * s, y + px * s + py * c))
-                    .collect();
-                p.add(Shape::convex_polygon(pts, col, Stroke::NONE));
+        // Karte
+        let n = NEWS.len() as f32;
+        let (cw, ch) = (500.0f32.min(r.width() - 40.0), 150.0 + 70.0 + 46.0 + 36.0 + n * 30.0 + 96.0);
+        let card_a = a(0.0);
+        let rc = Rect::from_center_size(Pos2::new(r.center().x, r.center().y + (1.0 - card_a) * 18.0), Vec2::new(cw, ch));
+        let cx = rc.center().x;
+        let top = rc.top();
+        glass(&p, rc);
+
+        // Ring mit Haken, ein einmaliger Lichtimpuls dahinter
+        let c = Pos2::new(cx, top + 78.0);
+        let ring_f = ease_out(tsf / 1.0);
+        let pulse = ((tsf - 0.9) / 1.4).clamp(0.0, 1.0);
+        radial(&p, c, 90.0, GREEN, 0.14 * ring_f);
+        if pulse > 0.0 && pulse < 1.0 {
+            p.circle_stroke(c, 40.0 + 60.0 * pulse, Stroke::new(1.5, GREEN.gamma_multiply(0.45 * (1.0 - pulse))));
+        }
+        p.circle_filled(c, 40.0, GREEN.gamma_multiply(0.10));
+        ring(&p, c, 34.0, ring_f, 4.0, GREEN);
+        tick(&p, c, 24.0, GREEN, ease_out((tsf - 0.8) / 0.5));
+
+        // Wenige, ruhige Lichtfunken beim Erscheinen
+        let fade = (1.0 - ((tsf - 1.0) / 2.2)).clamp(0.0, 1.0);
+        if tsf > 0.8 && fade > 0.0 {
+            for i in 0..26u32 {
+                let ang = rnd(i, 1) * 2.0 * PI;
+                let sp = 60.0 + rnd(i, 2) * 120.0;
+                let lt = tsf - 0.8;
+                let d = sp * (1.0 - (-lt * 1.6).exp());
+                let pos = Pos2::new(c.x + ang.cos() * d, c.y + ang.sin() * d + lt * lt * 10.0);
+                let col = [GREEN, th_blue_light(), Color32::WHITE][i as usize % 3];
+                p.circle_filled(pos, 1.4 + rnd(i, 3) * 1.6, col.gamma_multiply(0.8 * fade));
             }
         }
 
-        // Erfolgs-Ring
-        let c = Pos2::new(cx, top + 110.0);
-        let ring_f = ease_out(tsf / 1.1);
-        let pop = 1.0 + 0.06 * ((tsf - 1.0).max(0.0) * 6.0).sin() * (-(tsf - 1.0).max(0.0) * 3.0).exp();
-        p.circle_filled(c, 96.0 * pop, GREEN.gamma_multiply(0.07 + 0.05 * ring_f));
-        ring(&p, c, 64.0 * pop, ring_f, 9.0, GREEN);
-        tick(&p, c, 44.0 * pop, GREEN, ease_out((tsf - 0.9) / 0.6));
+        // Titel
+        let a1 = a(1.1);
+        p.text(Pos2::new(cx, top + 150.0 + slide(1.1)), Align2::CENTER_TOP, "Update installiert", FontId::proportional(28.0), Color32::WHITE.gamma_multiply(a1));
+        let a2 = a(1.4);
+        p.text(Pos2::new(cx, top + 188.0 + slide(1.4)), Align2::CENTER_TOP, format!("Du nutzt jetzt Version {to}"), FontId::proportional(14.5), TEXT_DIM.gamma_multiply(a2));
 
-        let a = |delay: f32| ease_out((tsf - delay) / 0.6);
-        let slide = |delay: f32| (1.0 - a(delay)) * 14.0;
-
-        let a1 = a(1.2);
-        p.text(Pos2::new(cx, top + 210.0 + slide(1.2)), Align2::CENTER_TOP, "Update installiert", FontId::proportional(34.0), Color32::WHITE.gamma_multiply(a1));
-        let a2 = a(1.6);
-        p.text(Pos2::new(cx, top + 256.0 + slide(1.6)), Align2::CENTER_TOP, format!("Du nutzt jetzt Version {to}"), FontId::proportional(16.0), Color32::from_rgb(190, 205, 235).gamma_multiply(a2));
-
-        let a3 = a(2.0);
-        let y = top + 312.0;
+        // Versionsspruenge
+        let a3 = a(1.7);
+        let y = top + 240.0;
         let wf = p.layout_no_wrap(from.to_string(), FontId::monospace(17.0), TEXT_DIM).size().x + 30.0;
         let wt = p.layout_no_wrap(to.to_string(), FontId::monospace(17.0), GREEN).size().x + 30.0;
         let gap = 60.0;
@@ -660,30 +657,35 @@ pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> boo
             chip(&p, Pos2::new(left + wf + gap + wt / 2.0, y), to, true, a3);
         }
 
-        // Neuigkeiten
-        let mut ny = y + 52.0;
-        p.text(Pos2::new(cx, ny), Align2::CENTER_TOP, "NEU IN DIESER VERSION", FontId::proportional(11.5), th_blue_light().gamma_multiply(a(2.4)));
-        ny += 24.0;
+        // Trennlinie und Neuigkeiten
+        let mut ny = y + 36.0;
+        let a4 = a(2.1);
+        p.line_segment([Pos2::new(rc.left() + 36.0, ny), Pos2::new(rc.right() - 36.0, ny)], Stroke::new(1.0, Color32::from_white_alpha((22.0 * a4) as u8)));
+        ny += 16.0;
+        p.text(Pos2::new(rc.left() + 40.0, ny), Align2::LEFT_TOP, "NEU IN DIESER VERSION", FontId::proportional(11.0), th_blue_light().gamma_multiply(a4));
+        ny += 26.0;
         for (i, line) in NEWS.iter().enumerate() {
-            let d = 2.6 + i as f32 * 0.35;
+            let d = 2.4 + i as f32 * 0.3;
             let al = a(d);
-            p.circle_filled(Pos2::new(cx - 190.0, ny + 9.0 + slide(d)), 3.5, GREEN.gamma_multiply(al));
-            p.text(Pos2::new(cx - 176.0, ny + slide(d)), Align2::LEFT_TOP, *line, FontId::proportional(14.5), Color32::from_rgb(210, 220, 240).gamma_multiply(al));
-            ny += 26.0;
+            let yy = ny + slide(d);
+            p.circle_filled(Pos2::new(rc.left() + 48.0, yy + 10.0), 9.0, GREEN.gamma_multiply(0.16 * al));
+            tick(&p, Pos2::new(rc.left() + 48.0, yy + 10.0), 9.0, GREEN.gamma_multiply(al), al);
+            p.text(Pos2::new(rc.left() + 68.0, yy), Align2::LEFT_TOP, *line, FontId::proportional(14.5), Color32::from_rgb(214, 223, 242).gamma_multiply(al));
+            ny += 30.0;
         }
 
         // Weiter-Knopf
-        let ab = a(4.2);
+        let ab = a(3.6);
         if ab > 0.01 {
-            egui::Area::new(egui::Id::new("welcome_btn")).order(egui::Order::Foreground).fixed_pos(Pos2::new(cx - 110.0, ny + 18.0)).show(ctx, |ui| {
+            egui::Area::new(egui::Id::new("welcome_btn")).order(egui::Order::Foreground).fixed_pos(Pos2::new(cx - 110.0, rc.bottom() - 70.0)).show(ctx, |ui| {
                 ui.set_opacity(ab);
                 if ui.add(big_button("Los geht's", th_blue()).min_size(Vec2::new(220.0, 46.0))).clicked() {
                     done = true;
                 }
             });
         }
-        // Nach 8 Sekunden von selbst weiter; Esc, Eingabe oder Leertaste beenden sofort
-        if ts > 8.0 || (ts > 0.4 && ctx.input(|i| i.key_pressed(Key::Escape) || i.key_pressed(Key::Enter) || i.key_pressed(Key::Space))) {
+        // Nach 9 Sekunden von selbst weiter; Esc, Eingabe oder Leertaste beenden sofort
+        if ts > 9.0 || (ts > 0.4 && ctx.input(|i| i.key_pressed(Key::Escape) || i.key_pressed(Key::Enter) || i.key_pressed(Key::Space))) {
             done = true;
         }
     });

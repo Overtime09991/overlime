@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.32";
+const VERSION: &str = "0.33";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -4323,8 +4323,8 @@ Gefunden: {}
     }
     if let Some(i) = std::env::args().position(|a| a == "--verify-sig") {
         let a: Vec<String> = std::env::args().collect();
-        let data = std::fs::read(&a[i + 1]).unwrap_or_default();
-        let sig = std::fs::read_to_string(&a[i + 2]).unwrap_or_default();
+        let data = a.get(i + 1).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
+        let sig = a.get(i + 2).and_then(|p| std::fs::read_to_string(p).ok()).unwrap_or_default();
         std::process::exit(if update::verify_signature(&data, &sig).is_ok() { 0 } else { 3 });
     }
     ffi::init();

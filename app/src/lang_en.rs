@@ -179,6 +179,7 @@ pub const EN: &[(&str, &str)] = &[
     (r##"Update startet OVERLIME nahtlos neu"##, r##"Update restarts OVERLIME seamlessly"##),
     (r##"Schlichteres, flaches Design für Knöpfe und Auswahl"##, r##"Cleaner, flat design for buttons and selectors"##),
     (r##"Ruhige Vorschau der Statusanzeige"##, r##"Calm status display preview"##),
+    (r##"Neuer, ruhiger Update-Abschlussbildschirm"##, r##"New, calm update completion screen"##),
     (r##"Mit Windows starten (Symbol im Hintergrund)"##, r##"Start with Windows (icon in the background)"##),
     (r##"Mit einem Klick schickst du den Fehlerbericht ab, damit wir den Grund finden. Er enthält keine IP-Adressen und keine Passwörter."##, r##"With one click you send the error report so we can find the cause. It contains no IP addresses and no passwords."##),
     (r##"Mit {} Mbit/s läuft es vermutlich ruhiger."##, r##"It will probably run smoother at {} Mbit/s."##),
