@@ -1,0 +1,121 @@
+//! Automatische Updates über GitHub Releases.
+//! Erwartet im neuesten Release die Dateien `overlime.exe` und `overlime.exe.sha256`.
+use sha2::{Digest, Sha256};
+use std::io::Read;
+
+/// "besitzer/repository" auf GitHub. Leer = Updates aus.
+pub const UPDATE_REPO: &str = "Overtime09991/overlime";
+
+#[derive(Clone, Debug)]
+pub struct Release {
+    pub version: String,
+    pub url: String,
+    pub sha_url: String,
+    pub notes: String,
+}
+
+fn parse_ver(v: &str) -> Vec<u32> {
+    v.trim().trim_start_matches(['v', 'V']).split('.').map(|p| p.parse().unwrap_or(0)).collect()
+}
+
+fn is_newer(remote: &str, local: &str) -> bool {
+    let (a, b) = (parse_ver(remote), parse_ver(local));
+    for i in 0..a.len().max(b.len()) {
+        let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
+        if x != y {
+            return x > y;
+        }
+    }
+    false
+}
+
+pub fn enabled() -> bool {
+    !UPDATE_REPO.is_empty()
+}
+
+/// Räumt die alte exe vom letzten Update weg.
+pub fn cleanup_old() {
+    if let Ok(exe) = std::env::current_exe() {
+        let _ = std::fs::remove_file(exe.with_extension("old"));
+    }
+}
+
+/// Prüft, ob es eine neuere Version gibt. Blockierend.
+pub fn check(current: &str) -> Result<Option<Release>, String> {
+    if !enabled() {
+        return Ok(None);
+    }
+    let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
+    let v: serde_json::Value = ureq::get(&url)
+        .set("User-Agent", "overlime-updater")
+        .set("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_json()
+        .map_err(|e| e.to_string())?;
+    let tag = v["tag_name"].as_str().unwrap_or("");
+    if !is_newer(tag, current) {
+        return Ok(None);
+    }
+    let mut exe = None;
+    let mut sha = None;
+    if let Some(assets) = v["assets"].as_array() {
+        for a in assets {
+            let name = a["name"].as_str().unwrap_or("");
+            let dl = a["browser_download_url"].as_str().unwrap_or("").to_string();
+            if name == "overlime.exe" {
+                exe = Some(dl);
+            } else if name == "overlime.exe.sha256" {
+                sha = Some(dl);
+            }
+        }
+    }
+    match (exe, sha) {
+        (Some(url), Some(sha_url)) => Ok(Some(Release {
+            version: tag.trim_start_matches(['v', 'V']).to_string(),
+            url,
+            sha_url,
+            notes: v["body"].as_str().unwrap_or("").chars().take(400).collect(),
+        })),
+        _ => Err("Release ohne overlime.exe/overlime.exe.sha256".into()),
+    }
+}
+
+fn download(url: &str, limit: u64) -> Result<Vec<u8>, String> {
+    let resp = ureq::get(url)
+        .set("User-Agent", "overlime-updater")
+        .timeout(std::time::Duration::from_secs(300))
+        .call()
+        .map_err(|e| e.to_string())?;
+    let mut buf = Vec::new();
+    resp.into_reader().take(limit).read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
+/// Lädt das Update, prüft die Prüfsumme, ersetzt die laufende exe und startet neu.
+pub fn install(rel: &Release) -> Result<(), String> {
+    let sha_txt = String::from_utf8(download(&rel.sha_url, 4096)?).map_err(|e| e.to_string())?;
+    let expected = sha_txt.split_whitespace().next().unwrap_or("").to_lowercase();
+    if expected.len() != 64 {
+        return Err("Ungültige Prüfsumme".into());
+    }
+    let data = download(&rel.url, 250 * 1024 * 1024)?;
+    let got: String = Sha256::digest(&data).iter().map(|b| format!("{b:02x}")).collect();
+    if got != expected {
+        return Err("Prüfsumme stimmt nicht – Update abgebrochen".into());
+    }
+    if data.len() < 1_000_000 || &data[..2] != b"MZ" {
+        return Err("Heruntergeladene Datei ist keine gültige Programmdatei".into());
+    }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let old = exe.with_extension("old");
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(&exe, &old).map_err(|e| format!("Ersetzen nicht möglich: {e}"))?;
+    if let Err(e) = std::fs::write(&exe, &data) {
+        let _ = std::fs::rename(&old, &exe);
+        return Err(format!("Schreiben fehlgeschlagen: {e}"));
+    }
+    std::process::Command::new(&exe).spawn().map_err(|e| e.to_string())?;
+    std::process::exit(0);
+}

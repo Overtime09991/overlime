@@ -1,0 +1,20 @@
+[package]
+name = "psplay"
+version = "0.3.0"
+edition = "2021"
+description = "OVERLIME – eigener PS4/PS5 Remote Play Client"
+
+[dependencies]
+eframe = "0.29"
+ureq = { version = "2", features = ["json"] }
+serde_json = "1"
+base64 = "0.22"
+cpal = "0.15"
+gilrs = "0.11"
+sha2 = "0.10"
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+codegen-units = 4
+strip = true
