@@ -21,6 +21,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
 - **Ton inklusive.** Spielton direkt auf deinem Standard-Wiedergabegerät.
+- **Nichts aus Versehen.** Esc öffnet nur ein Pause-Menü, und das Schließen des Fensters mitten im Stream fragt nach.
 - **Bleibt aktuell.** Neue Versionen lädt die App selbst, prüft sie und startet neu.
 
 ## In drei Schritten loslegen
@@ -48,7 +49,7 @@ Mit **⚡ Maximale Qualität** stellst du alles auf einmal auf das Beste.
 
 ## Steuerung
 
-Controller werden automatisch erkannt (Menüs: Steuerkreuz/Stick = Auswahl, Kreuz = Bestätigen, L1/R1 = Seite wechseln). Ohne Controller:
+Controller werden automatisch erkannt (Menüs: Steuerkreuz/Stick = Auswahl, Kreuz = Bestätigen, L1/R1 = Seite wechseln). Ohne Controller geht es mit der Tastatur, alle Tasten sind in den Einstellungen frei belegbar. Standardbelegung:
 
 | Taste | Funktion |
 | --- | --- |
@@ -58,7 +59,9 @@ Controller werden automatisch erkannt (Menüs: Steuerkreuz/Stick = Auswahl, Kreu
 | Z / X | L1 / R1 |
 | Shift / Strg | L2 / R2 |
 | Tab / Rücktaste / F2 | Options / Share / PS-Taste |
-| F11 / Esc | Vollbild / Stream beenden |
+| F11 | Vollbild |
+| Esc | Pause-Menü (beendet nichts aus Versehen) |
+| F1 / F10 | Tastenbelegung / Statusanzeige |
 
 ## Datenschutz
 

@@ -11,6 +11,8 @@ serde_json = "1"
 base64 = "0.22"
 cpal = "0.15"
 sha2 = "0.10"
+egui-phosphor = "0.7"
+discord-rich-presence = "1"
 
 [profile.release]
 opt-level = 3

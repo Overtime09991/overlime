@@ -2,6 +2,7 @@
 mod audio;
 mod discovery;
 mod ffi;
+mod keys;
 mod pad;
 mod pages;
 mod psn;
@@ -31,7 +32,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.9";
+const VERSION: &str = "0.10";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -108,6 +109,7 @@ struct App {
     update: Option<update::Release>,
     update_busy: bool,
     update_err: String,
+    skip_login: bool,
     login_pasted: String,
     login_busy: bool,
     login_error: String,
@@ -115,6 +117,14 @@ struct App {
     log: String,
     pad: pad::Pad,
     nav_prev: u32,
+    stream_menu: bool,
+    show_keys: bool,
+    show_hud: bool,
+    capturing: Option<usize>,
+    capture_since: f64,
+    key_note: String,
+    allow_close: bool,
+    close_hint: bool,
     fullscreen: bool,
     status: String,
     searching: bool,
@@ -148,6 +158,7 @@ impl App {
             update: None,
             update_busy: false,
             update_err: String::new(),
+            skip_login: false,
             login_pasted: String::new(),
             login_busy: false,
             login_error: String::new(),
@@ -155,6 +166,14 @@ impl App {
             log: String::new(),
             pad: pad::Pad::new(),
             nav_prev: 0,
+            stream_menu: false,
+            show_keys: false,
+            show_hud: true,
+            capturing: None,
+            capture_since: 0.0,
+            key_note: String::new(),
+            allow_close: false,
+            close_hint: false,
             fullscreen: false,
             status: String::new(),
             searching: false,
@@ -306,6 +325,9 @@ impl App {
     }
 
     fn stop_stream(&mut self, ctx: &egui::Context) {
+        self.stream_menu = false;
+        self.show_keys = false;
+        self.close_hint = false;
         self.session = None; // Drop beendet die Sitzung
         self.starting = None;
         if self.fullscreen {
@@ -809,7 +831,37 @@ impl App {
             ui.add_space(6.0);
             section(ui, "🎮  Steuerung", |ui| {
                 ui.checkbox(&mut st.rumble, "Controller-Vibration");
-                ui.label(RichText::new("Controller: Xbox/PlayStation/Generic werden automatisch erkannt.\nTastatur: WASD = linker Stick, Pfeiltasten = Steuerkreuz, Leertaste = Kreuz, E = Kreis, Q = Quadrat, R = Dreieck,\nZ/X = L1/R1, Shift/Strg = L2/R2, Tab = Options, Rücktaste = Share, F2 = PS-Taste.").color(TEXT_DIM).size(12.5));
+                ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt. Die Tastatur stellst du weiter unten ein.").color(TEXT_DIM).size(12.5));
+            });
+            ui.add_space(6.0);
+            section(ui, "⌨  Tastatur", |ui| {
+                ui.label(RichText::new("Alle Tasten sind frei belegbar: Auf eine Taste klicken, dann die neue Taste drücken (Esc bricht ab).").color(TEXT_DIM).size(12.5));
+                ui.add_space(4.0);
+                egui::Grid::new("kbgrid").num_columns(2).spacing([20.0, 6.0]).show(ui, |ui| {
+                    for (i, act) in keys::ACTIONS.iter().enumerate() {
+                        ui.label(act.label);
+                        let cap = self.capturing == Some(i);
+                        let text = if cap { "Drücke eine Taste …".to_string() } else { keys::pretty(&st.keys[i]) };
+                        let b = egui::Button::new(RichText::new(text).monospace())
+                            .fill(if cap { BLUE } else { CARD_HOVER })
+                            .rounding(8.0)
+                            .min_size(Vec2::new(180.0, 28.0));
+                        if ui.add(b).clicked() {
+                            self.capturing = Some(i);
+                            self.capture_since = ui.ctx().input(|inp| inp.time);
+                            self.key_note.clear();
+                        }
+                        ui.end_row();
+                    }
+                });
+                if !self.key_note.is_empty() {
+                    ui.label(RichText::new(&self.key_note).color(YELLOW).size(12.5));
+                }
+                if ui.add(egui::Button::new("Auf Standard zurücksetzen").fill(CARD_HOVER).rounding(10.0)).clicked() {
+                    st.keys = keys::defaults();
+                    self.capturing = None;
+                    self.key_note.clear();
+                }
             });
             ui.add_space(6.0);
             section(ui, "🌐  Verbindung", |ui| {
@@ -970,40 +1022,135 @@ impl App {
         }
     }
 
-    fn keyboard_input(ctx: &egui::Context) -> pad::Input {
+    /// Pause-Menü und Tastenbelegung im Stream. Gibt (weiter, vollbild, tasten, stream_beenden, app_beenden) zurück.
+    fn stream_overlays(&mut self, ctx: &egui::Context) -> (bool, bool, bool, bool, bool) {
+        let (mut resume, mut fs, mut keys_btn, mut stop, mut quit) = (false, false, false, false, false);
+        if self.stream_menu {
+            egui::Area::new(egui::Id::new("menu_dim")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
+                let r = ctx.screen_rect();
+                ui.painter().rect_filled(r, Rounding::ZERO, Color32::from_black_alpha(150));
+                ui.allocate_rect(r, egui::Sense::click());
+            });
+            egui::Window::new("pause")
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::CENTER_CENTER, [0.0, 0.0])
+                .order(egui::Order::Tooltip)
+                .frame(egui::Frame::none().fill(CARD).rounding(20.0).stroke(Stroke::new(1.0, BLUE.gamma_multiply(0.5))).inner_margin(egui::Margin::same(26.0)))
+                .show(ctx, |ui| {
+                    ui.set_width(360.0);
+                    ui.label(RichText::new("Pause-Menü").size(22.0).strong());
+                    if self.close_hint {
+                        ui.label(RichText::new("Der Stream läuft noch. Willst du wirklich schließen?").color(YELLOW).size(13.5));
+                    } else {
+                        ui.label(RichText::new("Dein Spiel läuft auf der Konsole weiter.").color(TEXT_DIM).size(13.0));
+                    }
+                    ui.add_space(8.0);
+                    if ui.add(big_button("Weiter (Esc)", BLUE).min_size(Vec2::new(360.0, 46.0))).clicked() {
+                        resume = true;
+                    }
+                    if ui.add(big_button("Vollbild (F11)", CARD_HOVER).min_size(Vec2::new(360.0, 42.0))).clicked() {
+                        fs = true;
+                    }
+                    if ui.add(big_button("Tastenbelegung (F1)", CARD_HOVER).min_size(Vec2::new(360.0, 42.0))).clicked() {
+                        keys_btn = true;
+                    }
+                    ui.add_space(4.0);
+                    if ui.add(big_button("Stream beenden", RED.gamma_multiply(0.55)).min_size(Vec2::new(360.0, 42.0))).clicked() {
+                        stop = true;
+                    }
+                    if ui.add(egui::Button::new(RichText::new("OVERLIME komplett schließen").color(TEXT_DIM)).frame(false)).clicked() {
+                        quit = true;
+                    }
+                });
+        }
+        if self.show_keys {
+            egui::Window::new("keys")
+                .title_bar(false)
+                .collapsible(false)
+                .resizable(false)
+                .anchor(Align2::LEFT_TOP, [16.0, 40.0])
+                .order(egui::Order::Foreground)
+                .frame(egui::Frame::none().fill(Color32::from_black_alpha(215)).rounding(14.0).inner_margin(egui::Margin::same(16.0)))
+                .show(ctx, |ui| {
+                    ui.label(RichText::new("Tastenbelegung (F1 oder Esc schließt)").strong());
+                    ui.add_space(4.0);
+                    egui::Grid::new("keys_ov").num_columns(4).spacing([18.0, 3.0]).show(ui, |ui| {
+                        for (n, act) in keys::ACTIONS.iter().enumerate() {
+                            ui.label(RichText::new(keys::pretty(&self.settings.keys[n])).monospace().color(BLUE_LIGHT).size(12.0));
+                            ui.label(RichText::new(act.label).size(12.0));
+                            if n % 2 == 1 {
+                                ui.end_row();
+                            }
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Esc = Menü   F11 = Vollbild   F10 = Statusanzeige").color(TEXT_DIM).size(11.5));
+                });
+        }
+        (resume, fs, keys_btn, stop, quit)
+    }
+
+    /// Tasten-Belegung aufnehmen (Einstellungen, Abschnitt Tastatur).
+    fn process_capture(&mut self, ctx: &egui::Context, t: f64) {
+        let Some(idx) = self.capturing else { return };
+        if t - self.capture_since < 0.2 {
+            return;
+        }
+        let mut chosen: Option<String> = None;
+        let mut cancel = false;
         ctx.input(|i| {
-            let mut b = 0u32;
-            let k = |key: Key| i.key_down(key);
-            if k(Key::Space) { b |= 1 << 0; }
-            if k(Key::E) { b |= 1 << 1; }
-            if k(Key::Q) { b |= 1 << 2; }
-            if k(Key::R) { b |= 1 << 3; }
-            if k(Key::ArrowLeft) { b |= 1 << 4; }
-            if k(Key::ArrowRight) { b |= 1 << 5; }
-            if k(Key::ArrowUp) { b |= 1 << 6; }
-            if k(Key::ArrowDown) { b |= 1 << 7; }
-            if k(Key::Z) { b |= 1 << 8; }
-            if k(Key::X) { b |= 1 << 9; }
-            if k(Key::Tab) { b |= 1 << 12; }
-            if k(Key::Backspace) { b |= 1 << 13; }
-            if k(Key::F2) { b |= 1 << 15; }
-            let ax = |neg: Key, pos: Key| -> i16 {
-                (if k(pos) { 32000 } else { 0 }) - (if k(neg) { 32000 } else { 0 })
-            };
-            pad::Input {
-                buttons: b,
-                l2: if i.modifiers.shift { 255 } else { 0 },
-                r2: if i.modifiers.ctrl { 255 } else { 0 },
-                lx: ax(Key::A, Key::D),
-                ly: ax(Key::W, Key::S),
-                rx: 0,
-                ry: 0,
+            for e in &i.events {
+                if let egui::Event::Key { key, pressed: true, .. } = e {
+                    if *key == Key::Escape {
+                        cancel = true;
+                    } else {
+                        chosen = Some(key.name().to_string());
+                    }
+                }
             }
-        })
+            if chosen.is_none() && !cancel {
+                if i.modifiers.shift {
+                    chosen = Some("Shift".into());
+                } else if i.modifiers.ctrl {
+                    chosen = Some("Ctrl".into());
+                } else if i.modifiers.alt {
+                    chosen = Some("Alt".into());
+                }
+            }
+        });
+        if cancel {
+            self.capturing = None;
+            return;
+        }
+        if let Some(name) = chosen {
+            let mut note = String::new();
+            for (j, k) in self.settings.keys.iter_mut().enumerate() {
+                if j != idx && *k == name {
+                    *k = String::new();
+                    note = format!("{} war schon bei \"{}\" belegt und wurde dort entfernt.", keys::pretty(&name), keys::ACTIONS[j].label);
+                }
+            }
+            self.settings.keys[idx] = name;
+            self.key_note = note;
+            self.capturing = None;
+        }
+    }
+
+    /// Tastatur nur auswerten, wenn das Fenster aktiv ist und kein Menü offen ist.
+    fn keyboard_input(&self, ctx: &egui::Context) -> pad::Input {
+        let neutral = pad::Input { buttons: 0, l2: 0, r2: 0, lx: 0, ly: 0, rx: 0, ry: 0 };
+        if self.stream_menu || self.show_keys || ctx.wants_keyboard_input() || !ctx.input(|i| i.focused) {
+            return neutral;
+        }
+        ctx.input(|i| keys::eval(i, &self.settings.keys))
     }
 
     fn stream_ui(&mut self, ctx: &egui::Context) {
         let mut stop = false;
+        let mut open_menu = false;
+        let show_hud = self.show_hud;
         let mut toggle_fs = false;
         let mut copy_log = false;
         let opts = match self.settings.upscale {
@@ -1012,7 +1159,7 @@ impl App {
         };
         // Eingabe sammeln (Controller + Tastatur)
         let pad_in = self.pad.poll();
-        let kb = Self::keyboard_input(ctx);
+        let kb = self.keyboard_input(ctx);
         let input = pad::Input {
             buttons: pad_in.buttons | kb.buttons,
             l2: pad_in.l2.max(kb.l2),
@@ -1022,6 +1169,7 @@ impl App {
             rx: pad_in.rx,
             ry: pad_in.ry,
         };
+        let input = if self.stream_menu { pad::Input { buttons: 0, l2: 0, r2: 0, lx: 0, ly: 0, rx: 0, ry: 0 } } else { input };
         let pad_connected = self.pad.connected();
         let log_tail: String = self.log.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
 
@@ -1131,15 +1279,17 @@ impl App {
                     if s.lost > 0 { format!("  •  {} Pakete verloren", s.lost) } else { String::new() },
                     if pad_connected { "  •  🎮" } else { "" }
                 );
-                ui.painter().text(full.left_top() + Vec2::new(14.0, 12.0), Align2::LEFT_TOP, hud, FontId::monospace(12.0), Color32::from_white_alpha(150));
+                if show_hud {
+                    ui.painter().text(full.left_top() + Vec2::new(14.0, 12.0), Align2::LEFT_TOP, hud, FontId::monospace(12.0), Color32::from_white_alpha(150));
+                }
                 if show_ui {
                     egui::Area::new(egui::Id::new("bar")).order(egui::Order::Foreground).anchor(Align2::RIGHT_TOP, [-14.0, 10.0]).show(ctx, |ui| {
                         ui.horizontal(|ui| {
                             if ui.add(egui::Button::new("Vollbild (F11)").fill(CARD).rounding(10.0)).clicked() {
                                 toggle_fs = true;
                             }
-                            if ui.add(egui::Button::new("Beenden (Esc)").fill(RED.gamma_multiply(0.5)).rounding(10.0)).clicked() {
-                                stop = true;
+                            if ui.add(egui::Button::new("Menü (Esc)").fill(CARD).rounding(10.0)).clicked() {
+                                open_menu = true;
                             }
                         });
                     });
@@ -1150,8 +1300,43 @@ impl App {
         if ctx.input(|i| i.key_pressed(Key::F11)) {
             toggle_fs = true;
         }
-        if ctx.input(|i| i.key_pressed(Key::Escape)) {
+        let (esc, f1, f10) = ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::F1), i.key_pressed(Key::F10)));
+        let state_now = self.session.as_ref().map(|s| s.state).unwrap_or(0);
+        if esc {
+            if self.show_keys {
+                self.show_keys = false;
+            } else if state_now == 1 {
+                self.stream_menu = !self.stream_menu;
+                self.close_hint = false;
+            }
+        }
+        if f1 && state_now == 1 {
+            self.show_keys = !self.show_keys;
+        }
+        if f10 {
+            self.show_hud = !self.show_hud;
+        }
+        if open_menu {
+            self.stream_menu = true;
+        }
+        let (o_resume, o_fs, o_keys, o_stop, o_quit) = self.stream_overlays(ctx);
+        if o_resume {
+            self.stream_menu = false;
+            self.close_hint = false;
+        }
+        if o_fs {
+            toggle_fs = true;
+        }
+        if o_keys {
+            self.stream_menu = false;
+            self.show_keys = true;
+        }
+        if o_stop {
             stop = true;
+        }
+        if o_quit {
+            self.allow_close = true;
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if copy_log {
             ctx.copy_text(self.log.clone());
@@ -1194,8 +1379,42 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let t = ctx.input(|i| i.time);
+        // Nie aus Versehen mitten im Stream schließen (X-Knopf, Alt+F4)
+        if self.session.is_some() && !self.allow_close && ctx.input(|i| i.viewport().close_requested()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.stream_menu = true;
+            self.close_hint = true;
+        }
         self.handle_messages(ctx);
         self.pump_log();
+        self.process_capture(ctx, t);
+        if self.session.is_none() && self.dialog.is_none() && self.capturing.is_none() && !ctx.wants_keyboard_input() {
+            let (f5, c1, c2, c3, c4) = ctx.input(|i| {
+                let c = i.modifiers.ctrl;
+                (
+                    i.key_pressed(Key::F5),
+                    c && i.key_pressed(Key::Num1),
+                    c && i.key_pressed(Key::Num2),
+                    c && i.key_pressed(Key::Num3),
+                    c && i.key_pressed(Key::Num4),
+                )
+            });
+            if f5 && !self.searching {
+                self.search();
+            }
+            if c1 {
+                self.page = Page::Home;
+            }
+            if c2 {
+                self.page = Page::Consoles;
+            }
+            if c3 {
+                self.page = Page::Settings;
+            }
+            if c4 {
+                self.page = Page::Help;
+            }
+        }
 
         if self.settings != self.saved {
             self.settings.save();
@@ -1209,7 +1428,7 @@ impl eframe::App for App {
         }
 
         // Erster Start: erst anmelden
-        if std::env::args().any(|a| a == "--login") || (psn::id_from_b64(&self.settings.psn_account).is_none() && !std::env::args().any(|a| a == "--demo")) {
+        if std::env::args().any(|a| a == "--login") || (!self.skip_login && psn::id_from_b64(&self.settings.psn_account).is_none() && !std::env::args().any(|a| a == "--demo")) {
             ctx.request_repaint_after(Duration::from_millis(33));
             self.login_screen(ctx, t);
             return;
@@ -1266,8 +1485,12 @@ impl eframe::App for App {
                 }
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
                     ui.label(RichText::new(format!("Version {VERSION}")).color(TEXT_DIM).size(12.0));
-                    let who = if self.settings.psn_name.is_empty() { "PlayStation-Konto".to_string() } else { self.settings.psn_name.clone() };
-                    ui.label(RichText::new(format!("Angemeldet: {who}")).color(GREEN).size(12.0));
+                    if psn::id_from_b64(&self.settings.psn_account).is_some() {
+                        let who = if self.settings.psn_name.is_empty() { "PlayStation-Konto".to_string() } else { self.settings.psn_name.clone() };
+                        ui.label(RichText::new(format!("Angemeldet: {who}")).color(GREEN).size(12.0));
+                    } else {
+                        ui.label(RichText::new("Nicht angemeldet").color(YELLOW).size(12.0));
+                    }
                     ui.label(RichText::new(if self.local_ip == "?" { "Netzwerk: offline" } else { "Netzwerk: verbunden" }).color(TEXT_DIM).size(12.0));
                     let q = format!("{} • {} FPS", ["540p", "720p", "1080p"][self.settings.resolution], [30, 60][self.settings.fps]);
                     ui.label(RichText::new(q).color(BLUE_LIGHT).size(12.0));

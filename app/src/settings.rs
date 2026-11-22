@@ -14,6 +14,7 @@ pub struct Settings {
     pub psn_name: String,
     pub auto_update: bool,
     pub manual_ip: String,
+    pub keys: Vec<String>,
 }
 
 impl Default for Settings {
@@ -30,6 +31,7 @@ impl Default for Settings {
             psn_name: String::new(),
             auto_update: true,
             manual_ip: String::new(),
+            keys: crate::keys::defaults(),
         }
     }
 }
@@ -68,6 +70,13 @@ impl Settings {
                 "psn_name" => s.psn_name = v.trim().to_string(),
                 "auto_update" => s.auto_update = v.trim() != "false",
                 "manual_ip" => s.manual_ip = v.trim().to_string(),
+                k if k.starts_with("key_") => {
+                    if let Ok(i) = k[4..].parse::<usize>() {
+                        if i < s.keys.len() {
+                            s.keys[i] = v.trim().to_string();
+                        }
+                    }
+                }
                 _ => {}
             }
         }
@@ -83,6 +92,10 @@ impl Settings {
             "resolution={}\nfps={}\nbitrate={}\ncodec={}\nupscale={}\nfullscreen={}\nrumble={}\npsn_account={}\npsn_name={}\nauto_update={}\nmanual_ip={}\n",
             self.resolution, self.fps, self.bitrate, self.codec, self.upscale, self.fullscreen, self.rumble, self.psn_account, self.psn_name, self.auto_update, self.manual_ip
         );
+        let mut text = text;
+        for (i, k) in self.keys.iter().enumerate() {
+            text.push_str(&format!("key_{i}={k}\n"));
+        }
         let _ = std::fs::write(p, text);
     }
 }

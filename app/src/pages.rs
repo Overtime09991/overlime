@@ -178,17 +178,20 @@ impl App {
                 ui.label(RichText::new("Menüs: Steuerkreuz oder linker Stick = Auswahl, Kreuz-Taste = Bestätigen, L1/R1 = Seite wechseln.").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
                 egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
+                    for (i, act) in keys::ACTIONS.iter().enumerate() {
+                        ui.label(RichText::new(keys::pretty(&self.settings.keys[i])).monospace().color(BLUE_LIGHT));
+                        ui.label(act.label);
+                        ui.end_row();
+                    }
                     for (k, v) in [
-                        ("W A S D", "Linker Stick"),
-                        ("Pfeiltasten", "Steuerkreuz"),
-                        ("Leertaste / E / Q / R", "Kreuz / Kreis / Quadrat / Dreieck"),
-                        ("Z / X", "L1 / R1"),
-                        ("Shift / Strg", "L2 / R2"),
-                        ("Tab / Rücktaste / F2", "Options / Share / PS-Taste"),
+                        ("Esc", "Menü im Stream (beendet nichts aus Versehen)"),
+                        ("F1", "Tastenbelegung im Stream anzeigen"),
+                        ("F10", "Statusanzeige ein/aus"),
                         ("F11", "Vollbild"),
-                        ("Esc", "Stream beenden"),
+                        ("F5", "Konsolen neu suchen"),
+                        ("Strg + 1 bis 4", "Seite wechseln"),
                     ] {
-                        ui.label(RichText::new(k).monospace().color(BLUE_LIGHT));
+                        ui.label(RichText::new(k).monospace().color(GREEN));
                         ui.label(v);
                         ui.end_row();
                     }
@@ -281,6 +284,11 @@ impl App {
                             }
                         }
                         ui.add_space(6.0);
+                        ui.vertical_centered(|ui| {
+                            if ui.add(egui::Button::new(RichText::new("Später anmelden").color(TEXT_DIM)).frame(false)).clicked() {
+                                self.skip_login = true;
+                            }
+                        });
                         ui.label(RichText::new("Dein Passwort gibst du nur auf der Seite von Sony ein. Die App speichert nur deine Konto-Nummer, kein Passwort.").color(TEXT_DIM).size(12.0));
                     });
             });
