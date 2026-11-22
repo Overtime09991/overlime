@@ -221,7 +221,7 @@ impl App {
                     tw,
                     "CONTROLLER",
                     if pad_ok { "Erkannt" } else { "Keiner" },
-                    &if pad_ok { pad_name.clone() } else { "Tastatur möglich".to_string() },
+                    &if pad_ok { pad_name.clone() } else { "Bitte anschließen".to_string() },
                     if pad_ok { GREEN } else { YELLOW },
                     ent[2],
                 );
@@ -245,7 +245,7 @@ impl App {
                     ui.add_space(4.0);
                     check_row(ui, !self.paired.is_empty(), "Konsole gekoppelt", "Code von „Gerät koppeln“ eingeben");
                     ui.add_space(4.0);
-                    check_row(ui, pad_ok, "Controller angeschlossen", "Optional – es geht auch mit Tastatur");
+                    check_row(ui, pad_ok, "Controller angeschlossen", "Zum Spielen nötig (PS5, PS4, Xbox oder anderer)");
                 });
 
                 // Schnellstart
@@ -438,7 +438,7 @@ impl App {
             ui.add_space(6.0);
             status_row(ui, if paired_any { 0 } else { 2 }, "Konsole gekoppelt", if paired_any { "Die Konsole ist gekoppelt." } else { "Noch nicht gekoppelt. Bei der Konsole auf „Koppeln“ klicken." });
             ui.add_space(6.0);
-            status_row(ui, if pad_ok { 0 } else { 1 }, "Controller", if pad_ok { "Ein Controller ist verbunden." } else { "Kein Controller erkannt. Das ist optional, es geht auch mit Tastatur." });
+            status_row(ui, if pad_ok { 0 } else { 1 }, "Controller", if pad_ok { "Ein Controller ist verbunden." } else { "Kein Controller erkannt. Zum Spielen schließt du einen an (USB oder Bluetooth)." });
             ui.add_space(6.0);
             let (us, ut) = if self.update.is_some() { (1, "Ein Update ist verfügbar.") } else if self.update_checked { (0, "OVERLIME ist auf dem neuesten Stand.") } else { (1, "Noch nicht geprüft.") };
             status_row(ui, us, "Version", &format!("{VERSION}. {ut}"));
@@ -634,18 +634,12 @@ impl App {
             ui.label(RichText::new("Tipp: Mit dem Symbol neben der Uhr (Einstellungen > App & Updates) weckt ein Klick die Konsole und verbindet automatisch.").color(TEXT_DIM).size(12.5));
         });
         ui.add_space(8.0);
-        section(ui, &format!("{}  Tasten", ic::KEYBOARD), |ui| {
-            ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt, inklusive Vibration. Diese Tastatur-Belegung gilt im Stream:").color(TEXT_DIM));
+        section(ui, &format!("{}  Kurztasten", ic::KEYBOARD), |ui| {
+            ui.label(RichText::new("Gespielt wird mit einem Controller (PS5, PS4, Xbox oder andere, automatisch erkannt, inklusive Vibration). Diese Kurztasten gibt es:").color(TEXT_DIM));
             ui.add_space(4.0);
             egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
-                for (i, act) in keys::ACTIONS.iter().enumerate() {
-                    ui.label(RichText::new(keys::pretty(&self.settings.keys[i])).monospace().color(th_blue_light()));
-                    ui.label(act.label);
-                    ui.end_row();
-                }
                 for (k, v) in [
                     ("Esc", "Menü im Stream (beendet nichts aus Versehen)"),
-                    ("F1", "Tastenbelegung im Stream anzeigen"),
                     ("F9", "Aufnahme starten/beenden (MP4 in Videos\\OVERLIME)"),
                     ("F10", "Statusanzeige ein/aus"),
                     ("F11", "Vollbild"),

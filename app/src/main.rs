@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.39";
+const VERSION: &str = "0.40";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -1222,9 +1222,6 @@ fn draw_stream_bar(ctx: &egui::Context, anim: f32, t: f64, ps5: bool, game: &str
                         if ui.add(ib(ic::SLIDERS)).on_hover_text("Schnell-Einstellungen: Schärfe, Qualität").clicked() {
                             fl.quick = true;
                         }
-                        if ui.add(ib(ic::KEYBOARD)).on_hover_text("Tastenbelegung (F1)").clicked() {
-                            fl.keys = true;
-                        }
                         if ui.add(ib(ic::CAMERA)).on_hover_text("Screenshot (F12)").clicked() {
                             fl.shot = true;
                         }
@@ -1658,13 +1655,12 @@ thread_local! {
 /// Kategorie (1 Bild & Ton, 2 Steuerung, 3 Darstellung, 4 Verbindung, 5 App & Updates) und Suchbegriffe je Abschnitt.
 fn section_meta(title: &str) -> (usize, &'static str) {
     let t = title.to_lowercase();
-    let table: [(&str, usize, &str); 12] = [
+    let table: [(&str, usize, &str); 11] = [
         ("statusanzeige", 3, "hud anzeige ping fps position oben links statistik einblendung uhrzeit"),
         ("aufnahmen", 1, "aufnahme video screenshot ordner mp4 aufnehmen"),
         ("videoqualität", 1, "auflösung bildrate fps bitrate codec hevc h.264 schärfe qualität 1080p zwischenbilder 120 hz interpolation flüssig"),
         ("ton", 1, "ton lautstärke audio lautsprecher sound"),
         ("steuerung", 2, "controller vibration touchpad gyro bewegung trigger led gamepad"),
-        ("tastatur", 2, "tastatur tasten belegung keyboard"),
         ("darstellung", 3, "größe skalierung fenster vollbild anzeige kompakt"),
         ("farbschema", 3, "farbe theme design themes schema"),
         ("verbindung", 4, "ip adresse konto abmelden playstation psn internet vpn tailscale"),
@@ -2163,41 +2159,7 @@ impl App {
             section(ui, &format!("{}  Steuerung", ic::GAME_CONTROLLER), |ui| {
                 ui.checkbox(&mut st.rumble, "Controller-Vibration");
                 ui.checkbox(&mut st.ds_features, "DualSense-Funktionen: Touchpad, Bewegungssensor, adaptive Trigger, Lichtleiste (gilt ab dem nächsten Stream)");
-                ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt. Die Tastatur stellst du weiter unten ein.").color(TEXT_DIM).size(12.5));
-            });
-            section(ui, &format!("{}  Tastatur", ic::KEYBOARD), |ui| {
-                ui.label(RichText::new("Die Tastatur steuert das Spiel nur, wenn du sie brauchst. Die Kurztasten (Esc, F1, F10, F11, F12, M) funktionieren immer.").color(TEXT_DIM).size(12.5));
-                ui.add_space(4.0);
-                segmented(ui, &mut st.kb_mode, &["Automatisch (nur ohne Controller)", "Immer", "Aus"]);
-                    egui::CollapsingHeader::new(RichText::new("Tasten anpassen").size(14.0).strong()).default_open(false).show(ui, |ui| {
-                ui.label(RichText::new("Auf eine Taste klicken, dann die neue Taste drücken (Esc bricht ab).").color(TEXT_DIM).size(12.5));
-                ui.add_space(4.0);
-                egui::Grid::new("kbgrid").num_columns(2).spacing([20.0, 6.0]).show(ui, |ui| {
-                    for (i, act) in keys::ACTIONS.iter().enumerate() {
-                        ui.label(act.label);
-                        let cap = self.capturing == Some(i);
-                        let text = if cap { "Drücke eine Taste …".to_string() } else { keys::pretty(&st.keys[i]) };
-                        let b = egui::Button::new(RichText::new(text).monospace())
-                            .fill(if cap { th_blue() } else { th_card_hover() })
-                            .rounding(8.0)
-                            .min_size(Vec2::new(180.0, 28.0));
-                        if ui.add(b).clicked() {
-                            self.capturing = Some(i);
-                            self.capture_since = ui.ctx().input(|inp| inp.time);
-                            self.key_note.clear();
-                        }
-                        ui.end_row();
-                    }
-                });
-                if !self.key_note.is_empty() {
-                    ui.label(RichText::new(&self.key_note).color(YELLOW).size(12.5));
-                }
-                if ui.add(egui::Button::new("Auf Standard zurücksetzen").fill(th_card_hover()).rounding(10.0)).clicked() {
-                    st.keys = keys::defaults();
-                    self.capturing = None;
-                    self.key_note.clear();
-                }
-                });
+                ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt.").color(TEXT_DIM).size(12.5));
             });
             section(ui, &format!("{}  Discord", ic::DISCORD_LOGO), |ui| {
                 let ready = !discord::DEFAULT_APP_ID.is_empty() || !st.discord_id.trim().is_empty();
@@ -2586,9 +2548,6 @@ impl App {
                         if tile(ui, ic::CORNERS_OUT, "Vollbild", tw, false) {
                             fs = true;
                         }
-                        if tile(ui, ic::KEYBOARD, "Tasten", tw, false) {
-                            keys_btn = true;
-                        }
                         if tile(ui, ic::CAMERA, "Screenshot", tw, false) {
                             shot = true;
                         }
@@ -2625,30 +2584,6 @@ impl App {
                     if ui.add(egui::Button::new(RichText::new("OVERLIME komplett schließen").color(TEXT_DIM)).frame(false)).clicked() {
                         quit = true;
                     }
-                });
-        }
-        if self.show_keys {
-            egui::Window::new("keys")
-                .title_bar(false)
-                .collapsible(false)
-                .resizable(false)
-                .anchor(Align2::LEFT_TOP, [16.0, 40.0])
-                .order(egui::Order::Foreground)
-                .frame(egui::Frame::none().fill(Color32::from_black_alpha(215)).rounding(14.0).inner_margin(egui::Margin::same(16.0)))
-                .show(ctx, |ui| {
-                    ui.label(RichText::new("Tastenbelegung (F1 oder Esc schließt)").strong());
-                    ui.add_space(4.0);
-                    egui::Grid::new("keys_ov").num_columns(4).spacing([18.0, 3.0]).show(ui, |ui| {
-                        for (n, act) in keys::ACTIONS.iter().enumerate() {
-                            ui.label(RichText::new(keys::pretty(&self.settings.keys[n])).monospace().color(th_blue_light()).size(12.0));
-                            ui.label(RichText::new(act.label).size(12.0));
-                            if n % 2 == 1 {
-                                ui.end_row();
-                            }
-                        }
-                    });
-                    ui.add_space(4.0);
-                    ui.label(RichText::new("Esc = Menü   F11 = Vollbild   F10 = Statusanzeige").color(TEXT_DIM).size(11.5));
                 });
         }
         if shot {
@@ -3178,11 +3113,9 @@ impl App {
 
     fn keyboard_input(&self, ctx: &egui::Context, pad_connected: bool) -> pad::Input {
         let neutral = pad::Input { buttons: 0, l2: 0, r2: 0, lx: 0, ly: 0, rx: 0, ry: 0 };
-        let off = self.settings.kb_mode == 2 || (self.settings.kb_mode == 0 && pad_connected);
-        if off || self.stream_menu || self.show_keys || ctx.wants_keyboard_input() || !ctx.input(|i| i.focused) {
-            return neutral;
-        }
-        ctx.input(|i| keys::eval(i, &self.settings.keys))
+        // Die Tastatur steuert das Spiel nicht mehr; nur die Kurztasten (Esc, F9 bis F12, M) bleiben.
+        let _ = (ctx, pad_connected);
+        neutral
     }
 
     fn stream_ui(&mut self, ctx: &egui::Context) {
@@ -3610,9 +3543,7 @@ impl App {
                 self.close_hint = false;
             }
         }
-        if f1 && state_now == 1 {
-            self.show_keys = !self.show_keys;
-        }
+        let _ = f1;
         if f10 {
             self.show_hud = !self.show_hud;
         }
