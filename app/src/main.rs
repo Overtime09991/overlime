@@ -33,7 +33,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.17";
+const VERSION: &str = "0.18";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -88,6 +88,12 @@ struct Session {
     has_video: bool,
     vsize: (usize, usize),
     nv12: Vec<u8>,
+    ping: f32,
+    dec_ms: f32,
+    kbps: u32,
+    loss_prev: i32,
+    loss_rate: f32,
+    loss_t: Instant,
     name: String,
     started: Instant,
     fps_count: u32,
@@ -161,6 +167,10 @@ struct App {
     audio_test: Option<(audio::Audio, f64)>,
     muted: bool,
     gl_ok: bool,
+    quick: bool,
+    last_connect: Option<(Console, Paired, (usize, usize, i32, usize))>,
+    pending_reconnect: Option<(Console, Paired, Instant)>,
+    reconnecting: bool,
     demo_gpu: Option<Arc<video::VideoGpu>>,
     close_hint: bool,
     fullscreen: bool,
@@ -249,6 +259,10 @@ impl App {
             audio_test: None,
             muted: false,
             gl_ok: false,
+            quick: false,
+            last_connect: None,
+            pending_reconnect: None,
+            reconnecting: false,
             demo_gpu: None,
             close_hint: false,
             fullscreen: false,
@@ -408,6 +422,7 @@ impl App {
         }
         self.start_error = None;
         self.starting = Some(c.name.clone());
+        self.last_connect = Some((c.clone(), p.clone(), (self.settings.resolution, self.settings.fps, self.settings.bitrate as i32, self.settings.codec)));
         let (w, h) = [(960, 540), (1280, 720), (1920, 1080)][self.settings.resolution];
         let fps = [30, 60][self.settings.fps];
         let hevc = match self.settings.codec {
@@ -424,6 +439,7 @@ impl App {
             bitrate_kbps: (self.settings.bitrate * 1000.0) as i32,
             hevc,
             hw_decode: true,
+            dualsense: self.settings.ds_features && self.pad.is_dualsense(),
         };
         let tx = self.tx.clone();
         let name = c.name.clone();
@@ -540,6 +556,7 @@ impl App {
                     }
                 }
                 Msg::StreamStarted(stream, name) => {
+                    self.reconnecting = false;
                     self.starting = None;
                     if !self.gl_ok {
                         stream.set_rgba(true);
@@ -567,6 +584,12 @@ impl App {
                         has_video: false,
                         vsize: (0, 0),
                         nv12: Vec::new(),
+                        ping: -1.0,
+                        dec_ms: 0.0,
+                        kbps: 0,
+                        loss_prev: 0,
+                        loss_rate: 0.0,
+                        loss_t: Instant::now(),
                         name,
                         started: Instant::now(),
                         fps_count: 0,
@@ -587,6 +610,7 @@ impl App {
                     }
                 }
                 Msg::StreamErr(e) => {
+                    self.reconnecting = false;
                     self.starting = None;
                     self.start_error = Some(mask_ips(&e));
                 }
@@ -783,8 +807,17 @@ fn tone_pull() -> audio::Pull {
     })
 }
 
+struct BarStats {
+    ping: f32,
+    dec: f32,
+    mbit: f32,
+    loss: f32,
+    pad: String,
+}
+
 #[derive(Default)]
 struct BarFlags {
+    quick: bool,
     menu: bool,
     fullscreen: bool,
     keys: bool,
@@ -793,7 +826,7 @@ struct BarFlags {
 }
 
 /// Elegante Leiste im Stream: Verbindungsstatus links, Schnellzugriffe rechts.
-fn draw_stream_bar(ctx: &egui::Context, anim: f32, t: f64, ps5: bool, game: &str, quality: &str, no_audio: Option<&str>, muted: bool, volume: &mut f32) -> BarFlags {
+fn draw_stream_bar(ctx: &egui::Context, anim: f32, t: f64, ps5: bool, game: &str, quality: &str, no_audio: Option<&str>, muted: bool, volume: &mut f32, stats: &BarStats) -> BarFlags {
     let mut fl = BarFlags::default();
     let w = ctx.screen_rect().width();
     let console_txt = if ps5 { "PlayStation 5" } else { "PlayStation 4" };
@@ -824,6 +857,9 @@ fn draw_stream_bar(ctx: &egui::Context, anim: f32, t: f64, ps5: bool, game: &str
                         if ui.add(ib(ic::CORNERS_OUT)).on_hover_text("Vollbild (F11)").clicked() {
                             fl.fullscreen = true;
                         }
+                        if ui.add(ib(ic::SLIDERS)).on_hover_text("Schnell-Einstellungen: Schärfe, Qualität").clicked() {
+                            fl.quick = true;
+                        }
                         if ui.add(ib(ic::KEYBOARD)).on_hover_text("Tastenbelegung (F1)").clicked() {
                             fl.keys = true;
                         }
@@ -843,6 +879,19 @@ fn draw_stream_bar(ctx: &egui::Context, anim: f32, t: f64, ps5: bool, game: &str
                         }
                         if w >= 860.0 {
                             ui.label(RichText::new(quality).size(12.5).color(TEXT_DIM));
+                        }
+                        if stats.ping >= 0.0 && w >= 760.0 {
+                            let qcol = if stats.ping < 40.0 && stats.loss < 0.5 { GREEN } else if stats.ping < 90.0 && stats.loss < 3.0 { YELLOW } else { RED };
+                            let total = stats.ping + stats.dec + 8.0;
+                            let tip = format!(
+                                "Verbindung\nPing zur Konsole: {:.0} ms\nDekodierung: {:.1} ms\nGesamt ca.: {:.0} ms (Ping + Dekodierung + ein Bild)\nDatenrate: {:.1} Mbit/s\nVerluste: {:.1} pro Sekunde",
+                                stats.ping, stats.dec, total, stats.mbit, stats.loss
+                            );
+                            let label = if w >= 1100.0 { format!("{}  {:.0} ms • {:.1} Mbit/s", ic::WIFI_HIGH, total, stats.mbit) } else { format!("{}  {:.0} ms", ic::WIFI_HIGH, total) };
+                            ui.label(RichText::new(label).size(12.5).color(qcol)).on_hover_text(tip);
+                        }
+                        if !stats.pad.is_empty() && w >= 1000.0 {
+                            ui.label(RichText::new(format!("{}  {}", ic::GAME_CONTROLLER, stats.pad)).size(12.5).color(TEXT_DIM));
                         }
                     });
                 });
@@ -1212,6 +1261,7 @@ impl App {
             ui.add_space(6.0);
             section(ui, &format!("{}  Steuerung", ic::GAME_CONTROLLER), |ui| {
                 ui.checkbox(&mut st.rumble, "Controller-Vibration");
+                ui.checkbox(&mut st.ds_features, "DualSense-Funktionen: Touchpad, Bewegungssensor, adaptive Trigger, Lichtleiste (gilt ab dem nächsten Stream)");
                 ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt. Die Tastatur stellst du weiter unten ein.").color(TEXT_DIM).size(12.5));
             });
             ui.add_space(6.0);
@@ -1491,6 +1541,66 @@ impl App {
         if !close {
             self.dialog = Some(d);
         }
+    }
+
+    /// Schnell-Einstellungen im Stream. Gibt true zurück, wenn die Qualität neu angewendet werden soll.
+    fn quick_panel(&mut self, ctx: &egui::Context) -> bool {
+        if !self.quick {
+            return false;
+        }
+        let mut apply = false;
+        let running = self.last_connect.as_ref().map(|(_, _, pr)| *pr);
+        let cur = (self.settings.resolution, self.settings.fps, self.settings.bitrate as i32, self.settings.codec);
+        let differs = running.map(|r| r != cur).unwrap_or(false);
+        egui::Window::new("quick")
+            .title_bar(false)
+            .collapsible(false)
+            .resizable(false)
+            .anchor(Align2::RIGHT_TOP, [-14.0, 64.0])
+            .order(egui::Order::Foreground)
+            .frame(egui::Frame::none().fill(Color32::from_rgba_unmultiplied(12, 16, 32, 240)).rounding(16.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.4))).inner_margin(egui::Margin::same(18.0)))
+            .show(ctx, |ui| {
+                ui.set_width(360.0);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("{}  Schnell-Einstellungen", ic::SLIDERS)).size(16.0).strong());
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new("X").fill(Color32::from_white_alpha(14)).rounding(8.0)).clicked() {
+                            self.quick = false;
+                        }
+                    });
+                });
+                ui.add_space(6.0);
+                ui.label(RichText::new("Bildschärfe (sofort)").strong().size(13.5));
+                segmented(ui, &mut self.settings.upscale, &["Aus", "Weich", "Scharf", "Ultra"]);
+                ui.add_enabled_ui(self.settings.upscale >= 2, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new("Stärke").size(12.5).color(TEXT_DIM));
+                        ui.add(egui::Slider::new(&mut self.settings.sharp, 0.0..=1.0).show_value(false));
+                    });
+                });
+                ui.checkbox(&mut self.show_hud, "Statusanzeige oben links (F10)");
+                ui.add_space(8.0);
+                ui.separator();
+                ui.add_space(4.0);
+                ui.label(RichText::new("Qualität (verbindet kurz neu)").strong().size(13.5));
+                ui.label(RichText::new("Die PlayStation legt Auflösung und Datenrate beim Verbinden fest.").color(TEXT_DIM).size(11.5));
+                segmented(ui, &mut self.settings.resolution, &["540p", "720p", "1080p"]);
+                segmented(ui, &mut self.settings.fps, &["30 FPS", "60 FPS"]);
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Bitrate").size(12.5).color(TEXT_DIM));
+                    ui.add(egui::Slider::new(&mut self.settings.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
+                });
+                segmented(ui, &mut self.settings.codec, &["Auto", "H.264", "HEVC"]);
+                ui.add_space(6.0);
+                if differs {
+                    if ui.add(big_button("Anwenden und neu verbinden", th_blue()).min_size(Vec2::new(324.0, 42.0))).clicked() {
+                        apply = true;
+                    }
+                } else {
+                    ui.label(RichText::new("Diese Qualität läuft gerade.").color(GREEN).size(12.5));
+                }
+            });
+        apply
     }
 
     /// Pause-Menü und Tastenbelegung im Stream. Gibt (weiter, vollbild, tasten, stream_beenden, app_beenden) zurück.
@@ -1827,6 +1937,7 @@ impl App {
         let mut open_menu = false;
         let mut bar_shot = false;
         let mut bar_keys = false;
+        let mut bar_quick = false;
         let show_hud = self.show_hud;
         let muted_now = self.muted;
         let mut toggle_fs = false;
@@ -1839,6 +1950,18 @@ impl App {
         // Eingabe sammeln (Controller + Tastatur)
         let pad_in = self.pad.poll();
         let pad_connected_now = self.pad.connected();
+        let ds_on = self.settings.ds_features;
+        let extra = if ds_on { self.pad.poll_extra() } else { pad::Extra::default() };
+        let pad_chip = if pad_connected_now {
+            let n = self.pad.name();
+            let short: String = n.chars().take(18).collect();
+            match self.pad.battery() {
+                Some(b) => format!("{short} • Akku {b}"),
+                None => short,
+            }
+        } else {
+            String::new()
+        };
         let kb = self.keyboard_input(ctx, pad_connected_now);
         let input = pad::Input {
             buttons: pad_in.buttons | kb.buttons,
@@ -1854,11 +1977,46 @@ impl App {
         let log_tail: String = self.log.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
 
         let up = self.settings.upscale.min(3);
-        let sharp = [0.0f32, 0.0, 0.55, 0.9][up];
+        let sharp = match up { 2 => self.settings.sharp, 3 => (self.settings.sharp + 0.35).min(1.0), _ => 0.0 };
         let nearest = up == 0;
         let con_info = self.session.as_ref().and_then(|s| self.consoles.iter().find(|c| c.name == s.name).map(|c| (c.is_ps5, c.running_app.clone())));
         let Some(s) = self.session.as_mut() else { return };
-        s.stream.set_input(input.buttons, input.l2, input.r2, input.lx, input.ly, input.rx, input.ry);
+        let mut ie = ffi::OlInputEx { buttons: input.buttons, l2: input.l2, r2: input.r2, lx: input.lx, ly: input.ly, rx: input.rx, ry: input.ry, ..Default::default() };
+        if ds_on {
+            ie.touch_down = [extra.touch_down[0] as i32, extra.touch_down[1] as i32];
+            ie.touch_x = extra.touch_x;
+            ie.touch_y = extra.touch_y;
+            ie.has_motion = extra.has_motion as i32;
+            ie.gyro = extra.gyro;
+            ie.accel = extra.accel;
+            ie.ts_us = (self.now * 1_000_000.0) as u64 as u32;
+        }
+        s.stream.set_input_ex(&ie);
+        if let Some(e) = s.stream.take_ctrl_events() {
+            if ds_on {
+                if e.trigger_new != 0 {
+                    let inten = self.pad.ds_intensity;
+                    self.pad.trigger_effects(e.type_left, &e.left, e.type_right, &e.right, inten);
+                }
+                if e.led_new != 0 {
+                    self.pad.set_led(e.led[0], e.led[1], e.led[2]);
+                }
+                if e.player_new != 0 {
+                    self.pad.set_player(e.player);
+                }
+            }
+        }
+        // Messwerte
+        let (ping, dec, kbps) = s.stream.net_stats();
+        s.ping = ping;
+        s.dec_ms = dec;
+        s.kbps = kbps;
+        if s.loss_t.elapsed() >= Duration::from_secs(1) {
+            let lost_now = s.stream.status().8;
+            s.loss_rate = (lost_now - s.loss_prev).max(0) as f32 / s.loss_t.elapsed().as_secs_f32();
+            s.loss_prev = lost_now;
+            s.loss_t = Instant::now();
+        }
         if let Some((l, r)) = s.stream.take_rumble() {
             if self.settings.rumble {
                 self.pad.rumble(l, r);
@@ -1920,7 +2078,7 @@ impl App {
         if activity {
             s.last_input = Instant::now();
         }
-        let show_ui = s.last_input.elapsed() < Duration::from_secs(3) || s.state != 1 || self.stream_menu || self.show_keys;
+        let show_ui = s.last_input.elapsed() < Duration::from_secs(3) || s.state != 1 || self.stream_menu || self.show_keys || self.quick;
         if !show_ui && s.state == 1 {
             ctx.set_cursor_icon(egui::CursorIcon::None);
         }
@@ -2014,13 +2172,14 @@ impl App {
                     }
                 };
                 let hud = format!(
-                    "{}x{}  •  {} FPS{}{}{}",
+                    "{}x{}  •  {} FPS{}{}{}{}",
                     s.size.0,
                     s.size.1,
                     s.fps,
                     if s.lost > 0 { format!("  •  {} Pakete verloren", s.lost) } else { String::new() },
                     if pad_connected { "  •  Controller".to_string() } else { String::new() },
-                    atxt
+                    atxt,
+                    if s.ping >= 0.0 { format!("  •  Ping {:.0} ms  •  Dek. {:.1} ms  •  {:.1} Mbit/s", s.ping, s.dec_ms, s.kbps as f32 / 1000.0) } else { String::new() }
                 );
                 if show_hud {
                     ui.painter().text(full.left_top() + Vec2::new(14.0, 12.0), Align2::LEFT_TOP, hud, FontId::monospace(12.0), Color32::from_white_alpha(150));
@@ -2030,9 +2189,13 @@ impl App {
                     let (ps5, game) = con_info.clone().unwrap_or((true, String::new()));
                     let no_audio = !muted_now && (atotal == 0 && s.started.elapsed() > Duration::from_secs(6) || s.audio.is_none());
                     let quality = format!("{}p • {} FPS", s.size.1, s.fps);
-                    let fl = draw_stream_bar(ctx, anim, self.now, ps5, &game, &quality, if no_audio { Some(atxt.trim_start_matches("  •  ")) } else { None }, self.muted, &mut self.settings.volume);
+                    let stats = BarStats { ping: s.ping, dec: s.dec_ms, mbit: s.kbps as f32 / 1000.0, loss: s.loss_rate, pad: pad_chip.clone() };
+                    let fl = draw_stream_bar(ctx, anim, self.now, ps5, &game, &quality, if no_audio { Some(atxt.trim_start_matches("  •  ")) } else { None }, self.muted, &mut self.settings.volume, &stats);
                     if fl.menu {
                         open_menu = true;
+                    }
+                    if fl.quick {
+                        bar_quick = true;
                     }
                     if fl.fullscreen {
                         toggle_fs = true;
@@ -2055,6 +2218,9 @@ impl App {
         }
         if bar_keys {
             self.show_keys = !self.show_keys;
+        }
+        if bar_quick {
+            self.quick = !self.quick;
         }
         if ctx.input(|i| i.key_pressed(Key::F11)) {
             toggle_fs = true;
@@ -2092,7 +2258,9 @@ impl App {
         let (esc, f1, f10) = ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::F1), i.key_pressed(Key::F10)));
         let state_now = self.session.as_ref().map(|s| s.state).unwrap_or(0);
         if esc {
-            if self.show_keys {
+            if self.quick {
+                self.quick = false;
+            } else if self.show_keys {
                 self.show_keys = false;
             } else if state_now == 1 {
                 self.stream_menu = !self.stream_menu;
@@ -2108,6 +2276,7 @@ impl App {
         if open_menu {
             self.stream_menu = true;
         }
+        let apply_quality = self.quick_panel(ctx);
         let (o_resume, o_fs, o_keys, o_stop, o_quit) = self.stream_overlays(ctx);
         if o_resume {
             self.stream_menu = false;
@@ -2126,6 +2295,15 @@ impl App {
         if o_quit {
             self.allow_close = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if apply_quality {
+            if let Some((c, p, _)) = self.last_connect.clone() {
+                self.quick = false;
+                self.stop_stream(ctx);
+                self.feedback = None;
+                self.reconnecting = true;
+                self.pending_reconnect = Some((c, p, Instant::now()));
+            }
         }
         if copy_log {
             ctx.copy_text(self.log.clone());
@@ -2280,8 +2458,30 @@ impl eframe::App for App {
         if std::env::args().any(|a| a == "--demo-bar") {
             egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |_| {});
             let mut vol = 1.0f32;
-            draw_stream_bar(ctx, 1.0, t, true, "EA SPORTS FC 26", "1080p • 60 FPS", Some("Ton: keine Daten von der Konsole"), false, &mut vol);
+            draw_stream_bar(ctx, 1.0, t, true, "EA SPORTS FC 26", "1080p • 60 FPS", Some("Ton: keine Daten von der Konsole"), false, &mut vol, &BarStats { ping: 11.0, dec: 3.2, mbit: 27.4, loss: 0.0, pad: "DualSense • Akku voll".to_string() });
+            if std::env::args().any(|a| a == "--demo-quick") {
+                self.quick = true;
+                self.quick_panel(ctx);
+            }
             ctx.request_repaint();
+            return;
+        }
+        // Qualität angewendet: kurz neu verbinden
+        if self.reconnecting && self.session.is_none() {
+            ctx.request_repaint();
+            egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |ui| {
+                let r = ui.max_rect();
+                let c = r.center();
+                ui.painter().text(c + Vec2::new(0.0, 40.0), Align2::CENTER_CENTER, "Neue Qualität wird angewendet …", FontId::proportional(20.0), Color32::WHITE);
+                ui.painter().text(c + Vec2::new(0.0, 72.0), Align2::CENTER_CENTER, "OVERLIME verbindet kurz neu", FontId::proportional(13.0), TEXT_DIM);
+                ui.put(Rect::from_center_size(c - Vec2::new(0.0, 20.0), Vec2::splat(44.0)), egui::Spinner::new().size(44.0));
+            });
+            let go = self.pending_reconnect.as_ref().map(|(_, _, t0)| t0.elapsed() > Duration::from_millis(2500)).unwrap_or(false);
+            if go {
+                if let Some((c, p, _)) = self.pending_reconnect.take() {
+                    self.connect(&c, &p);
+                }
+            }
             return;
         }
         // Update-Animation
@@ -2509,7 +2709,7 @@ fn selftest() {
     let r = ffi::register("127.0.0.1", "09000000", true, [1, 2, 3, 4, 5, 6, 7, 8], 12345678, "test");
     let _ = writeln!(f, "register -> {:?}", r.map(|p| p.nickname));
     let paired = Paired { console_id: "x".into(), ps5: true, nickname: "t".into(), rp_regist_key: [b'a'; 16], rp_key: [1; 16] };
-    let params = StreamParams { host: "127.0.0.1".into(), paired, width: 1920, height: 1080, fps: 60, bitrate_kbps: 30000, hevc: true, hw_decode: true };
+    let params = StreamParams { host: "127.0.0.1".into(), paired, width: 1920, height: 1080, fps: 60, bitrate_kbps: 30000, hevc: true, hw_decode: true, dualsense: false };
     match Stream::start(&params) {
         Ok(s) => {
             let _ = writeln!(f, "stream started");

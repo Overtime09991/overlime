@@ -27,6 +27,7 @@ typedef struct {
 	int bitrate_kbps;         // 0 = Standard des Presets
 	int codec;                // 0 = H.264, 1 = HEVC
 	int hw_decode;            // 1 = D3D11VA versuchen
+	int enable_dualsense;     // 1 = DualSense-Funktionen (Touchpad, Bewegung, Trigger) anfordern
 } OlStreamParams;
 
 typedef struct {
@@ -38,6 +39,9 @@ typedef struct {
 	uint32_t audio_rate, audio_channels;
 	int32_t frames_lost;
 	uint64_t audio_total;     // empfangene Ton-Samples (pro Kanal)
+	uint64_t rtt_us;          // Ping zur Konsole (Mikrosekunden)
+	float decode_ms;          // mittlere Dekodierzeit
+	uint32_t bitrate_kbps;    // empfangene Videodatenrate
 } OlStatus;
 
 typedef struct OlStream OlStream;
@@ -65,6 +69,32 @@ void ol_stream_set_input(OlStream *s, uint32_t buttons, uint8_t l2, uint8_t r2,
 		int16_t lx, int16_t ly, int16_t rx, int16_t ry);
 // Letzte Vibrationswerte der Konsole (0-255). Rueckgabe 1 wenn seit dem letzten Abruf neu.
 int ol_stream_take_rumble(OlStream *s, uint8_t *left, uint8_t *right);
+typedef struct {
+	uint32_t buttons;
+	uint8_t l2, r2;
+	int16_t lx, ly, rx, ry;
+	int touch_down[2];
+	float touch_x[2], touch_y[2];   // 0..1
+	int has_motion;
+	float gyro[3];                  // rad/s
+	float accel[3];                 // in g
+	uint32_t ts_us;
+} OlInputEx;
+void ol_stream_set_input_ex(OlStream *s, const OlInputEx *in);
+
+typedef struct {
+	int trigger_new;
+	uint8_t type_left, type_right;
+	uint8_t left[10], right[10];
+	int led_new;
+	uint8_t led[3];
+	int player_new;
+	uint8_t player;
+	int intensity_new;
+	uint8_t intensity;
+} OlCtrlEvents;
+// 1 wenn es neue Ereignisse (Trigger, Licht, Spielerindex) gab
+int ol_stream_take_ctrl_events(OlStream *s, OlCtrlEvents *out);
 void ol_stream_stop(OlStream *s);
 
 // Button-Masken (wie ChiakiControllerButton)

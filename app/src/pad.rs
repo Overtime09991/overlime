@@ -16,6 +16,29 @@ extern "C" {
     fn SDL_GameControllerName(c: *mut c_void) -> *const c_char;
     fn SDL_GameControllerGetJoystick(c: *mut c_void) -> *mut c_void;
     fn SDL_JoystickInstanceID(j: *mut c_void) -> i32;
+    fn SDL_GameControllerGetType(c: *mut c_void) -> c_int;
+    fn SDL_GameControllerGetNumTouchpads(c: *mut c_void) -> c_int;
+    fn SDL_GameControllerGetTouchpadFinger(c: *mut c_void, touchpad: c_int, finger: c_int, state: *mut u8, x: *mut f32, y: *mut f32, pressure: *mut f32) -> c_int;
+    fn SDL_GameControllerHasSensor(c: *mut c_void, t: c_int) -> c_int;
+    fn SDL_GameControllerSetSensorEnabled(c: *mut c_void, t: c_int, enabled: c_int) -> c_int;
+    fn SDL_GameControllerGetSensorData(c: *mut c_void, t: c_int, data: *mut f32, n: c_int) -> c_int;
+    fn SDL_GameControllerHasLED(c: *mut c_void) -> c_int;
+    fn SDL_GameControllerSetLED(c: *mut c_void, r: u8, g: u8, b: u8) -> c_int;
+    fn SDL_GameControllerSetPlayerIndex(c: *mut c_void, index: c_int);
+    fn SDL_GameControllerSendEffect(c: *mut c_void, data: *const c_void, size: c_int) -> c_int;
+    fn SDL_GameControllerGetFirmwareVersion(c: *mut c_void) -> u16;
+    fn SDL_JoystickCurrentPowerLevel(j: *mut c_void) -> c_int;
+}
+
+/// Zusatzdaten für DualSense: Touchpad und Bewegung.
+#[derive(Clone, Copy, Default)]
+pub struct Extra {
+    pub touch_down: [bool; 2],
+    pub touch_x: [f32; 2],
+    pub touch_y: [f32; 2],
+    pub has_motion: bool,
+    pub gyro: [f32; 3],
+    pub accel: [f32; 3],
 }
 
 const SDL_INIT_JOYSTICK: u32 = 0x0000_0200;
@@ -56,6 +79,7 @@ pub struct Pad {
     ok: bool,
     ctrl: *mut c_void,
     instance: i32,
+    pub ds_intensity: u8,
 }
 
 fn deadzone(v: i16) -> i16 {
@@ -85,7 +109,7 @@ impl Pad {
                 ok = true;
             }
         }
-        let mut p = Self { ok, ctrl: std::ptr::null_mut(), instance: -1 };
+        let mut p = Self { ok, ctrl: std::ptr::null_mut(), instance: -1, ds_intensity: 0 };
         p.open_any();
         p
     }
@@ -112,6 +136,12 @@ impl Pad {
             if !c.is_null() {
                 self.ctrl = c;
                 self.instance = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c));
+                // Bewegungssensoren (Beschleunigung = 1, Gyro = 2), falls vorhanden
+                for t in [1, 2] {
+                    if SDL_GameControllerHasSensor(c, t) != 0 {
+                        SDL_GameControllerSetSensorEnabled(c, t, 1);
+                    }
+                }
             }
         }
     }
@@ -159,6 +189,11 @@ impl Pad {
     /// Vibration (0-255 je Motor) vom Spiel an den Controller.
     pub fn rumble(&mut self, left: u8, right: u8) {
         if self.ctrl.is_null() {
+            return;
+        }
+        if self.is_dualsense() {
+            let i = self.ds_intensity;
+            self.rumble_dualsense(left, right, i);
             return;
         }
         unsafe {
@@ -209,5 +244,118 @@ impl Pad {
             inp.r2 = (tr * 255 / 32767) as u8;
         }
         inp
+    }
+
+    /// Ist es ein PS5-Controller (DualSense)?
+    pub fn is_dualsense(&self) -> bool {
+        !self.ctrl.is_null() && unsafe { SDL_GameControllerGetType(self.ctrl) } == 7
+    }
+
+    /// Akkustand als Text, falls bekannt.
+    pub fn battery(&self) -> Option<&'static str> {
+        if self.ctrl.is_null() {
+            return None;
+        }
+        unsafe {
+            match SDL_JoystickCurrentPowerLevel(SDL_GameControllerGetJoystick(self.ctrl)) {
+                0 => Some("leer"),
+                1 => Some("niedrig"),
+                2 => Some("mittel"),
+                3 => Some("voll"),
+                4 => Some("Kabel"),
+                _ => None,
+            }
+        }
+    }
+
+    /// Touchpad und Bewegungssensoren auslesen.
+    pub fn poll_extra(&mut self) -> Extra {
+        let mut e = Extra::default();
+        if self.ctrl.is_null() {
+            return e;
+        }
+        unsafe {
+            let c = self.ctrl;
+            if SDL_GameControllerGetNumTouchpads(c) > 0 {
+                for f in 0..2usize {
+                    let (mut st, mut x, mut y, mut pr) = (0u8, 0f32, 0f32, 0f32);
+                    if SDL_GameControllerGetTouchpadFinger(c, 0, f as c_int, &mut st, &mut x, &mut y, &mut pr) == 0 && st != 0 {
+                        e.touch_down[f] = true;
+                        e.touch_x[f] = x;
+                        e.touch_y[f] = y;
+                    }
+                }
+            }
+            if SDL_GameControllerHasSensor(c, 1) != 0 && SDL_GameControllerHasSensor(c, 2) != 0 {
+                let mut a = [0f32; 3];
+                let mut g = [0f32; 3];
+                if SDL_GameControllerGetSensorData(c, 1, a.as_mut_ptr(), 3) == 0 && SDL_GameControllerGetSensorData(c, 2, g.as_mut_ptr(), 3) == 0 {
+                    e.has_motion = true;
+                    e.gyro = g;
+                    e.accel = [a[0] / 9.80665, a[1] / 9.80665, a[2] / 9.80665];
+                }
+            }
+        }
+        e
+    }
+
+    fn send_ds5(&self, fx: &[u8; 47]) {
+        if !self.ctrl.is_null() {
+            unsafe {
+                SDL_GameControllerSendEffect(self.ctrl, fx.as_ptr() as *const c_void, 47);
+            }
+        }
+    }
+
+    /// DualSense-Vibration (links/rechts, 0-255) mit der Stärke, die das Spiel vorgibt.
+    pub fn rumble_dualsense(&mut self, left: u8, right: u8, intensity: u8) {
+        let mut fx = [0u8; 47];
+        let fw = unsafe { SDL_GameControllerGetFirmwareVersion(self.ctrl) };
+        if fw != 0 && fw < 0x0224 {
+            fx[0] |= 0x01;
+            fx[3] = left >> 1;
+            fx[2] = right >> 1;
+        } else {
+            fx[38] |= 0x04;
+            fx[3] = left;
+            fx[2] = right;
+        }
+        fx[36] = intensity;
+        fx[1] |= 0x40;
+        fx[0] |= 0x02;
+        self.send_ds5(&fx);
+    }
+
+    /// Adaptive Trigger: Effekt-Typ und 10 Parameter je Seite.
+    pub fn trigger_effects(&mut self, type_l: u8, data_l: &[u8; 10], type_r: u8, data_r: &[u8; 10], intensity: u8) {
+        if !self.is_dualsense() {
+            return;
+        }
+        let mut fx = [0u8; 47];
+        fx[36] = intensity;
+        fx[1] |= 0x40;
+        fx[0] |= 0x04 | 0x08;
+        fx[10] = type_r;
+        fx[11..21].copy_from_slice(data_r);
+        fx[21] = type_l;
+        fx[22..32].copy_from_slice(data_l);
+        self.send_ds5(&fx);
+    }
+
+    /// Lichtleiste des Controllers (Farbe vom Spiel).
+    pub fn set_led(&mut self, r: u8, g: u8, b: u8) {
+        if !self.ctrl.is_null() && unsafe { SDL_GameControllerHasLED(self.ctrl) } != 0 {
+            unsafe {
+                SDL_GameControllerSetLED(self.ctrl, r, g, b);
+            }
+        }
+    }
+
+    pub fn set_player(&mut self, idx: u8) {
+        if !self.ctrl.is_null() {
+            unsafe {
+                SDL_GameControllerSetPlayerIndex(self.ctrl, idx as c_int);
+            }
+        }
     }
 }

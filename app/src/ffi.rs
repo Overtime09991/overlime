@@ -24,6 +24,7 @@ pub struct OlStreamParams {
     pub bitrate_kbps: c_int,
     pub codec: c_int,
     pub hw_decode: c_int,
+    pub enable_dualsense: c_int,
 }
 
 #[repr(C)]
@@ -38,6 +39,44 @@ pub struct OlStatus {
     pub audio_channels: u32,
     pub frames_lost: i32,
     pub audio_total: u64,
+    pub rtt_us: u64,
+    pub decode_ms: f32,
+    pub bitrate_kbps: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct OlInputEx {
+    pub buttons: u32,
+    pub l2: u8,
+    pub r2: u8,
+    pub lx: i16,
+    pub ly: i16,
+    pub rx: i16,
+    pub ry: i16,
+    pub touch_down: [c_int; 2],
+    pub touch_x: [f32; 2],
+    pub touch_y: [f32; 2],
+    pub has_motion: c_int,
+    pub gyro: [f32; 3],
+    pub accel: [f32; 3],
+    pub ts_us: u32,
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+pub struct OlCtrlEvents {
+    pub trigger_new: c_int,
+    pub type_left: u8,
+    pub type_right: u8,
+    pub left: [u8; 10],
+    pub right: [u8; 10],
+    pub led_new: c_int,
+    pub led: [u8; 3],
+    pub player_new: c_int,
+    pub player: u8,
+    pub intensity_new: c_int,
+    pub intensity: u8,
 }
 
 #[repr(C)]
@@ -68,6 +107,8 @@ extern "C" {
     pub fn ol_stream_take_audio(s: *mut OlStream, buf: *mut i16, max: usize) -> usize;
     pub fn ol_stream_set_input(s: *mut OlStream, buttons: u32, l2: u8, r2: u8, lx: i16, ly: i16, rx: i16, ry: i16);
     pub fn ol_stream_take_rumble(s: *mut OlStream, left: *mut u8, right: *mut u8) -> c_int;
+    pub fn ol_stream_set_input_ex(s: *mut OlStream, inp: *const OlInputEx);
+    pub fn ol_stream_take_ctrl_events(s: *mut OlStream, out: *mut OlCtrlEvents) -> c_int;
     pub fn ol_stream_stop(s: *mut OlStream);
 }
 
@@ -158,6 +199,7 @@ pub struct StreamParams {
     pub bitrate_kbps: i32,
     pub hevc: bool,
     pub hw_decode: bool,
+    pub dualsense: bool,
 }
 
 impl Stream {
@@ -175,6 +217,7 @@ impl Stream {
         params.bitrate_kbps = p.bitrate_kbps;
         params.codec = p.hevc as c_int;
         params.hw_decode = p.hw_decode as c_int;
+        params.enable_dualsense = p.dualsense as c_int;
         let mut err = vec![0 as c_char; 256];
         let ptr = unsafe { ol_stream_start(&params, err.as_mut_ptr(), err.len()) };
         if ptr.is_null() {
@@ -249,6 +292,26 @@ impl Stream {
         } else {
             None
         }
+    }
+
+    pub fn set_input_ex(&self, i: &OlInputEx) {
+        unsafe { ol_stream_set_input_ex(self.ptr, i) }
+    }
+
+    pub fn take_ctrl_events(&self) -> Option<OlCtrlEvents> {
+        let mut e = OlCtrlEvents::default();
+        if unsafe { ol_stream_take_ctrl_events(self.ptr, &mut e) } != 0 {
+            Some(e)
+        } else {
+            None
+        }
+    }
+
+    /// Messwerte: (Ping in ms, Dekodierzeit in ms, Datenrate in kbit/s)
+    pub fn net_stats(&self) -> (f32, f32, u32) {
+        let mut st: OlStatus = unsafe { std::mem::zeroed() };
+        unsafe { ol_stream_status(self.ptr, &mut st) };
+        (st.rtt_us as f32 / 1000.0, st.decode_ms, st.bitrate_kbps)
     }
 
     pub fn set_input(&self, buttons: u32, l2: u8, r2: u8, lx: i16, ly: i16, rx: i16, ry: i16) {

@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Bild wird auf der Grafikkarte umgerechnet: flüssiger",
-    "Echter Schärfefilter für „Scharf“ und „Ultra“",
-    "Ton-Fix, Geräteauswahl und Lautstärke",
-    "Elegante Leiste im Stream",
+    "Latenz, Ping und Datenrate oben in der Leiste",
+    "PS5-Controller: Touchpad, Bewegung, adaptive Trigger",
+    "Lichtleiste und Vibration wie im Spiel, Akkustand",
+    "Bild auf der Grafikkarte, echter Schärfefilter",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

@@ -6,6 +6,8 @@
 #include <chiaki/ffmpegdecoder.h>
 #include <chiaki/opusdecoder.h>
 #include <chiaki/controller.h>
+#include <chiaki/orientation.h>
+#include <chiaki/videoreceiver.h>
 #include <chiaki/log.h>
 #include <chiaki/thread.h>
 #include <chiaki/time.h>
@@ -19,6 +21,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+static uint64_t now_us(void)
+{
+	LARGE_INTEGER f, t;
+	QueryPerformanceFrequency(&f);
+	QueryPerformanceCounter(&t);
+	return (uint64_t)((double)t.QuadPart * 1000000.0 / (double)f.QuadPart);
+}
 
 // ---------------------------------------------------------------- Log
 #define LOG_CAP 65536
@@ -176,6 +186,21 @@ struct OlStream {
 	uint8_t rumble_l, rumble_r;
 	int rumble_new;
 
+	// Controller (DualSense)
+	ChiakiControllerState ctrl_state;
+	ChiakiOrientationTracker orient;
+	ChiakiAccelNewZero accel_zero;
+	int touch_id[2];
+	OlCtrlEvents ev;
+	int ev_any;
+
+	// Messwerte
+	uint64_t t_sample_us;
+	double decode_ms;
+	uint64_t bytes_acc;
+	uint64_t rate_t0_us;
+	uint32_t bitrate_kbps;
+
 	// Audio
 	int16_t audio[AUDIO_RING_SAMPLES];
 	size_t a_read, a_write; // monoton steigend
@@ -183,9 +208,23 @@ struct OlStream {
 	uint64_t audio_total;
 };
 
+static bool video_sample(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user)
+{
+	OlStream *s = user;
+	s->t_sample_us = now_us();
+	s->bytes_acc += buf_size;
+	return chiaki_ffmpeg_decoder_video_sample_cb(buf, buf_size, frames_lost, frame_recovered, &s->decoder);
+}
+
 static void frame_available(ChiakiFfmpegDecoder *decoder, void *user)
 {
 	OlStream *s = user;
+	if(s->t_sample_us)
+	{
+		double ms = (double)(now_us() - s->t_sample_us) / 1000.0;
+		if(ms >= 0.0 && ms < 500.0)
+			s->decode_ms = s->decode_ms * 0.9 + ms * 0.1;
+	}
 	int32_t lost = 0;
 	ChiakiFfmpegFrame f = chiaki_ffmpeg_decoder_pull_frame(decoder, &lost);
 	if(!f.frame)
@@ -350,6 +389,24 @@ static void event_cb(ChiakiEvent *ev, void *user)
 			snprintf(s->message, sizeof(s->message), "%s%s%s", chiaki_quit_reason_string(ev->quit.reason),
 				ev->quit.reason_str ? ": " : "", ev->quit.reason_str ? ev->quit.reason_str : "");
 			break;
+		case CHIAKI_EVENT_TRIGGER_EFFECTS:
+			s->ev.trigger_new = 1;
+			s->ev.type_left = ev->trigger_effects.type_left;
+			s->ev.type_right = ev->trigger_effects.type_right;
+			memcpy(s->ev.left, ev->trigger_effects.left, 10);
+			memcpy(s->ev.right, ev->trigger_effects.right, 10);
+			s->ev_any = 1;
+			break;
+		case CHIAKI_EVENT_LED_COLOR:
+			s->ev.led_new = 1;
+			memcpy(s->ev.led, ev->led_state, 3);
+			s->ev_any = 1;
+			break;
+		case CHIAKI_EVENT_PLAYER_INDEX:
+			s->ev.player_new = 1;
+			s->ev.player = ev->player_index;
+			s->ev_any = 1;
+			break;
 		case CHIAKI_EVENT_RUMBLE:
 			s->rumble_l = ev->rumble.left;
 			s->rumble_r = ev->rumble.right;
@@ -389,7 +446,7 @@ OlStream *ol_stream_start(const OlStreamParams *p, char *err, size_t err_size)
 	ci.video_profile.codec = p->codec ? CHIAKI_CODEC_H265 : CHIAKI_CODEC_H264;
 	ci.video_profile_auto_downgrade = true;
 	ci.enable_keyboard = false;
-	ci.enable_dualsense = false;
+	ci.enable_dualsense = p->enable_dualsense ? true : false;
 	ci.packet_loss_max = 0.05;
 	ci.enable_idr_on_fec_failure = true;
 
@@ -400,6 +457,10 @@ OlStream *ol_stream_start(const OlStreamParams *p, char *err, size_t err_size)
 		goto fail;
 	}
 	s->session_ok = 1;
+	chiaki_controller_state_set_idle(&s->ctrl_state);
+	chiaki_orientation_tracker_init(&s->orient);
+	chiaki_accel_new_zero_set_inactive(&s->accel_zero, false);
+	s->touch_id[0] = s->touch_id[1] = -1;
 
 	e = chiaki_ffmpeg_decoder_init(&s->decoder, &s->log, ci.video_profile.codec, (unsigned)p->fps,
 		p->hw_decode ? "d3d11va" : NULL, NULL, frame_available, s);
@@ -423,7 +484,7 @@ OlStream *ol_stream_start(const OlStreamParams *p, char *err, size_t err_size)
 	ChiakiAudioSink sink;
 	chiaki_opus_decoder_get_sink(&s->opus, &sink);
 	chiaki_session_set_audio_sink(&s->session, &sink);
-	chiaki_session_set_video_sample_cb(&s->session, chiaki_ffmpeg_decoder_video_sample_cb, &s->decoder);
+	chiaki_session_set_video_sample_cb(&s->session, video_sample, s);
 	chiaki_session_set_event_cb(&s->session, event_cb, s);
 
 	e = chiaki_session_start(&s->session);
@@ -456,6 +517,20 @@ void ol_stream_status(OlStream *s, OlStatus *out)
 	out->audio_channels = s->audio_channels;
 	out->frames_lost = s->frames_lost;
 	out->audio_total = s->audio_total;
+	out->rtt_us = s->session.rtt_us;
+	out->decode_ms = (float)s->decode_ms;
+	{
+		uint64_t now = now_us();
+		if(s->rate_t0_us == 0)
+			s->rate_t0_us = now;
+		if(now - s->rate_t0_us >= 1000000)
+		{
+			s->bitrate_kbps = (uint32_t)((double)s->bytes_acc * 8.0 / 1000.0 * 1000000.0 / (double)(now - s->rate_t0_us));
+			s->bytes_acc = 0;
+			s->rate_t0_us = now;
+		}
+		out->bitrate_kbps = s->bitrate_kbps;
+	}
 	chiaki_mutex_unlock(&s->mtx);
 }
 
@@ -532,6 +607,60 @@ void ol_stream_set_input(OlStream *s, uint32_t buttons, uint8_t l2, uint8_t r2,
 	st.right_x = rx;
 	st.right_y = ry;
 	chiaki_session_set_controller_state(&s->session, &st);
+}
+
+void ol_stream_set_input_ex(OlStream *s, const OlInputEx *in)
+{
+	ChiakiControllerState *st = &s->ctrl_state;
+	st->buttons = in->buttons;
+	st->l2_state = in->l2;
+	st->r2_state = in->r2;
+	st->left_x = in->lx;
+	st->left_y = in->ly;
+	st->right_x = in->rx;
+	st->right_y = in->ry;
+	for(int i = 0; i < 2; i++)
+	{
+		if(in->touch_down[i])
+		{
+			uint16_t x = (uint16_t)(in->touch_x[i] * 1919.0f);
+			uint16_t y = (uint16_t)(in->touch_y[i] * 1079.0f);
+			if(s->touch_id[i] < 0)
+			{
+				int8_t id = chiaki_controller_state_start_touch(st, x, y);
+				s->touch_id[i] = id;
+			}
+			else
+				chiaki_controller_state_set_touch_pos(st, (uint8_t)s->touch_id[i], x, y);
+		}
+		else if(s->touch_id[i] >= 0)
+		{
+			chiaki_controller_state_stop_touch(st, (uint8_t)s->touch_id[i]);
+			s->touch_id[i] = -1;
+		}
+	}
+	if(in->has_motion)
+	{
+		chiaki_orientation_tracker_update(&s->orient, in->gyro[0], in->gyro[1], in->gyro[2],
+			in->accel[0], in->accel[1], in->accel[2], &s->accel_zero, false, in->ts_us);
+		chiaki_orientation_tracker_apply_to_controller_state(&s->orient, st);
+	}
+	chiaki_session_set_controller_state(&s->session, st);
+}
+
+int ol_stream_take_ctrl_events(OlStream *s, OlCtrlEvents *out)
+{
+	int any = 0;
+	chiaki_mutex_lock(&s->mtx);
+	if(s->ev_any)
+	{
+		*out = s->ev;
+		memset(&s->ev, 0, sizeof(s->ev));
+		s->ev_any = 0;
+		any = 1;
+	}
+	chiaki_mutex_unlock(&s->mtx);
+	return any;
 }
 
 int ol_stream_take_rumble(OlStream *s, uint8_t *left, uint8_t *right)

@@ -24,6 +24,8 @@ pub struct Settings {
     pub ask_feedback: bool,
     pub volume: f32,
     pub kb_mode: usize,
+    pub ds_features: bool,
+    pub sharp: f32,
     pub audio_device: String,
     pub welcome_anim: bool,
 }
@@ -52,6 +54,8 @@ impl Default for Settings {
             ask_feedback: true,
             volume: 1.0,
             kb_mode: 0,
+            ds_features: true,
+            sharp: 0.55,
             audio_device: String::new(),
             welcome_anim: true,
         }
@@ -99,6 +103,8 @@ impl Settings {
                 "discord_id" => s.discord_id = v.trim().to_string(),
                 "autoconnect" => s.autoconnect = v.trim() == "true",
                 "ask_feedback" => s.ask_feedback = v.trim() != "false",
+                "sharp" => s.sharp = v.trim().parse().unwrap_or(0.55f32).clamp(0.0, 1.0),
+                "ds_features" => s.ds_features = v.trim() != "false",
                 "kb_mode" => s.kb_mode = v.trim().parse().unwrap_or(0usize).min(2),
                 "volume" => s.volume = v.trim().parse().unwrap_or(1.0f32).clamp(0.0, 1.5),
                 "audio_device" => s.audio_device = v.trim().to_string(),
@@ -133,6 +139,8 @@ impl Settings {
         text.push_str(&format!("ask_feedback={}\n", self.ask_feedback));
         text.push_str(&format!("volume={}\naudio_device={}\n", self.volume, self.audio_device));
         text.push_str(&format!("kb_mode={}\n", self.kb_mode));
+        text.push_str(&format!("ds_features={}\n", self.ds_features));
+        text.push_str(&format!("sharp={}\n", self.sharp));
         for (i, k) in self.keys.iter().enumerate() {
             text.push_str(&format!("key_{i}={k}\n"));
         }

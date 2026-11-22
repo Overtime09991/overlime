@@ -20,6 +20,9 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Aus dem Ruhemodus aufwecken.** Ein Klick, und die Konsole startet, ohne dass du aufstehen musst.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
+- **PS5-Controller voll genutzt.** Touchpad, Bewegungssensor, adaptive Trigger, Lichtleiste, Vibration wie im Spiel und Akkustand (DualSense, auch per Bluetooth).
+- **Latenz im Blick.** Oben in der Leiste siehst du Ping, geschätzte Gesamtlatenz und Datenrate, farbig nach Verbindungsqualität.
+- **Schnell-Menü im Stream.** Schärfe sofort ändern, Auflösung, Bildrate und Bitrate mit kurzem Neuverbinden anpassen.
 - **Flüssiges Bild.** Die Grafikkarte rechnet das Bild um und skaliert es hoch, mit echtem Schärfefilter (CAS) für „Scharf“ und „Ultra“. Das spart Rechenzeit und Verzögerung.
 - **Ton inklusive.** Ausgabegerät und Lautstärke frei wählbar, Stumm per Taste M, bestes Audioformat automatisch (32-Bit, 48 kHz).
 - **Diagnose und Hilfe.** Eine Diagnose-Seite prüft Netzwerk, Konsole, Konto und Controller und erklärt bei Problemen, woran es liegt. „Problem melden“ kopiert einen Bericht ohne IP-Adressen.
@@ -56,7 +59,7 @@ Alternativ gibt es auf der [Release-Seite](https://github.com/Overtime09991/over
 
 | Einstellung | Auswahl |
 | --- | --- |
-| Auflösung | 540p · 720p · 1080p (Sony-Limit) |
+| Auflösung | 540p · 720p · 1080p (Sony-Limit), auch im Stream umschaltbar |
 | Bildrate | 30 oder 60 FPS |
 | Bitrate | 2 bis 50 Mbit/s |
 | Codec | Automatisch · H.264 · HEVC |
