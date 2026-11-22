@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.40";
+const VERSION: &str = "0.41";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -2227,6 +2227,17 @@ impl App {
                         if !st.psn_account.is_empty() && ui.button("PlayStation-Konto abmelden").clicked() {
                     st.psn_account.clear();
                     st.psn_name.clear();
+                }
+                if !st.psn_account.is_empty() {
+                    ui.add_space(8.0);
+                    label(ui, "Account-ID (für andere Apps)", "Zum Koppeln mit der Handy-App oder anderen Remote-Play-Programmen. Gib sie nur dort ein, nicht weiter.");
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(&st.psn_account).monospace().color(th_blue_light()));
+                        if ui.button("Kopieren").clicked() {
+                            ui.ctx().copy_text(st.psn_account.clone());
+                            self.toasts.push(("Account-ID kopiert".to_string(), 2, self.now));
+                        }
+                    });
                 }
             });
             if SET_DRAWN.with(|d| d.get()) == 0 {

@@ -4,6 +4,7 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Account-ID zum Kopieren für andere Apps",
     "Klarer Fokus auf Controller, ohne Tastatur-Steuerung",
     "Großer Haupt-Knopf auf der Startseite",
     "Demo-Modus zum Ausprobieren ohne Konsole",
