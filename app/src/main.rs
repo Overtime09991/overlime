@@ -34,7 +34,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.27";
+const VERSION: &str = "0.28";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -751,6 +751,9 @@ impl App {
                 Msg::StreamStarted(stream, name) => {
                     self.reconnecting = false;
                     self.starting = None;
+                    if let Some(u) = self.update.as_ref() {
+                        self.toasts.push((format!("Update {} wartet – nach dem Spiel installieren", u.version), 0, self.now));
+                    }
                     if !self.gl_ok {
                         stream.set_rgba(true);
                     }
@@ -2467,7 +2470,7 @@ impl App {
                             ui.horizontal(|ui| {
                                 let (r, _) = ui.allocate_exact_size(Vec2::new(5.0, 22.0), egui::Sense::hover());
                                 ui.painter().rect_filled(r, Rounding::same(3.0), col);
-                                ui.label(RichText::new(text).size(13.5));
+                                ui.add(egui::Label::new(RichText::new(text).size(13.5)).selectable(false));
                             });
                         });
                 });
@@ -3579,6 +3582,13 @@ impl eframe::App for App {
                 let hud: Vec<&str> = demo_parts.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, s)| *s).collect();
                 paint_hud(&ctx.layer_painter(egui::LayerId::background()), ctx.screen_rect(), hud.join("  •  "), &self.settings, 0.0);
             }
+            if std::env::args().any(|a| a == "--demo-toast") {
+                if self.toasts.is_empty() {
+                    self.toasts.push(("Update 0.27 verfügbar – nach dem Spiel installieren".to_string(), 0, self.now));
+                    self.toasts.push(("Screenshot gespeichert: OVERLIME-1.png".to_string(), 2, self.now));
+                }
+                self.draw_toasts(ctx, t);
+            }
             if std::env::args().any(|a| a == "--demo-pause") {
                 self.stream_menu = true;
                 let _ = self.stream_overlays(ctx);
@@ -3663,6 +3673,8 @@ impl eframe::App for App {
                 self.search();
             }
             self.stream_ui(ctx);
+            // Hinweise (Update, Screenshot, Aufnahme …) auch während des Spiels anzeigen
+            self.draw_toasts(ctx, t);
             return;
         }
 
