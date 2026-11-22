@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Updates während der App offen ist: nur Hinweis, kein Überraschen",
-    "Während eines Spiels wird nie installiert",
-    "Update-Hinweis auch im Stream-Menü",
-    "Update-Bereich, Controller-Diagnose und mehr",
+    "Neue Seite „Neuigkeiten“ mit den Änderungen jeder Version",
+    "„Neu in OVERLIME“ direkt auf der Übersicht",
+    "Kompaktere Oberfläche, Größe einstellbar",
+    "Updates nur beim Start automatisch, nie im Spiel",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

@@ -20,7 +20,7 @@ fn parse_ver(v: &str) -> Vec<u32> {
     v.trim().trim_start_matches(['v', 'V']).split('.').map(|p| p.parse().unwrap_or(0)).collect()
 }
 
-fn is_newer(remote: &str, local: &str) -> bool {
+pub fn is_newer(remote: &str, local: &str) -> bool {
     let (a, b) = (parse_ver(remote), parse_ver(local));
     for i in 0..a.len().max(b.len()) {
         let (x, y) = (a.get(i).copied().unwrap_or(0), b.get(i).copied().unwrap_or(0));
@@ -247,5 +247,64 @@ pub fn highlights(notes: &str) -> Vec<String> {
         }
     }
     out.truncate(6);
+    out
+}
+
+/// Eine Version mit ihren Neuerungen (aus den GitHub-Release-Notizen).
+#[derive(Clone, Debug)]
+pub struct NewsItem {
+    pub version: String,
+    pub date: String,
+    pub items: Vec<String>,
+}
+
+/// Lädt die letzten Releases mit ihren Neuerungen. Blockierend.
+pub fn fetch_news() -> Result<Vec<NewsItem>, String> {
+    if !enabled() {
+        return Ok(Vec::new());
+    }
+    let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases?per_page=15");
+    let v: serde_json::Value = ureq::get(&url)
+        .set("User-Agent", "overlime-news")
+        .set("Accept", "application/vnd.github+json")
+        .timeout(std::time::Duration::from_secs(10))
+        .call()
+        .map_err(|e| e.to_string())?
+        .into_json()
+        .map_err(|e| e.to_string())?;
+    let mut out = Vec::new();
+    if let Some(arr) = v.as_array() {
+        for r in arr {
+            if r["prerelease"].as_bool().unwrap_or(false) || r["draft"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            let tag = r["tag_name"].as_str().unwrap_or("").trim_start_matches(['v', 'V']).to_string();
+            let items = highlights_all(r["body"].as_str().unwrap_or(""));
+            if tag.is_empty() || items.is_empty() {
+                continue;
+            }
+            let date = r["published_at"].as_str().unwrap_or("").chars().take(10).collect();
+            out.push(NewsItem { version: tag, date, items });
+        }
+    }
+    Ok(out)
+}
+
+/// Wie `highlights`, aber ohne Begrenzung auf 6 Einträge.
+pub fn highlights_all(notes: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in notes.lines() {
+        let t = line.trim();
+        if t.starts_with("###") {
+            inside = t.to_lowercase().contains("neu");
+            continue;
+        }
+        if inside {
+            if let Some(rest) = t.strip_prefix("- ") {
+                out.push(rest.replace("**", "").replace('`', ""));
+            }
+        }
+    }
     out
 }

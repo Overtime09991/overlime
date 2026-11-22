@@ -43,6 +43,91 @@ pub fn check_row(ui: &mut egui::Ui, done: bool, title: &str, sub: &str) {
 }
 
 impl App {
+    pub fn news_page(&mut self, ui: &mut egui::Ui, t: f64) {
+        let _ = t;
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Neuigkeiten").size(26.0).strong());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if self.news_loading {
+                    ui.spinner();
+                } else if ui.add(egui::Button::new(format!("{} Aktualisieren", ic::ARROWS_CLOCKWISE)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                    self.load_news();
+                }
+            });
+        });
+        ui.label(RichText::new("Das ist neu in OVERLIME, Version für Version.").color(TEXT_DIM).size(13.0));
+        ui.add_space(8.0);
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            let mut list = self.news.clone();
+            if list.is_empty() {
+                // Rückfall (offline): Neuerungen der installierten Version
+                list.push(update::NewsItem { version: VERSION.to_string(), date: String::new(), items: splash::NEWS.iter().map(|s| s.to_string()).collect() });
+            }
+            if !self.news_err.is_empty() {
+                ui.label(RichText::new("Neuigkeiten konnten nicht geladen werden (offline?).").color(YELLOW).size(12.5));
+                ui.add_space(4.0);
+            }
+            let total = list.len();
+            let shown = self.news_shown.max(1).min(total);
+            let mut more = false;
+            for (idx, n) in list.iter().enumerate().take(shown) {
+                let newer = update::is_newer(&n.version, VERSION);
+                let current = n.version == VERSION;
+                let first = idx == 0;
+                egui::Frame::none()
+                    .fill(if first { th_blue().gamma_multiply(0.14) } else { th_card() })
+                    .rounding(16.0)
+                    .stroke(Stroke::new(1.0, if first { th_blue().gamma_multiply(0.45) } else { Color32::from_white_alpha(10) }))
+                    .inner_margin(egui::Margin::same(18.0))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.label(RichText::new(format!("Version {}", n.version)).size(18.0).strong());
+                            if current {
+                                pill(ui, "Installiert", GREEN);
+                            } else if newer {
+                                pill(ui, "Update verfügbar", YELLOW);
+                            }
+                            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                if !n.date.is_empty() {
+                                    ui.label(RichText::new(&n.date).color(TEXT_DIM).size(12.5));
+                                }
+                            });
+                        });
+                        ui.add_space(6.0);
+                        for it in &n.items {
+                            ui.horizontal_top(|ui| {
+                                let (r, _) = ui.allocate_exact_size(Vec2::new(10.0, 18.0), egui::Sense::hover());
+                                ui.painter().circle_filled(r.center(), 3.0, th_blue_light());
+                                ui.add(egui::Label::new(RichText::new(it).size(13.5)).wrap());
+                            });
+                        }
+                    });
+                ui.add_space(8.0);
+            }
+            if total > shown {
+                ui.vertical_centered(|ui| {
+                    let rest = total - shown;
+                    let label = if shown == 1 { format!("Ältere Versionen anzeigen ({rest})") } else { format!("Noch mehr anzeigen ({rest} weitere)") };
+                    if ui.add(egui::Button::new(label).fill(th_card_hover()).rounding(10.0).min_size(Vec2::new(260.0, 38.0))).clicked() {
+                        more = true;
+                    }
+                });
+            } else if total > 1 {
+                ui.vertical_centered(|ui| {
+                    if ui.add(egui::Button::new(RichText::new("Weniger anzeigen").color(TEXT_DIM)).frame(false)).clicked() {
+                        self.news_shown = 1;
+                    }
+                });
+            }
+            if more {
+                self.news_shown = shown + 3;
+            }
+        });
+    }
+}
+
+impl App {
     pub fn home_page(&mut self, ui: &mut egui::Ui, t: f64) {
         let ready: Vec<Console> = self.consoles.iter().filter(|c| c.state == State::Ready).cloned().collect();
         let found = self.consoles.len();
@@ -178,6 +263,40 @@ impl App {
                 });
             });
             ui.add_space(12.0);
+            // Neu in OVERLIME
+            {
+                let (ver, date, items): (String, String, Vec<String>) = match self.news.first() {
+                    Some(n) => (n.version.clone(), n.date.clone(), n.items.iter().take(4).cloned().collect()),
+                    None => (VERSION.to_string(), String::new(), splash::NEWS.iter().map(|s| s.to_string()).collect()),
+                };
+                let mut open_news = false;
+                egui::Frame::none().fill(th_card()).rounding(18.0).inner_margin(egui::Margin::same(20.0)).show(ui, |ui| {
+                    ui.set_width(ui.available_width());
+                    ui.horizontal(|ui| {
+                        ui.label(RichText::new(format!("{}  Neu in OVERLIME {ver}", ic::NEWSPAPER)).size(17.0).strong());
+                        if !date.is_empty() {
+                            ui.label(RichText::new(date).color(TEXT_DIM).size(12.5));
+                        }
+                        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                            if ui.add(egui::Button::new("Alle Neuigkeiten").fill(th_card_hover()).rounding(10.0)).clicked() {
+                                open_news = true;
+                            }
+                        });
+                    });
+                    ui.add_space(6.0);
+                    for it in items {
+                        ui.horizontal_top(|ui| {
+                            let (r, _) = ui.allocate_exact_size(Vec2::new(10.0, 18.0), egui::Sense::hover());
+                            ui.painter().circle_filled(r.center(), 3.0, th_blue_light());
+                            ui.add(egui::Label::new(RichText::new(it).size(13.5)).wrap());
+                        });
+                    }
+                });
+                if open_news {
+                    self.page = Page::News;
+                }
+                ui.add_space(8.0);
+            }
             ui.label(
                 RichText::new("Tipp: Für die beste Qualität die Konsole per LAN-Kabel anschließen und am PC 5-GHz-WLAN oder Kabel nutzen.")
                     .color(TEXT_DIM)
@@ -213,7 +332,7 @@ impl App {
                         ("F10", "Statusanzeige ein/aus"),
                         ("F11", "Vollbild"),
                         ("F5", "Konsolen neu suchen"),
-                        ("Strg + 1 bis 4", "Seite wechseln"),
+                        ("Strg + 1 bis 6", "Seite wechseln"),
                     ] {
                         ui.label(RichText::new(k).monospace().color(GREEN));
                         ui.label(v);

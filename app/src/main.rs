@@ -33,11 +33,12 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.20";
+const VERSION: &str = "0.21";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
     Home,
+    News,
     Consoles,
     Settings,
     Diagnose,
@@ -57,6 +58,8 @@ enum Msg {
     UpdateAvail(update::Release),
     UpdateNone,
     DiagPort(bool, String),
+    News(Vec<update::NewsItem>),
+    NewsErr(String),
     UpdateCheckFailed(String),
     UpdateErr(String),
 }
@@ -173,6 +176,11 @@ struct App {
     pending_reconnect: Option<(Console, Paired, Instant)>,
     reconnecting: bool,
     update_click: bool,
+    news: Vec<update::NewsItem>,
+    news_loading: bool,
+    news_shown: usize,
+    news_err: String,
+    news_fetched: Option<Instant>,
     app_start: Instant,
     check_click: bool,
     update_checking: bool,
@@ -271,6 +279,11 @@ impl App {
             pending_reconnect: None,
             reconnecting: false,
             update_click: false,
+            news: Vec::new(),
+            news_loading: false,
+            news_shown: 1,
+            news_err: String::new(),
+            news_fetched: None,
             app_start: Instant::now(),
             check_click: false,
             update_checking: false,
@@ -339,6 +352,10 @@ impl App {
             if std::env::args().any(|a| a == "--demo-feedback-error") {
                 app.feedback = Some(true);
             }
+            app.load_news();
+            if std::env::args().any(|a| a == "--news-page") {
+                app.page = Page::News;
+            }
             if std::env::args().any(|a| a == "--diag-page") {
                 app.page = Page::Diagnose;
             }
@@ -369,6 +386,7 @@ impl App {
             return app;
         }
         update::cleanup_old();
+        app.load_news();
         if update::enabled() {
             let tx = app.tx.clone();
             std::thread::spawn(move || {
@@ -666,6 +684,17 @@ impl App {
                 Msg::UpdateErr(e) => {
                     // update_busy bleibt an, damit der Fehler im Update-Bildschirm sichtbar ist
                     self.update_err = e;
+                }
+                Msg::News(v) => {
+                    self.news = v;
+                    self.news_loading = false;
+                    self.news_err.clear();
+                    self.news_fetched = Some(Instant::now());
+                }
+                Msg::NewsErr(e) => {
+                    self.news_loading = false;
+                    self.news_err = mask_ips(&e);
+                    self.news_fetched = Some(Instant::now());
                 }
                 Msg::DiagPort(ok, text) => {
                     self.diag_busy = false;
@@ -1064,7 +1093,7 @@ fn label(ui: &mut egui::Ui, title: &str, desc: &str) {
     }
 }
 
-fn nav_item(ui: &mut egui::Ui, icon: &str, text: &str, selected: bool, badge: bool) -> bool {
+fn nav_item(ui: &mut egui::Ui, icon: &str, text: &str, selected: bool, badge: Option<String>) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), egui::Sense::click());
     let h = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     if !selected && h > 0.01 {
@@ -1074,10 +1103,10 @@ fn nav_item(ui: &mut egui::Ui, icon: &str, text: &str, selected: bool, badge: bo
     let ic_col = if selected { th_blue_light() } else { col };
     ui.painter().text(rect.left_center() + Vec2::new(18.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(18.0), ic_col);
     ui.painter().text(rect.left_center() + Vec2::new(48.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(15.0), col);
-    if badge {
+    if let Some(b) = badge {
         let c = rect.right_center() - Vec2::new(16.0, 0.0);
         ui.painter().circle_filled(c, 9.0, th_blue());
-        ui.painter().text(c, Align2::CENTER_CENTER, "!", FontId::proportional(12.0), Color32::WHITE);
+        ui.painter().text(c, Align2::CENTER_CENTER, b, FontId::proportional(12.0), Color32::WHITE);
     }
     resp.clicked()
 }
@@ -1301,6 +1330,9 @@ impl App {
                 segmented(ui, &mut st.upscale, &["Aus", "Weich", "Scharf", "Ultra"]);
                 ui.add_space(6.0);
                 ui.checkbox(&mut st.fullscreen, "Vollbild beim Streamen");
+                ui.add_space(6.0);
+                label(ui, "Größe der Oberfläche", "Kompakt zeigt mehr auf einmal und wirkt aufgeräumter.");
+                segmented(ui, &mut st.ui_scale, &["Kompakt", "Normal", "Groß"]);
             });
             ui.add_space(6.0);
             section(ui, &format!("{}  Farbschema", ic::PALETTE), |ui| {
@@ -2013,6 +2045,28 @@ impl App {
         }
     }
 
+    /// Lädt die Neuigkeiten (Release-Notizen) im Hintergrund.
+    fn load_news(&mut self) {
+        if self.news_loading {
+            return;
+        }
+        self.news_loading = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let m = match update::fetch_news() {
+                Ok(v) => Msg::News(v),
+                Err(e) => Msg::NewsErr(e),
+            };
+            let _ = tx.send(m);
+        });
+    }
+
+    /// Anzahl der Versionen, die der Nutzer noch nicht gesehen hat.
+    fn unseen_news(&self) -> usize {
+        let seen = if self.settings.news_seen.is_empty() { VERSION.to_string() } else { self.settings.news_seen.clone() };
+        self.news.iter().filter(|n| update::is_newer(&n.version, &seen)).count()
+    }
+
     /// Startet die Prüfung auf Updates im Hintergrund.
     fn check_updates(&mut self) {
         if self.update_checking {
@@ -2476,16 +2530,22 @@ impl eframe::App for App {
         if pressed & (1 << 7) != 0 { raw.events.extend(key(Key::Tab, false)); }
         if pressed & (1 << 6) != 0 { raw.events.extend(key(Key::Tab, true)); }
         if pressed & (1 << 0) != 0 { raw.events.extend(key(Key::Enter, false)); }
-        let pages = [Page::Home, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
+        let pages = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
         let idx = pages.iter().position(|p| *p == self.page).unwrap_or(0);
-        if pressed & (1 << 9) != 0 && self.dialog.is_none() { self.page = pages[(idx + 1) % 5]; }
-        if pressed & (1 << 8) != 0 && self.dialog.is_none() { self.page = pages[(idx + 4) % 5]; }
+        if pressed & (1 << 9) != 0 && self.dialog.is_none() { self.page = pages[(idx + 1) % 6]; }
+        if pressed & (1 << 8) != 0 && self.dialog.is_none() { self.page = pages[(idx + 5) % 6]; }
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.gl_ok = frame.gl().is_some();
         let t = ctx.input(|i| i.time);
         self.now = t;
+        {
+            let z = [0.88f32, 1.0, 1.12][self.settings.ui_scale.min(2)];
+            if (ctx.zoom_factor() - z).abs() > 0.001 {
+                ctx.set_zoom_factor(z);
+            }
+        }
         if (t * 2.0) as u64 % 4 == 0 {
             self.pad_name_cache = if self.pad.connected() { self.pad.name() } else { String::new() };
         }
@@ -2521,34 +2581,19 @@ impl eframe::App for App {
             }
         }
         if self.session.is_none() && self.dialog.is_none() && self.capturing.is_none() && !ctx.wants_keyboard_input() {
-            let (f5, c1, c2, c3, c4, c5) = ctx.input(|i| {
+            let (f5, nums) = ctx.input(|i| {
                 let c = i.modifiers.ctrl;
-                (
-                    i.key_pressed(Key::F5),
-                    c && i.key_pressed(Key::Num1),
-                    c && i.key_pressed(Key::Num2),
-                    c && i.key_pressed(Key::Num3),
-                    c && i.key_pressed(Key::Num4),
-                    c && i.key_pressed(Key::Num5),
-                )
+                let ks = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6];
+                (i.key_pressed(Key::F5), ks.map(|k| c && i.key_pressed(k)))
             });
             if f5 && !self.searching {
                 self.search();
             }
-            if c1 {
-                self.page = Page::Home;
-            }
-            if c2 {
-                self.page = Page::Consoles;
-            }
-            if c3 {
-                self.page = Page::Settings;
-            }
-            if c4 {
-                self.page = Page::Diagnose;
-            }
-            if c5 {
-                self.page = Page::Help;
+            let hk = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
+            for (i, hit) in nums.iter().enumerate() {
+                if *hit {
+                    self.page = hk[i];
+                }
             }
         }
 
@@ -2627,6 +2672,16 @@ impl eframe::App for App {
         }
         if self.last_update_check.elapsed() > Duration::from_secs(20 * 60) {
             self.check_updates();
+        }
+        if self.news_fetched.map(|t| t.elapsed() > Duration::from_secs(60 * 60)).unwrap_or(false) {
+            self.load_news();
+        }
+        // Neuigkeiten gelesen, sobald die Seite offen ist
+        if self.page == Page::News && !self.news.is_empty() {
+            let latest = self.news[0].version.clone();
+            if self.settings.news_seen != latest {
+                self.settings.news_seen = latest;
+            }
         }
         // Qualität angewendet: kurz neu verbinden
         if self.reconnecting && self.session.is_none() {
@@ -2719,6 +2774,7 @@ impl eframe::App for App {
             .show(ctx, |ui| {
                 let (page_icon, page_title) = match self.page {
                     Page::Home => (ic::HOUSE, "Übersicht"),
+                    Page::News => (ic::NEWSPAPER, "Neuigkeiten"),
                     Page::Consoles => (ic::GAME_CONTROLLER, "Konsolen"),
                     Page::Settings => (ic::GEAR_SIX, "Einstellungen"),
                     Page::Diagnose => (ic::STETHOSCOPE, "Diagnose"),
@@ -2768,8 +2824,9 @@ impl eframe::App for App {
                 }
                 ui.add_space(18.0);
                 let old = self.page;
-                let pages = [Page::Home, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
-                let items = [(ic::HOUSE, "Übersicht"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::GEAR_SIX, "Einstellungen"), (ic::STETHOSCOPE, "Diagnose"), (ic::QUESTION, "Hilfe")];
+                let pages = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
+                let items = [(ic::HOUSE, "Übersicht"), (ic::NEWSPAPER, "Neuigkeiten"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::GEAR_SIX, "Einstellungen"), (ic::STETHOSCOPE, "Diagnose"), (ic::QUESTION, "Hilfe")];
+                let unseen = self.unseen_news();
                 let top_y = ui.cursor().top();
                 let sel_idx = pages.iter().position(|p| *p == self.page).unwrap_or(0) as f32;
                 let hy = ui.ctx().animate_value_with_time(egui::Id::new("nav_hl"), sel_idx, 0.3);
@@ -2781,7 +2838,14 @@ impl eframe::App for App {
                     ui.painter().rect_filled(bar, Rounding::same(2.0), th_blue_light());
                 }
                 for (i, (icon, label)) in items.iter().enumerate() {
-                    if nav_item(ui, icon, label, self.page == pages[i], i == 2 && self.update.is_some()) {
+                    let badge = if i == 3 && self.update.is_some() {
+                        Some("!".to_string())
+                    } else if i == 1 && unseen > 0 && self.page != Page::News {
+                        Some(unseen.min(9).to_string())
+                    } else {
+                        None
+                    };
+                    if nav_item(ui, icon, label, self.page == pages[i], badge) {
                         self.page = pages[i];
                     }
                 }
@@ -2855,6 +2919,7 @@ impl eframe::App for App {
             }
             match self.page {
                 Page::Home => self.home_page(ui, t),
+                Page::News => self.news_page(ui, t),
                 Page::Consoles => self.consoles_page(ui, t),
                 Page::Settings => self.settings_page(ui),
                 Page::Diagnose => self.diag_page(ui, t),

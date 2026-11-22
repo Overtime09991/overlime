@@ -20,6 +20,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Aus dem Ruhemodus aufwecken.** Ein Klick, und die Konsole startet, ohne dass du aufstehen musst.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
+- **Neuigkeiten in der App.** Eine eigene Seite zeigt, was in der aktuellen Version neu ist, auf Klick auch die älteren. Dazu eine kompaktere Oberfläche mit einstellbarer Größe.
 - **Updates im Blick.** Ein eigener Update-Bereich in den Einstellungen zeigt neue Versionen mit ihren Neuerungen, per Klick installieren, dazu ein Hinweis oben in der Leiste.
 - **Controller-Diagnose.** Live-Test aller Tasten, Sticks, Trigger, Touchpad und Bewegung, dazu eine Liste der erkannten Geräte.
 - **PS5-Controller voll genutzt.** Touchpad, Bewegungssensor, adaptive Trigger, Lichtleiste, Vibration wie im Spiel und Akkustand (DualSense, auch per Bluetooth).

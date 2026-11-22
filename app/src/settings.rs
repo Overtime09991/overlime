@@ -26,6 +26,8 @@ pub struct Settings {
     pub kb_mode: usize,
     pub ds_features: bool,
     pub sharp: f32,
+    pub ui_scale: usize,
+    pub news_seen: String,
     pub audio_device: String,
     pub welcome_anim: bool,
 }
@@ -56,6 +58,8 @@ impl Default for Settings {
             kb_mode: 0,
             ds_features: true,
             sharp: 0.55,
+            ui_scale: 0,
+            news_seen: String::new(),
             audio_device: String::new(),
             welcome_anim: true,
         }
@@ -103,6 +107,8 @@ impl Settings {
                 "discord_id" => s.discord_id = v.trim().to_string(),
                 "autoconnect" => s.autoconnect = v.trim() == "true",
                 "ask_feedback" => s.ask_feedback = v.trim() != "false",
+                "ui_scale" => s.ui_scale = v.trim().parse().unwrap_or(0usize).min(2),
+                "news_seen" => s.news_seen = v.trim().to_string(),
                 "sharp" => s.sharp = v.trim().parse().unwrap_or(0.55f32).clamp(0.0, 1.0),
                 "ds_features" => s.ds_features = v.trim() != "false",
                 "kb_mode" => s.kb_mode = v.trim().parse().unwrap_or(0usize).min(2),
@@ -141,6 +147,7 @@ impl Settings {
         text.push_str(&format!("kb_mode={}\n", self.kb_mode));
         text.push_str(&format!("ds_features={}\n", self.ds_features));
         text.push_str(&format!("sharp={}\n", self.sharp));
+        text.push_str(&format!("ui_scale={}\nnews_seen={}\n", self.ui_scale, self.news_seen));
         for (i, k) in self.keys.iter().enumerate() {
             text.push_str(&format!("key_{i}={k}\n"));
         }
