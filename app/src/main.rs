@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.41";
+const VERSION: &str = "0.42";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -255,6 +255,12 @@ struct App {
     demo_base: Vec<u8>,
     demo_step: usize,
     demo_mode: bool,
+    media_list: Vec<MediaItem>,
+    media_t: f64,
+    media_del: Option<std::path::PathBuf>,
+    viewer: Option<std::path::PathBuf>,
+    viewer_tex: Option<(std::path::PathBuf, egui::TextureHandle)>,
+    viewer_err: String,
     demo_stream: bool,
     close_hint: bool,
     fullscreen: bool,
@@ -400,6 +406,12 @@ impl App {
             demo_base: Vec::new(),
             demo_step: usize::MAX,
             demo_mode: false,
+            media_list: Vec::new(),
+            media_t: -100.0,
+            media_del: None,
+            viewer: None,
+            viewer_tex: None,
+            viewer_err: String::new(),
             demo_stream: false,
             close_hint: false,
             fullscreen: false,
@@ -409,6 +421,9 @@ impl App {
             tx,
             rx,
         };
+        if std::env::args().any(|a| a == "--demo-viewer") {
+            app.viewer = list_media(50).into_iter().find(|m| !m.video).map(|m| m.path);
+        }
         if std::env::args().any(|a| a == "--demo-enter") {
             app.enter_demo();
             app.skip_login = true;
@@ -626,6 +641,101 @@ impl App {
             self.demo_stream = false;
         }
         ctx.request_repaint();
+    }
+
+    /// Vollbild-Anzeige für Screenshots: Pfeiltasten blättern, Esc schließt.
+    fn media_viewer(&mut self, ctx: &egui::Context) {
+        let Some(cur) = self.viewer.clone() else { return };
+        let photos: Vec<MediaItem> = list_media(400).into_iter().filter(|m| !m.video).collect();
+        let idx = photos.iter().position(|m| m.path == cur);
+        let mut close = false;
+        let mut go: i32 = 0;
+        ctx.input(|i| {
+            if i.key_pressed(Key::Escape) {
+                close = true;
+            }
+            if i.key_pressed(Key::ArrowLeft) {
+                go = 1; // die Liste ist nach Neuheit sortiert: links = neuer
+            }
+            if i.key_pressed(Key::ArrowRight) {
+                go = -1;
+            }
+        });
+        if let (Some(ix), true) = (idx, go != 0) {
+            let n = ix as i32 - go;
+            if n >= 0 && (n as usize) < photos.len() {
+                self.viewer = Some(photos[n as usize].path.clone());
+                self.viewer_err.clear();
+                self.viewer_tex = None;
+            }
+        }
+        let cur = self.viewer.clone().unwrap_or(cur);
+        if self.viewer_tex.as_ref().map(|(p, _)| p != &cur).unwrap_or(true) && self.viewer_err.is_empty() {
+            match load_png(&cur) {
+                Ok(img) => {
+                    let tex = ctx.load_texture("viewer", img, TextureOptions::LINEAR);
+                    self.viewer_tex = Some((cur.clone(), tex));
+                }
+                Err(e) => self.viewer_err = e,
+            }
+        }
+        let idx = photos.iter().position(|m| m.path == cur);
+        let screen = ctx.screen_rect();
+        egui::Area::new(egui::Id::new("media_viewer")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+            let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
+            let p = ui.painter();
+            p.rect_filled(rect, Rounding::ZERO, Color32::from_black_alpha(238));
+            if let Some((_, tex)) = &self.viewer_tex {
+                let sz = tex.size_vec2();
+                let area = Rect::from_min_max(rect.min + Vec2::new(70.0, 56.0), rect.max - Vec2::new(70.0, 70.0));
+                let sc = (area.width() / sz.x).min(area.height() / sz.y).min(2.0);
+                let r = Rect::from_center_size(area.center(), sz * sc);
+                p.image(tex.id(), r, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+            } else if !self.viewer_err.is_empty() {
+                p.text(rect.center(), Align2::CENTER_CENTER, format!("Bild kann nicht geladen werden: {}", self.viewer_err), FontId::proportional(15.0), RED);
+            }
+            let name = cur.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            p.text(Pos2::new(rect.center().x, rect.top() + 26.0), Align2::CENTER_CENTER, &name, FontId::proportional(14.0), Color32::from_white_alpha(210));
+            if let Some(ix) = idx {
+                p.text(Pos2::new(rect.center().x, rect.bottom() - 24.0), Align2::CENTER_CENTER, format!("{} / {}   •   {}", ix + 1, photos.len(), lang::tr("Pfeiltasten blättern, Esc schließt")), FontId::proportional(12.5), Color32::from_white_alpha(150));
+            }
+            // Pfeile links und rechts
+            for (dir, label, pos) in [(1i32, "‹", Pos2::new(rect.left() + 34.0, rect.center().y)), (-1, "›", Pos2::new(rect.right() - 34.0, rect.center().y))] {
+                let target = idx.map(|ix| ix as i32 - dir).filter(|n| *n >= 0 && (*n as usize) < photos.len());
+                if target.is_none() {
+                    continue;
+                }
+                let br = Rect::from_center_size(pos, Vec2::splat(48.0));
+                let hv = ui.rect_contains_pointer(br);
+                p.circle_filled(pos, 24.0, Color32::from_white_alpha(if hv { 40 } else { 18 }));
+                p.text(pos, Align2::CENTER_CENTER, label, FontId::proportional(30.0), Color32::WHITE);
+                if hv && ui.input(|i| i.pointer.any_click()) {
+                    go = dir;
+                }
+            }
+            if go != 0 {
+                if let (Some(ix), Some(n)) = (idx, idx.map(|ix| ix as i32 - go)) {
+                    let _ = ix;
+                    if n >= 0 && (n as usize) < photos.len() {
+                        self.viewer = Some(photos[n as usize].path.clone());
+                        self.viewer_err.clear();
+                        self.viewer_tex = None;
+                    }
+                }
+            }
+            // Schließen: Knopf oben rechts oder Klick auf den dunklen Rand
+            let cr = Rect::from_center_size(Pos2::new(rect.right() - 36.0, rect.top() + 30.0), Vec2::splat(36.0));
+            let chv = ui.rect_contains_pointer(cr);
+            p.circle_filled(cr.center(), 16.0, Color32::from_white_alpha(if chv { 50 } else { 20 }));
+            p.text(cr.center(), Align2::CENTER_CENTER, "×", FontId::proportional(22.0), Color32::WHITE);
+            if (chv && resp.clicked()) || (resp.clicked() && ui.input(|i| i.pointer.interact_pos().map(|p| p.x < 60.0 || p.y > rect.bottom() - 60.0).unwrap_or(false)) && false) {
+                close = true;
+            }
+        });
+        if close {
+            self.viewer = None;
+            self.viewer_tex = None;
+        }
     }
 
     fn open_dialog(&mut self, c: &Console) {
@@ -1121,6 +1231,70 @@ fn setup_fonts(ctx: &egui::Context) {
     let mut fonts = egui::FontDefinitions::default();
     egui_phosphor::add_to_fonts(&mut fonts, egui_phosphor::Variant::Regular);
     ctx.set_fonts(fonts);
+}
+
+/// Eine gespeicherte Aufnahme oder ein Screenshot.
+#[derive(Clone)]
+struct MediaItem {
+    path: std::path::PathBuf,
+    name: String,
+    size: u64,
+    age_s: u64,
+    video: bool,
+}
+
+/// Liest die neuesten Aufnahmen und Screenshots (höchstens `max`).
+fn list_media(max: usize) -> Vec<MediaItem> {
+    let mut out: Vec<(std::time::SystemTime, MediaItem)> = Vec::new();
+    let Ok(base) = std::env::var("USERPROFILE") else { return Vec::new() };
+    let now = std::time::SystemTime::now();
+    for (sub, video, ext) in [("Videos", true, "mp4"), ("Pictures", false, "png")] {
+        let dir = std::path::PathBuf::from(&base).join(sub).join("OVERLIME");
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.extension().map(|x| x.to_string_lossy().to_lowercase()) != Some(ext.to_string()) {
+                continue;
+            }
+            let Ok(md) = e.metadata() else { continue };
+            let Ok(mt) = md.modified() else { continue };
+            let age_s = now.duration_since(mt).map(|d| d.as_secs()).unwrap_or(0);
+            out.push((mt, MediaItem { name: e.file_name().to_string_lossy().to_string(), path: p, size: md.len(), age_s, video }));
+        }
+    }
+    out.sort_by(|a, b| b.0.cmp(&a.0));
+    out.into_iter().take(max).map(|(_, m)| m).collect()
+}
+
+/// Lädt ein PNG als Bild für die Anzeige (große Bilder werden auf höchstens 2048 Pixel Breite verkleinert).
+fn load_png(path: &std::path::Path) -> Result<egui::ColorImage, String> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut dec = png::Decoder::new(std::io::BufReader::new(file));
+    dec.set_transformations(png::Transformations::EXPAND | png::Transformations::STRIP_16);
+    let mut rd = dec.read_info().map_err(|e| e.to_string())?;
+    let mut buf = vec![0u8; rd.output_buffer_size()];
+    let info = rd.next_frame(&mut buf).map_err(|e| e.to_string())?;
+    let (w, h) = (info.width as usize, info.height as usize);
+    let rgba: Vec<u8> = match info.color_type {
+        png::ColorType::Rgba => buf[..w * h * 4].to_vec(),
+        png::ColorType::Rgb => buf[..w * h * 3].chunks(3).flat_map(|c| [c[0], c[1], c[2], 255]).collect(),
+        png::ColorType::Grayscale => buf[..w * h].iter().flat_map(|g| [*g, *g, *g, 255]).collect(),
+        png::ColorType::GrayscaleAlpha => buf[..w * h * 2].chunks(2).flat_map(|c| [c[0], c[0], c[0], c[1]]).collect(),
+        _ => return Err("Bildformat nicht unterstützt".into()),
+    };
+    Ok(egui::ColorImage::from_rgba_unmultiplied([w, h], &rgba))
+}
+
+fn age_text(s: u64) -> String {
+    if s < 90 {
+        "gerade eben".to_string()
+    } else if s < 3600 {
+        format!("vor {} Min.", s / 60)
+    } else if s < 86400 {
+        format!("vor {} Std.", s / 3600)
+    } else {
+        format!("vor {} Tagen", s / 86400)
+    }
 }
 
 /// Speichert das letzte Bild als PNG in Bilder\OVERLIME. Gibt den Dateinamen zurück.
@@ -2155,6 +2329,64 @@ impl App {
                         }
                     }
                 });
+                // Neueste Aufnahmen und Screenshots
+                let now_t = ui.input(|i| i.time);
+                if now_t - self.media_t > 2.0 {
+                    self.media_t = now_t;
+                    self.media_list = list_media(8);
+                }
+                ui.add_space(8.0);
+                if self.media_list.is_empty() {
+                    ui.label(RichText::new("Noch nichts aufgenommen. Im Stream: F9 für ein Video, F12 für einen Screenshot.").color(TEXT_DIM).size(12.5));
+                } else {
+                    ui.label(RichText::new("Zuletzt gespeichert").size(13.0).color(TEXT_DIM));
+                    let items = self.media_list.clone();
+                    let mut changed = false;
+                    for m in &items {
+                        egui::Frame::none().fill(Color32::from_rgba_unmultiplied(255, 255, 255, 8)).rounding(10.0).inner_margin(egui::Margin::symmetric(12.0, 8.0)).show(ui, |ui| {
+                            ui.set_width(ui.available_width());
+                            ui.horizontal(|ui| {
+                                ui.label(RichText::new(if m.video { ic::RECORD } else { ic::CAMERA }).color(th_blue_light()).size(16.0));
+                                ui.vertical(|ui| {
+                                    ui.label(RichText::new(&m.name).size(13.5));
+                                    ui.label(RichText::new(format!("{}  •  {:.1} MB", age_text(m.age_s), m.size as f64 / 1_048_576.0)).color(TEXT_DIM).size(12.0));
+                                });
+                                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                                    let del_this = self.media_del.as_ref() == Some(&m.path);
+                                    if del_this {
+                                        if ui.add(egui::Button::new(RichText::new("Wirklich löschen").color(Color32::WHITE)).fill(RED.gamma_multiply(0.8)).rounding(8.0)).clicked() {
+                                            let _ = std::fs::remove_file(&m.path);
+                                            self.media_del = None;
+                                            changed = true;
+                                        }
+                                        if ui.add(egui::Button::new("Abbrechen").rounding(8.0)).clicked() {
+                                            self.media_del = None;
+                                        }
+                                    } else {
+                                        if ui.add(egui::Button::new("Löschen").rounding(8.0)).clicked() {
+                                            self.media_del = Some(m.path.clone());
+                                        }
+                                        if ui.add(egui::Button::new("Im Ordner").rounding(8.0)).clicked() {
+                                            let _ = std::process::Command::new("explorer").arg(format!("/select,{}", m.path.display())).spawn();
+                                        }
+                                        if ui.add(egui::Button::new("Öffnen").fill(th_blue()).rounding(8.0)).clicked() {
+                                            if m.video {
+                                                let _ = std::process::Command::new("explorer").arg(&m.path).spawn();
+                                            } else {
+                                                self.viewer = Some(m.path.clone());
+                                                self.viewer_err.clear();
+                                            }
+                                        }
+                                    }
+                                });
+                            });
+                        });
+                        ui.add_space(4.0);
+                    }
+                    if changed {
+                        self.media_t = -100.0;
+                    }
+                }
             });
             section(ui, &format!("{}  Steuerung", ic::GAME_CONTROLLER), |ui| {
                 ui.checkbox(&mut st.rumble, "Controller-Vibration");
@@ -4152,6 +4384,7 @@ impl eframe::App for App {
             }
         });
 
+        self.media_viewer(ctx);
         if self.dialog.is_none() {
             self.feedback_ui(ctx);
         }
