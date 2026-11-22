@@ -16,6 +16,7 @@ mod winui;
 mod lang;
 mod lang_en;
 mod theme;
+mod tuning;
 mod tray;
 mod update;
 mod video;
@@ -38,7 +39,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.45";
+const VERSION: &str = "0.46";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -2335,6 +2336,63 @@ impl App {
                 ui.checkbox(&mut st.rumble, "Controller-Vibration");
                 ui.checkbox(&mut st.ds_features, "DualSense-Funktionen: Touchpad, Bewegungssensor, adaptive Trigger, Lichtleiste (gilt ab dem nächsten Stream)");
                 ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt.").color(TEXT_DIM).size(12.5));
+                ui.add_space(6.0);
+                ui.label(RichText::new("Controller-Feinabstimmung").size(15.0).strong());
+                ui.label(RichText::new("Passe Sticks an dein Gefühl an. Die Vorschau links zeigt, was an die Konsole geht (blau) und was dein Controller liefert (grau). Bewege die Sticks zum Testen.").color(TEXT_DIM).size(12.5));
+                ui.add_space(6.0);
+                let raw = self.pad.poll();
+                let tuned = tuning::apply(raw, st);
+                ui.horizontal(|ui| {
+                    for (title, rx_, ry_, tx_, ty_) in [("Linker Stick", raw.lx, raw.ly, tuned.lx, tuned.ly), ("Rechter Stick", raw.rx, raw.ry, tuned.rx, tuned.ry)] {
+                        let (rect, _) = ui.allocate_exact_size(Vec2::new(150.0, 170.0), egui::Sense::hover());
+                        let p = ui.painter_at(rect);
+                        let c = Pos2::new(rect.center().x, rect.top() + 72.0);
+                        p.circle_filled(c, 62.0, Color32::from_white_alpha(10));
+                        p.circle_stroke(c, 62.0, Stroke::new(1.0, Color32::from_white_alpha(40)));
+                        p.circle_stroke(c, 31.0, Stroke::new(1.0, Color32::from_white_alpha(16)));
+                        p.line_segment([c - Vec2::new(62.0, 0.0), c + Vec2::new(62.0, 0.0)], Stroke::new(1.0, Color32::from_white_alpha(14)));
+                        p.line_segment([c - Vec2::new(0.0, 62.0), c + Vec2::new(0.0, 62.0)], Stroke::new(1.0, Color32::from_white_alpha(14)));
+                        let pos = |x: i16, y: i16| c + Vec2::new(x as f32 / 32767.0, y as f32 / 32767.0) * 58.0;
+                        p.circle_filled(pos(rx_, ry_), 6.0, Color32::from_white_alpha(120));
+                        p.circle_filled(pos(tx_, ty_), 8.0, th_blue());
+                        p.circle_stroke(pos(tx_, ty_), 8.0, Stroke::new(1.5, th_blue_light()));
+                        p.text(Pos2::new(rect.center().x, rect.bottom() - 18.0), Align2::CENTER_CENTER, title, FontId::proportional(13.0), TEXT_DIM);
+                    }
+                    ui.add_space(10.0);
+                    ui.vertical(|ui| {
+                        ui.label(RichText::new("Linker Stick").size(13.0).color(TEXT_DIM));
+                        let mut dl = st.tune_dead_l * 100.0;
+                        if ui.add(egui::Slider::new(&mut dl, 0.0..=35.0).text("Totzone").suffix(" %")).changed() {
+                            st.tune_dead_l = dl / 100.0;
+                        }
+                        let mut sl = st.tune_sens_l * 100.0;
+                        if ui.add(egui::Slider::new(&mut sl, 50.0..=150.0).text("Empfindlichkeit").suffix(" %")).changed() {
+                            st.tune_sens_l = sl / 100.0;
+                        }
+                        segmented(ui, &mut st.tune_curve_l, &["Sanft", "Linear", "Direkt"]);
+                        ui.add_space(6.0);
+                        ui.label(RichText::new("Rechter Stick").size(13.0).color(TEXT_DIM));
+                        let mut dr = st.tune_dead_r * 100.0;
+                        if ui.add(egui::Slider::new(&mut dr, 0.0..=35.0).text("Totzone").suffix(" %")).changed() {
+                            st.tune_dead_r = dr / 100.0;
+                        }
+                        let mut sr = st.tune_sens_r * 100.0;
+                        if ui.add(egui::Slider::new(&mut sr, 50.0..=150.0).text("Empfindlichkeit").suffix(" %")).changed() {
+                            st.tune_sens_r = sr / 100.0;
+                        }
+                        segmented(ui, &mut st.tune_curve_r, &["Sanft", "Linear", "Direkt"]);
+                    });
+                });
+                ui.add_space(8.0);
+                fancy_switch(ui, &mut st.aim_slow, "Zielhilfe: Stick beim Zielen verlangsamen", "Halte L2 (Zielen), dann bewegt sich der rechte Stick langsamer und du triffst genauer. Das ist nur eine Eingabehilfe: Gezielt wird weiterhin von dir.", "");
+                if st.aim_slow {
+                    ui.add_space(4.0);
+                    ui.add(egui::Slider::new(&mut st.aim_slow_pct, 20.0..=90.0).text("Tempo beim Zielen").suffix(" %"));
+                }
+                ui.add_space(6.0);
+                if !tuning::is_default(st) && ui.add(egui::Button::new("Alles auf Standard zurücksetzen").fill(th_card_hover()).rounding(10.0)).clicked() {
+                    tuning::reset(st);
+                }
             });
             section(ui, &format!("{}  Discord", ic::DISCORD_LOGO), |ui| {
                 let ready = !discord::DEFAULT_APP_ID.is_empty() || !st.discord_id.trim().is_empty();
@@ -3345,6 +3403,7 @@ impl App {
             rx: pad_in.rx,
             ry: pad_in.ry,
         };
+        let input = tuning::apply(input, &self.settings);
         let input = if self.stream_menu { pad::Input { buttons: 0, l2: 0, r2: 0, lx: 0, ly: 0, rx: 0, ry: 0 } } else { input };
         let pad_connected = self.pad.connected();
         let log_tail: String = self.log.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");

@@ -20,6 +20,14 @@ pub struct Settings {
     pub hud_box: bool,
     pub tour_done: bool,
     pub intro: bool,
+    pub tune_dead_l: f32,
+    pub tune_dead_r: f32,
+    pub tune_sens_l: f32,
+    pub tune_sens_r: f32,
+    pub tune_curve_l: usize,
+    pub tune_curve_r: usize,
+    pub aim_slow: bool,
+    pub aim_slow_pct: f32,
     pub notify_ready: bool,
     pub eq_bass: f32,
     pub eq_mid: f32,
@@ -70,6 +78,14 @@ impl Default for Settings {
             hud_box: false,
             tour_done: false,
             intro: true,
+            tune_dead_l: 0.0,
+            tune_dead_r: 0.0,
+            tune_sens_l: 1.0,
+            tune_sens_r: 1.0,
+            tune_curve_l: 1,
+            tune_curve_r: 1,
+            aim_slow: false,
+            aim_slow_pct: 45.0,
             notify_ready: true,
             eq_bass: 0.0,
             eq_mid: 0.0,
@@ -176,6 +192,14 @@ impl Settings {
                 "hud_box" => s.hud_box = v.trim() == "true",
                 "tour_done" => s.tour_done = v.trim() == "true",
                 "intro" => s.intro = v.trim() != "false",
+                "tune_dead_l" => s.tune_dead_l = v.trim().parse().unwrap_or(0.0f32).clamp(0.0, 0.4),
+                "tune_dead_r" => s.tune_dead_r = v.trim().parse().unwrap_or(0.0f32).clamp(0.0, 0.4),
+                "tune_sens_l" => s.tune_sens_l = v.trim().parse().unwrap_or(1.0f32).clamp(0.5, 1.5),
+                "tune_sens_r" => s.tune_sens_r = v.trim().parse().unwrap_or(1.0f32).clamp(0.5, 1.5),
+                "tune_curve_l" => s.tune_curve_l = v.trim().parse::<usize>().unwrap_or(1).min(2),
+                "tune_curve_r" => s.tune_curve_r = v.trim().parse::<usize>().unwrap_or(1).min(2),
+                "aim_slow" => s.aim_slow = v.trim() == "true",
+                "aim_slow_pct" => s.aim_slow_pct = v.trim().parse().unwrap_or(45.0f32).clamp(20.0, 90.0),
                 "notify_ready" => s.notify_ready = v.trim() != "false",
                 "wake_on" => s.wake_on = v.trim() == "true",
                 "wake_hour" => s.wake_hour = v.trim().parse().unwrap_or(19u8).min(23),
@@ -239,6 +263,7 @@ impl Settings {
         text.push_str(&format!("notify_ready={}\n", self.notify_ready));
         text.push_str(&format!("tour_done={}\n", self.tour_done));
         text.push_str(&format!("intro={}\n", self.intro));
+        text.push_str(&format!("tune_dead_l={}\ntune_dead_r={}\ntune_sens_l={}\ntune_sens_r={}\ntune_curve_l={}\ntune_curve_r={}\naim_slow={}\naim_slow_pct={}\n", self.tune_dead_l, self.tune_dead_r, self.tune_sens_l, self.tune_sens_r, self.tune_curve_l, self.tune_curve_r, self.aim_slow, self.aim_slow_pct));
         text.push_str(&format!("hud_items={}\nhud_pos={}\nhud_size={}\nhud_box={}\n", self.hud_items, self.hud_pos, self.hud_size, self.hud_box));
         text.push_str(&format!("interp={}\n", self.interp));
         text.push_str(&format!("language={}\n", self.language));

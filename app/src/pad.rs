@@ -295,6 +295,7 @@ const B_LEFT: c_int = 13;
 const B_RIGHT: c_int = 14;
 const B_TOUCHPAD: c_int = 20;
 
+#[derive(Clone, Copy)]
 pub struct Input {
     pub buttons: u32,
     pub l2: u8,
