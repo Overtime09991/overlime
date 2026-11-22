@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.35";
+const VERSION: &str = "0.36";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -4336,6 +4336,13 @@ Gefunden: {}
         }
         return Ok(());
     }
+    if let Some(i) = std::env::args().position(|a| a == "--icon-dump") {
+        let ic = winui::app_icon();
+        if let Some(p) = std::env::args().nth(i + 1) {
+            let _ = image_dump(&p, &ic.rgba, ic.width, ic.height);
+        }
+        return Ok(());
+    }
     if let Some(i) = std::env::args().position(|a| a == "--verify-sig") {
         let a: Vec<String> = std::env::args().collect();
         let data = a.get(i + 1).and_then(|p| std::fs::read(p).ok()).unwrap_or_default();
@@ -4380,4 +4387,12 @@ Gefunden: {}
     }
     let opts = eframe::NativeOptions { viewport: vb, ..Default::default() };
     eframe::run_native("OVERLIME Remote Play", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
+}
+
+fn image_dump(path: &str, rgba: &[u8], w: u32, h: u32) -> Result<(), String> {
+    let f = std::fs::File::create(path).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(f), w, h);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    enc.write_header().map_err(|e| e.to_string())?.write_image_data(rgba).map_err(|e| e.to_string())
 }

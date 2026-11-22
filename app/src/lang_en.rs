@@ -385,6 +385,7 @@ pub const EN: &[(&str, &str)] = &[
     (r##"Über OVERLIME"##, r##"About OVERLIME"##),
     (r##"Tour wiederholen"##, r##"Repeat tour"##),
     (r##"Version {}"##, r##"Version {}"##),
+    (r##"Neues App-Symbol"##, r##"New app icon"##),
     (r##"Sprache"##, r##"Language"##),
     (r##"Aufwecken und verbinden"##, r##"Wake up and connect"##),
     (r##"OVERLIME öffnen"##, r##"Open OVERLIME"##),

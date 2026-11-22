@@ -4,6 +4,7 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Neues App-Symbol",
     "Neuigkeiten laden auch bei GitHub-Limit",
     "Updateprüfung klappt auch bei GitHub-Limit",
     "Neuer, ruhiger Update-Abschlussbildschirm",

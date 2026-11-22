@@ -41,48 +41,71 @@ pub fn style_titlebar(title: &str, caption: Color32, border: Color32) {
     let _ = (title, caption, border);
 }
 
-/// App-Symbol: dunkle, abgerundete Kachel mit leuchtendem Ring und Play-Dreieck.
+/// App-Symbol: kräftige, abgerundete Kachel mit Farbverlauf und großem weißem Play-Dreieck (auch klein gut lesbar).
 pub fn app_icon() -> IconData {
-    let n = 128usize;
+    let n = 256usize;
     let mut rgba = vec![0u8; n * n * 4];
     let c = (n as f32 - 1.0) / 2.0;
+    // Abstand eines Punktes zu einem Dreieck (0 im Inneren)
+    fn seg(p: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+        let (abx, aby) = (b.0 - a.0, b.1 - a.1);
+        let t = (((p.0 - a.0) * abx + (p.1 - a.1) * aby) / (abx * abx + aby * aby)).clamp(0.0, 1.0);
+        ((p.0 - a.0 - abx * t).powi(2) + (p.1 - a.1 - aby * t).powi(2)).sqrt()
+    }
+    let tri = [(-34.0f32, -58.0f32), (-34.0, 58.0), (62.0, 0.0)];
+    let dist_tri = |p: (f32, f32)| -> f32 {
+        let s = |a: (f32, f32), b: (f32, f32)| (b.0 - a.0) * (p.1 - a.1) - (b.1 - a.1) * (p.0 - a.0);
+        let (d1, d2, d3) = (s(tri[0], tri[1]), s(tri[1], tri[2]), s(tri[2], tri[0]));
+        if (d1 >= 0.0 && d2 >= 0.0 && d3 >= 0.0) || (d1 <= 0.0 && d2 <= 0.0 && d3 <= 0.0) {
+            0.0
+        } else {
+            seg(p, tri[0], tri[1]).min(seg(p, tri[1], tri[2])).min(seg(p, tri[2], tri[0]))
+        }
+    };
     for y in 0..n {
         for x in 0..n {
-            let (fx, fy) = (x as f32 - c, y as f32 - c);
-            // abgerundetes Quadrat (Superellipse)
-            let k = (fx.abs() / 60.0).powf(5.0) + (fy.abs() / 60.0).powf(5.0);
-            let mut a = (1.0 - k).clamp(0.0, 1.0);
-            a = (a * 6.0).clamp(0.0, 1.0);
-            if a <= 0.0 {
-                continue;
+            let mut acc = [0.0f32; 4];
+            // 3x3 Unterabtastung für glatte Kanten
+            for sy in 0..3 {
+                for sx in 0..3 {
+                    let fx = x as f32 + (sx as f32 + 0.5) / 3.0 - 0.5 - c;
+                    let fy = y as f32 + (sy as f32 + 0.5) / 3.0 - 0.5 - c;
+                    let k = (fx.abs() / 122.0).powf(5.0) + (fy.abs() / 122.0).powf(5.0);
+                    let a = ((1.0 - k) * 14.0).clamp(0.0, 1.0);
+                    if a <= 0.0 {
+                        continue;
+                    }
+                    // Farbverlauf: helles Blau links oben, Violett rechts unten
+                    let t = ((fx + fy) / (2.0 * 244.0) + 0.5).clamp(0.0, 1.0);
+                    let mut r = 44.0 + (128.0 - 44.0) * t;
+                    let mut g = 132.0 + (84.0 - 132.0) * t;
+                    let mut b = 255.0 + (240.0 - 255.0) * t;
+                    // sanfter Lichtschein oben
+                    let hl = (1.0 - (fy + 122.0) / 150.0).clamp(0.0, 1.0) * 0.16;
+                    r += (255.0 - r) * hl;
+                    g += (255.0 - g) * hl;
+                    b += (255.0 - b) * hl;
+                    // Dreieck mit gerundeten Ecken (leicht nach rechts verschoben)
+                    let d = dist_tri((fx - 6.0, fy));
+                    let w = (1.0 - (d - 14.0)).clamp(0.0, 1.0);
+                    if w > 0.0 {
+                        r += (255.0 - r) * w;
+                        g += (255.0 - g) * w;
+                        b += (255.0 - b) * w;
+                    }
+                    acc[0] += r * a;
+                    acc[1] += g * a;
+                    acc[2] += b * a;
+                    acc[3] += a;
+                }
             }
-            // Hintergrundverlauf
-            let t = (y as f32 / n as f32 + x as f32 / n as f32) / 2.0;
-            let mut r = 14.0 + 18.0 * t;
-            let mut g = 22.0 + 30.0 * t;
-            let mut b = 52.0 + 60.0 * t;
-            // Ring
-            let d = (fx * fx + fy * fy).sqrt();
-            let ring = (1.0 - ((d - 40.0).abs() / 7.0)).clamp(0.0, 1.0);
-            let ang = fy.atan2(fx);
-            let sweep = if ang > -2.2 && ang < 2.6 { 1.0 } else { 0.35 };
-            let w = ring * sweep;
-            r = r * (1.0 - w) + 80.0 * w;
-            g = g * (1.0 - w) + 165.0 * w;
-            b = b * (1.0 - w) + 255.0 * w;
-            // Play-Dreieck
-            let px = fx + 6.0;
-            let inside = px > -14.0 && px < 20.0 && fy.abs() < (20.0 - px) * 0.9 + 0.0 && fy.abs() < 22.0 - (px + 14.0) * 0.64;
-            if inside {
-                r = 240.0;
-                g = 246.0;
-                b = 255.0;
+            if acc[3] > 0.0 {
+                let i = (y * n + x) * 4;
+                rgba[i] = (acc[0] / acc[3]) as u8;
+                rgba[i + 1] = (acc[1] / acc[3]) as u8;
+                rgba[i + 2] = (acc[2] / acc[3]) as u8;
+                rgba[i + 3] = (acc[3] / 9.0 * 255.0) as u8;
             }
-            let i = (y * n + x) * 4;
-            rgba[i] = r as u8;
-            rgba[i + 1] = g as u8;
-            rgba[i + 2] = b as u8;
-            rgba[i + 3] = (a * 255.0) as u8;
         }
     }
     IconData { rgba, width: n as u32, height: n as u32 }
