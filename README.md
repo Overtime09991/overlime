@@ -7,7 +7,7 @@
 Spiele deine PlayStation-Spiele auf dem Windows-PC, mit bis zu **1080p bei 60 FPS**,
 moderner Oberfläche und einem Start in unter einer Minute.
 
-[**Herunterladen**](https://github.com/Overtime09991/overlime/releases/latest) &nbsp;•&nbsp; Windows 10/11 &nbsp;•&nbsp; PS4 & PS5 &nbsp;•&nbsp; kostenlos & Open Source
+[**Herunterladen**](https://github.com/Overtime09991/overlime/releases/download/installer/OVERLIME-Setup.exe) &nbsp;•&nbsp; Windows 10/11 &nbsp;•&nbsp; PS4 & PS5 &nbsp;•&nbsp; kostenlos & Open Source
 
 </div>
 
@@ -21,6 +21,8 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
 - **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
 - **Ton inklusive.** Spielton direkt auf deinem Standard-Wiedergabegerät.
+- **Diagnose und Hilfe.** Eine Diagnose-Seite prüft Netzwerk, Konsole, Konto und Controller und erklärt bei Problemen, woran es liegt. „Problem melden“ kopiert einen Bericht ohne IP-Adressen.
+- **Komfort.** Auf Wunsch verbindet sich OVERLIME beim Start automatisch mit deiner Konsole (und weckt sie auf). Screenshots im Stream mit F12.
 - **Dein Look.** Fünf Farbschemata (von Ozean bis reines Schwarz) und eigene Themes als einfache Textdatei, dazu sanfte Animationen.
 - **Sauber im Fenster.** Eigene Kopfleiste mit Status-Chips, die Fensterleiste passt sich deinem Farbschema an.
 - **Discord-Status (optional).** Auf Wunsch zeigt Discord „Spielt OVERLIME“ mit Spiel und Spielzeit. Standardmäßig aus, ohne IP-Adressen oder Konsolennamen.
@@ -29,7 +31,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 
 ## In drei Schritten loslegen
 
-1. **Herunterladen:** Von der [Release-Seite](https://github.com/Overtime09991/overlime/releases/latest) entweder `OVERLIME-Setup-….exe` (Installer, empfohlen) oder `overlime.exe` (ohne Installation) laden.
+1. **Herunterladen:** [OVERLIME-Setup.exe](https://github.com/Overtime09991/overlime/releases/download/installer/OVERLIME-Setup.exe) laden und doppelklicken. Das ist der einzige Download, den du je brauchst.
 2. **Anmelden und koppeln:** Mit dem PlayStation-Konto anmelden (nur einmal), bei der Konsole auf **Koppeln** klicken und den 8-stelligen Code eingeben, den die Konsole unter *Einstellungen › System › Remote Play › Gerät koppeln* anzeigt.
 3. **Spielen:** Auf **Verbinden** klicken.
 
@@ -37,16 +39,16 @@ moderner Oberfläche und einem Start in unter einer Minute.
 
 > Windows zeigt bei neuen Programmen evtl. „Der Computer wurde durch Windows geschützt“. Dann auf *Weitere Informationen › Trotzdem ausführen* klicken. Falls beim Start eine Datei `VCRUNTIME140.dll` fehlt, einmal das [Microsoft Visual C++ Redistributable](https://aka.ms/vs/17/release/vc_redist.x64.exe) installieren.
 
-## Installieren (optional)
+## Installation (einmalig)
 
-Der **Installer** (`OVERLIME-Setup-….exe`) richtet OVERLIME in deinem Benutzerordner ein, ohne Administrator-Rechte:
+Es gibt **ein einziges Setup für alle**: [OVERLIME-Setup.exe](https://github.com/Overtime09991/overlime/releases/download/installer/OVERLIME-Setup.exe). Es muss nie wieder neu heruntergeladen werden.
 
-- Startmenü-Eintrag, auf Wunsch ein Desktop-Symbol und Start mit Windows
-- Eintrag unter *Einstellungen › Apps*, von dort lässt sich OVERLIME wieder deinstallieren
-- Die nötige Windows-Laufzeitdatei ist dabei, es läuft auch auf einem frisch eingerichteten PC
-- **Updates kommen weiter automatisch**, die App aktualisiert sich selbst
+- Das Setup richtet OVERLIME in deinem Benutzerordner ein, ohne Administrator-Rechte, mit Startmenü-Eintrag, auf Wunsch Desktop-Symbol und Start mit Windows.
+- Beim **ersten Start** holt sich OVERLIME selbst die **neueste Version**. Danach kommen alle Updates automatisch, die App prüft und installiert sie von allein.
+- Eintrag unter *Einstellungen › Apps*, von dort lässt sich OVERLIME wieder deinstallieren.
+- Die nötige Windows-Laufzeitdatei ist dabei, es läuft auch auf einem frisch eingerichteten PC.
 
-Wer lieber nichts installiert, startet einfach die `overlime.exe`.
+Alternativ gibt es auf der [Release-Seite](https://github.com/Overtime09991/overlime/releases) die einzelne `overlime.exe` ohne Installation.
 
 ## Qualität
 

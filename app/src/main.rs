@@ -32,13 +32,14 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.13";
+const VERSION: &str = "0.14";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
     Home,
     Consoles,
     Settings,
+    Diagnose,
     Help,
 }
 
@@ -54,6 +55,7 @@ enum Msg {
     StreamErr(String),
     UpdateAvail(update::Release),
     UpdateNone,
+    DiagPort(bool, String),
     UpdateErr(String),
 }
 
@@ -136,9 +138,18 @@ struct App {
     titlebar_dirty: bool,
     title_tries: u8,
     discord: discord::Handle,
+    app_start_unix: i64,
+    icon_tex: Option<TextureHandle>,
+    prev_ready: HashMap<String, bool>,
+    auto_done: bool,
+    auto_wake_done: bool,
+    diag_port: Option<(bool, String)>,
+    diag_busy: bool,
     applied_theme: String,
     toasts: Vec<(String, u8, f64)>,
     now: f64,
+    pad_name_cache: String,
+    shot_requested: bool,
     close_hint: bool,
     fullscreen: bool,
     status: String,
@@ -209,9 +220,18 @@ impl App {
             titlebar_dirty: true,
             title_tries: 0,
             discord: discord::spawn(),
+            app_start_unix: std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0),
+            icon_tex: None,
+            prev_ready: HashMap::new(),
+            auto_done: false,
+            auto_wake_done: false,
+            diag_port: None,
+            diag_busy: false,
             applied_theme: String::new(),
             toasts: Vec::new(),
             now: 0.0,
+            pad_name_cache: String::new(),
+            shot_requested: false,
             close_hint: false,
             fullscreen: false,
             status: String::new(),
@@ -258,6 +278,9 @@ impl App {
             app.last_scan = Instant::now() + Duration::from_secs(100_000);
             if std::env::args().any(|a| a == "--settings") {
                 app.page = Page::Settings;
+            }
+            if std::env::args().any(|a| a == "--diag-page") {
+                app.page = Page::Diagnose;
             }
             if std::env::args().any(|a| a == "--help-page") {
                 app.page = Page::Help;
@@ -436,6 +459,7 @@ impl App {
                         let mut l = l;
                         l.sort_by(|a, b| a.name.cmp(&b.name));
                         self.consoles = l;
+                        self.after_scan();
                     }
                 }
                 Msg::Error(e) => {
@@ -537,6 +561,10 @@ impl App {
                     // update_busy bleibt an, damit der Fehler im Update-Bildschirm sichtbar ist
                     self.update_err = e;
                 }
+                Msg::DiagPort(ok, text) => {
+                    self.diag_busy = false;
+                    self.diag_port = Some((ok, text));
+                }
                 Msg::UpdateNone => {
                     self.update_checked = true;
                     self.update_msg = "Du hast die neueste Version.".into();
@@ -605,6 +633,22 @@ fn pretty_version(v: &str) -> String {
     }
 }
 
+/// Texte für den Discord-Status: nur Spiel und Konsole. mode: 0 = Übersicht, 1 = verbindet, 2 = spielt.
+fn presence_lines(st: &Settings, mode: u8, game: &str, ps5: bool, found: usize) -> (String, String) {
+    let console = if ps5 { "PlayStation 5" } else { "PlayStation 4" };
+    match mode {
+        2 => {
+            if st.discord_game && !game.is_empty() {
+                (format!("Spielt {game}"), format!("auf {console}"))
+            } else {
+                (format!("Spielt auf {console}"), "OVERLIME Remote Play".to_string())
+            }
+        }
+        1 => ("Verbindet mit der Konsole".to_string(), "OVERLIME Remote Play".to_string()),
+        _ => (if found > 0 { "Bereit zum Zocken".to_string() } else { "Sucht eine Konsole".to_string() }, "OVERLIME Remote Play".to_string()),
+    }
+}
+
 fn german_reason(msg: &str) -> String {
     let m = msg.to_lowercase();
     let t = if m.contains("unknown session request") || m.contains("ctrl failed to connect") {
@@ -656,6 +700,25 @@ fn setup_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
+/// Speichert das letzte Bild als PNG in Bilder\OVERLIME. Gibt den Dateinamen zurück.
+fn save_screenshot(buf: &[u8], w: usize, h: usize) -> Result<String, String> {
+    if w == 0 || h == 0 || buf.len() < w * h * 4 {
+        return Err("Kein Bild".into());
+    }
+    let base = std::env::var("USERPROFILE").map_err(|e| e.to_string())?;
+    let dir = std::path::PathBuf::from(base).join("Pictures").join("OVERLIME");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let secs = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let name = format!("OVERLIME-{secs}.png");
+    let file = std::fs::File::create(dir.join(&name)).map_err(|e| e.to_string())?;
+    let mut enc = png::Encoder::new(std::io::BufWriter::new(file), w as u32, h as u32);
+    enc.set_color(png::ColorType::Rgba);
+    enc.set_depth(png::BitDepth::Eight);
+    let mut wr = enc.write_header().map_err(|e| e.to_string())?;
+    wr.write_image_data(&buf[..w * h * 4]).map_err(|e| e.to_string())?;
+    Ok(name)
+}
+
 fn ease_out_t(x: f32) -> f32 {
     1.0 - (1.0 - x.clamp(0.0, 1.0)).powi(3)
 }
@@ -671,45 +734,33 @@ fn big_button(text: &str, fill: Color32) -> egui::Button<'static> {
         .min_size(Vec2::new(160.0, 46.0))
 }
 
-/// PS5 (weiß, geschwungen) oder PS4 (schwarz, Parallelogramm), mit pulsierendem Schein.
-fn draw_console(ui: &mut egui::Ui, ps5: bool, on: bool, t: f64, hover: f32) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(130.0, 130.0), egui::Sense::hover());
-    let p = ui.painter_at(rect);
-    let c = rect.center();
+/// Zeichnet eine Konsole (PS5 weiß/geschwungen, PS4 schwarz) mit pulsierendem Schein. k = Größe (1.0 = 130 px).
+pub fn paint_console(p: &egui::Painter, c: Pos2, k: f32, ps5: bool, on: bool, t: f64, hover: f32) {
+    let pt = |dx: f32, dy: f32| Pos2::new(c.x + dx * k, c.y + dy * k);
     let pulse = if on { 0.5 + 0.5 * (t * 2.0).sin() as f32 } else { 0.0 };
     let glow = if on { th_blue() } else { Color32::from_rgb(60, 70, 100) };
-    p.circle_filled(c, 60.0 + 3.0 * pulse + 3.0 * hover, glow.gamma_multiply(0.10 + 0.06 * pulse));
-    p.circle_filled(c, 44.0, glow.gamma_multiply(0.12));
+    p.circle_filled(c, (60.0 + 3.0 * pulse + 3.0 * hover) * k, glow.gamma_multiply(0.10 + 0.06 * pulse));
+    p.circle_filled(c, 44.0 * k, glow.gamma_multiply(0.12));
     let led = if on { th_blue_light().gamma_multiply(0.65 + 0.35 * pulse) } else { Color32::from_rgb(90, 98, 120) };
 
     if ps5 {
         let w = Color32::from_rgb(242, 244, 250);
         let w2 = Color32::from_rgb(207, 212, 228);
-        p.add(Shape::convex_polygon(
-            vec![Pos2::new(c.x - 6.0, c.y - 52.0), Pos2::new(c.x - 28.0, c.y - 40.0), Pos2::new(c.x - 30.0, c.y + 44.0), Pos2::new(c.x - 6.0, c.y + 54.0)],
-            w,
-            Stroke::NONE,
-        ));
-        p.add(Shape::convex_polygon(
-            vec![Pos2::new(c.x + 6.0, c.y - 52.0), Pos2::new(c.x + 28.0, c.y - 40.0), Pos2::new(c.x + 30.0, c.y + 44.0), Pos2::new(c.x + 6.0, c.y + 54.0)],
-            w2,
-            Stroke::NONE,
-        ));
-        p.rect_filled(Rect::from_center_size(c, Vec2::new(13.0, 104.0)), Rounding::same(6.0), Color32::from_rgb(18, 20, 28));
-        p.rect_filled(Rect::from_center_size(Pos2::new(c.x, c.y - 20.0), Vec2::new(3.0, 40.0)), Rounding::same(2.0), led);
+        p.add(Shape::convex_polygon(vec![pt(-6.0, -52.0), pt(-28.0, -40.0), pt(-30.0, 44.0), pt(-6.0, 54.0)], w, Stroke::NONE));
+        p.add(Shape::convex_polygon(vec![pt(6.0, -52.0), pt(28.0, -40.0), pt(30.0, 44.0), pt(6.0, 54.0)], w2, Stroke::NONE));
+        p.rect_filled(Rect::from_center_size(c, Vec2::new(13.0, 104.0) * k), Rounding::same(6.0 * k), Color32::from_rgb(18, 20, 28));
+        p.rect_filled(Rect::from_center_size(pt(0.0, -20.0), Vec2::new(3.0, 40.0) * k), Rounding::same(2.0 * k), led);
     } else {
-        p.add(Shape::convex_polygon(
-            vec![Pos2::new(c.x - 30.0, c.y - 40.0), Pos2::new(c.x + 52.0, c.y - 40.0), Pos2::new(c.x + 30.0, c.y + 40.0), Pos2::new(c.x - 52.0, c.y + 40.0)],
-            Color32::from_rgb(28, 31, 42),
-            Stroke::new(1.5, Color32::from_rgb(70, 76, 96)),
-        ));
-        p.add(Shape::convex_polygon(
-            vec![Pos2::new(c.x - 30.0, c.y - 40.0), Pos2::new(c.x + 52.0, c.y - 40.0), Pos2::new(c.x + 46.0, c.y - 20.0), Pos2::new(c.x - 36.0, c.y - 20.0)],
-            Color32::from_rgb(40, 44, 58),
-            Stroke::NONE,
-        ));
-        p.rect_filled(Rect::from_center_size(Pos2::new(c.x - 4.0, c.y + 10.0), Vec2::new(42.0, 4.0)), Rounding::same(2.0), led);
+        p.add(Shape::convex_polygon(vec![pt(-30.0, -40.0), pt(52.0, -40.0), pt(30.0, 40.0), pt(-52.0, 40.0)], Color32::from_rgb(28, 31, 42), Stroke::new(1.5, Color32::from_rgb(70, 76, 96))));
+        p.add(Shape::convex_polygon(vec![pt(-30.0, -40.0), pt(52.0, -40.0), pt(46.0, -20.0), pt(-36.0, -20.0)], Color32::from_rgb(40, 44, 58), Stroke::NONE));
+        p.rect_filled(Rect::from_center_size(pt(-4.0, 10.0), Vec2::new(42.0, 4.0) * k), Rounding::same(2.0 * k), led);
     }
+}
+
+fn draw_console(ui: &mut egui::Ui, ps5: bool, on: bool, t: f64, hover: f32) {
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(130.0, 130.0), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    paint_console(&p, rect.center(), 1.0, ps5, on, t, hover);
 }
 
 /// Platzhalter-Karte mit wanderndem Glanz, solange gesucht wird.
@@ -1036,7 +1087,7 @@ impl App {
                     ui.checkbox(&mut st.discord, "Meinen Status auf Discord anzeigen");
                     ui.checkbox(&mut st.discord_game, "Spielnamen anzeigen");
                 });
-                ui.label(RichText::new("Zeigt auf Discord „Spielt OVERLIME“ mit dem Spiel und der Spielzeit. IP-Adressen oder Konsolennamen werden nie gesendet. Die Discord-App muss auf diesem PC laufen.").color(TEXT_DIM).size(12.5));
+                ui.label(RichText::new("Auf Discord steht „Spielt OVERLIME“ mit dem Spiel und der Konsole (PS5 oder PS4). Sonst wird nichts gesendet, keine IP-Adressen und keine Konsolennamen. Die Discord-App muss auf diesem PC laufen.").color(TEXT_DIM).size(12.5));
                 if !ready {
                     ui.label(RichText::new("Noch nicht verfügbar: OVERLIME ist bei Discord noch nicht registriert.").color(YELLOW).size(12.5));
                 } else if st.discord {
@@ -1047,6 +1098,48 @@ impl App {
                     };
                     ui.label(RichText::new(txt).color(col).size(12.5));
                 }
+
+                // Live-Vorschau: so sehen es andere
+                ui.add_space(8.0);
+                ui.label(RichText::new("Vorschau: So sieht dein Status beim Spielen aus").size(13.0).strong());
+                ui.add_space(2.0);
+                if self.icon_tex.is_none() {
+                    let ic_data = winui::app_icon();
+                    let img = egui::ColorImage::from_rgba_unmultiplied([ic_data.width as usize, ic_data.height as usize], &ic_data.rgba);
+                    self.icon_tex = Some(ui.ctx().load_texture("appicon", img, Default::default()));
+                }
+                let found = self.consoles.len();
+                let (ex_game, ex_ps5) = match self.consoles.iter().find(|c| !c.running_app.is_empty()) {
+                    Some(c) => (c.running_app.clone(), c.is_ps5),
+                    None => ("EA SPORTS FC 26".to_string(), true),
+                };
+                let (det, stt) = presence_lines(&*st, 2, &ex_game, ex_ps5, found);
+                let show_buttons = false;
+                let tnow = ui.ctx().input(|i| i.time);
+                let secs = (tnow as u64) % 3600;
+                let h = if show_buttons { 176.0 } else { 128.0 };
+                let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width().min(460.0), h), egui::Sense::hover());
+                let p = ui.painter_at(rect);
+                p.rect_filled(rect, Rounding::same(14.0), Color32::from_rgb(30, 31, 34));
+                p.text(rect.min + Vec2::new(16.0, 12.0), Align2::LEFT_TOP, "Spielt", FontId::proportional(12.5), Color32::from_rgb(220, 222, 225));
+                let img_rect = Rect::from_min_size(rect.min + Vec2::new(16.0, 36.0), Vec2::splat(76.0));
+                if let Some(tex) = &self.icon_tex {
+                    p.image(tex.id(), img_rect, Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)), Color32::WHITE);
+                }
+                let tx = rect.min.x + 108.0;
+                p.text(Pos2::new(tx, rect.min.y + 36.0), Align2::LEFT_TOP, "OVERLIME", FontId::proportional(15.0), Color32::WHITE);
+                p.text(Pos2::new(tx, rect.min.y + 58.0), Align2::LEFT_TOP, det, FontId::proportional(13.0), Color32::from_rgb(220, 222, 225));
+                p.text(Pos2::new(tx, rect.min.y + 76.0), Align2::LEFT_TOP, stt, FontId::proportional(13.0), Color32::from_rgb(190, 193, 198));
+                p.text(Pos2::new(tx, rect.min.y + 96.0), Align2::LEFT_TOP, format!("{}  {}:{:02}", ic::GAME_CONTROLLER, secs / 60, secs % 60), FontId::proportional(12.5), GREEN);
+                if show_buttons {
+                    let bw = (rect.width() - 48.0) / 2.0;
+                    for (i, label) in ["OVERLIME herunterladen", "Quellcode ansehen"].iter().enumerate() {
+                        let br = Rect::from_min_size(Pos2::new(rect.min.x + 16.0 + i as f32 * (bw + 16.0), rect.max.y - 44.0), Vec2::new(bw, 30.0));
+                        p.rect_stroke(br, Rounding::same(6.0), Stroke::new(1.0, Color32::from_rgb(100, 103, 110)));
+                        p.text(br.center(), Align2::CENTER_CENTER, *label, FontId::proportional(12.5), Color32::WHITE);
+                    }
+                }
+                ui.ctx().request_repaint_after(Duration::from_millis(500));
             });
             ui.add_space(6.0);
             section(ui, &format!("{}  Verbindung", ic::GLOBE), |ui| {
@@ -1054,6 +1147,7 @@ impl App {
                 ui.add(egui::TextEdit::singleline(&mut st.manual_ip).hint_text("IP-Adresse der Konsole").desired_width(260.0));
                 ui.add_space(6.0);
                 ui.checkbox(&mut st.auto_update, "Updates automatisch installieren");
+                ui.checkbox(&mut st.autoconnect, "Beim Start automatisch mit meiner Konsole verbinden (weckt sie bei Bedarf auf)");
                 ui.checkbox(&mut st.welcome_anim, "Willkommensbild nach einem Update zeigen");
                 ui.horizontal(|ui| {
                     if ui.add(egui::Button::new("Nach Updates suchen").fill(th_card_hover()).rounding(10.0)).clicked() {
@@ -1231,6 +1325,7 @@ impl App {
     /// Pause-Menü und Tastenbelegung im Stream. Gibt (weiter, vollbild, tasten, stream_beenden, app_beenden) zurück.
     fn stream_overlays(&mut self, ctx: &egui::Context) -> (bool, bool, bool, bool, bool) {
         let (mut resume, mut fs, mut keys_btn, mut stop, mut quit) = (false, false, false, false, false);
+        let mut shot = false;
         if self.stream_menu {
             egui::Area::new(egui::Id::new("menu_dim")).order(egui::Order::Foreground).fixed_pos(Pos2::ZERO).show(ctx, |ui| {
                 let r = ctx.screen_rect();
@@ -1261,6 +1356,9 @@ impl App {
                     }
                     if ui.add(big_button("Tastenbelegung (F1)", th_card_hover()).min_size(Vec2::new(360.0, 42.0))).clicked() {
                         keys_btn = true;
+                    }
+                    if ui.add(big_button("Screenshot (F12)", th_card_hover()).min_size(Vec2::new(360.0, 42.0))).clicked() {
+                        shot = true;
                     }
                     ui.add_space(4.0);
                     if ui.add(big_button("Stream beenden", RED.gamma_multiply(0.55)).min_size(Vec2::new(360.0, 42.0))).clicked() {
@@ -1294,6 +1392,10 @@ impl App {
                     ui.add_space(4.0);
                     ui.label(RichText::new("Esc = Menü   F11 = Vollbild   F10 = Statusanzeige").color(TEXT_DIM).size(11.5));
                 });
+        }
+        if shot {
+            self.shot_requested = true;
+            self.stream_menu = false;
         }
         (resume, fs, keys_btn, stop, quit)
     }
@@ -1350,22 +1452,18 @@ impl App {
             None
         } else {
             let id = if self.settings.discord_id.trim().is_empty() { discord::DEFAULT_APP_ID.to_string() } else { self.settings.discord_id.trim().to_string() };
-            match self.session.as_ref() {
+            let large = format!("OVERLIME Remote Play {VERSION}");
+            let found = self.consoles.len();
+            let (mode, game, ps5, start) = match self.session.as_ref() {
                 Some(s) if s.state == 1 => {
                     let con = self.consoles.iter().find(|c| c.name == s.name);
-                    let ps5 = con.map(|c| c.is_ps5).unwrap_or(true);
-                    let game = con.map(|c| c.running_app.clone()).unwrap_or_default();
-                    let state = if self.settings.discord_game && !game.is_empty() { game } else { "Remote Play".to_string() };
-                    Some(discord::Presence {
-                        app_id: id,
-                        details: if ps5 { "Spielt auf PlayStation 5".into() } else { "Spielt auf PlayStation 4".into() },
-                        state,
-                        start: Some(s.started_unix),
-                    })
+                    (2u8, con.map(|c| c.running_app.clone()).unwrap_or_default(), con.map(|c| c.is_ps5).unwrap_or(true), Some(s.started_unix))
                 }
-                Some(_) => Some(discord::Presence { app_id: id, details: "Verbindet mit der Konsole".into(), state: "OVERLIME Remote Play".into(), start: None }),
-                None => Some(discord::Presence { app_id: id, details: "In der Übersicht".into(), state: "OVERLIME Remote Play".into(), start: None }),
-            }
+                Some(_) => (1u8, String::new(), true, None),
+                None => (0u8, String::new(), true, Some(self.app_start_unix)),
+            };
+            let (details, state) = presence_lines(&self.settings, mode, &game, ps5, found);
+            Some(discord::Presence { app_id: id, details, state, start, buttons: false, large_text: large })
         };
         self.discord.update(want);
     }
@@ -1403,6 +1501,59 @@ impl App {
         if !self.toasts.is_empty() {
             ctx.request_repaint();
         }
+    }
+
+    /// Nach jeder Suche: "bereit"-Hinweis und automatisches Verbinden beim Start.
+    fn after_scan(&mut self) {
+        let list = self.consoles.clone();
+        for c in &list {
+            if self.paired_for(c).is_some() {
+                let ready = c.state == State::Ready;
+                let prev = self.prev_ready.insert(c.id.clone(), ready);
+                if prev == Some(false) && ready {
+                    self.toasts.push((format!("{} ist jetzt bereit", c.name), 2, self.now));
+                }
+            }
+        }
+        if self.settings.autoconnect && !self.auto_done && self.session.is_none() && self.starting.is_none() {
+            if let Some(c) = list.iter().find(|c| c.state == State::Ready && self.paired_for(c).is_some()) {
+                if let Some(p) = self.paired_for(c) {
+                    self.auto_done = true;
+                    self.toasts.push((format!("Verbinde automatisch mit {} …", c.name), 0, self.now));
+                    self.connect(c, &p);
+                }
+            } else if !self.auto_wake_done {
+                if let Some(c) = list.iter().find(|c| c.state == State::Standby && self.paired_for(c).is_some()) {
+                    if let Some(p) = self.paired_for(c) {
+                        self.auto_wake_done = true;
+                        self.wake(c, &p);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Bericht für Fehlersuche (ohne IP-Adressen, ohne Passwörter).
+    fn diag_report(&self) -> String {
+        let mut r = format!("OVERLIME {VERSION}\n");
+        r.push_str(&format!("Qualität: {} • {} FPS • {} Mbit/s • Codec {}\n", ["540p", "720p", "1080p"][self.settings.resolution], [30, 60][self.settings.fps], self.settings.bitrate as i32, ["Auto", "H.264", "HEVC"][self.settings.codec]));
+        r.push_str(&format!("Netzwerk: {}\n", if self.local_ip == "?" { "offline" } else { "verbunden" }));
+        r.push_str(&format!("Angemeldet: {}\n", if psn::id_from_b64(&self.settings.psn_account).is_some() { "ja" } else { "nein" }));
+        r.push_str(&format!("Controller: {}\n", if self.pad_name_cache.is_empty() { "keiner".to_string() } else { self.pad_name_cache.clone() }));
+        r.push_str(&format!("Konsolen gefunden: {}\n", self.consoles.len()));
+        for c in &self.consoles {
+            r.push_str(&format!("- {} ({}, Software {}), gekoppelt: {}\n", if c.is_ps5 { "PS5" } else { "PS4" }, match c.state { State::Ready => "bereit", State::Standby => "Ruhemodus", State::Unknown => "unbekannt" }, pretty_version(&c.system_version), if self.paired_for(c).is_some() { "ja" } else { "nein" }));
+        }
+        if let Some((ok, t)) = &self.diag_port {
+            r.push_str(&format!("Verbindungstest: {} - {}\n", if *ok { "ok" } else { "fehlgeschlagen" }, t));
+        }
+        r.push_str("\n--- Protokoll (letzte Zeilen) ---\n");
+        let tail: Vec<&str> = self.log.lines().rev().take(40).collect();
+        for l in tail.into_iter().rev() {
+            r.push_str(&mask_ips(l));
+            r.push('\n');
+        }
+        r
     }
 
     fn keyboard_input(&self, ctx: &egui::Context) -> pad::Input {
@@ -1566,6 +1717,21 @@ impl App {
         if ctx.input(|i| i.key_pressed(Key::F11)) {
             toggle_fs = true;
         }
+        let want_shot = ctx.input(|i| i.key_pressed(Key::F12)) || self.shot_requested;
+        self.shot_requested = false;
+        if want_shot {
+            let msg = match self.session.as_ref() {
+                Some(s) => match &s.tex {
+                    Some(tex) => save_screenshot(&s.buf, tex.size()[0], tex.size()[1]),
+                    None => Err("Noch kein Bild vorhanden".to_string()),
+                },
+                None => Err("Kein Stream".to_string()),
+            };
+            match msg {
+                Ok(path) => self.toasts.push((format!("Screenshot gespeichert: {path}"), 2, self.now)),
+                Err(e) => self.toasts.push((format!("Screenshot fehlgeschlagen: {e}"), 1, self.now)),
+            }
+        }
         let (esc, f1, f10) = ctx.input(|i| (i.key_pressed(Key::Escape), i.key_pressed(Key::F1), i.key_pressed(Key::F10)));
         let state_now = self.session.as_ref().map(|s| s.state).unwrap_or(0);
         if esc {
@@ -1637,15 +1803,18 @@ impl eframe::App for App {
         if pressed & (1 << 7) != 0 { raw.events.extend(key(Key::Tab, false)); }
         if pressed & (1 << 6) != 0 { raw.events.extend(key(Key::Tab, true)); }
         if pressed & (1 << 0) != 0 { raw.events.extend(key(Key::Enter, false)); }
-        let pages = [Page::Home, Page::Consoles, Page::Settings, Page::Help];
+        let pages = [Page::Home, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
         let idx = pages.iter().position(|p| *p == self.page).unwrap_or(0);
-        if pressed & (1 << 9) != 0 && self.dialog.is_none() { self.page = pages[(idx + 1) % 4]; }
-        if pressed & (1 << 8) != 0 && self.dialog.is_none() { self.page = pages[(idx + 3) % 4]; }
+        if pressed & (1 << 9) != 0 && self.dialog.is_none() { self.page = pages[(idx + 1) % 5]; }
+        if pressed & (1 << 8) != 0 && self.dialog.is_none() { self.page = pages[(idx + 4) % 5]; }
     }
 
     fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
         let t = ctx.input(|i| i.time);
         self.now = t;
+        if (t * 2.0) as u64 % 4 == 0 {
+            self.pad_name_cache = if self.pad.connected() { self.pad.name() } else { String::new() };
+        }
         if self.titlebar_dirty && self.title_tries < 30 {
             self.title_tries += 1;
             let th = theme::get();
@@ -1673,7 +1842,7 @@ impl eframe::App for App {
         self.pump_log();
         self.process_capture(ctx, t);
         if self.session.is_none() && self.dialog.is_none() && self.capturing.is_none() && !ctx.wants_keyboard_input() {
-            let (f5, c1, c2, c3, c4) = ctx.input(|i| {
+            let (f5, c1, c2, c3, c4, c5) = ctx.input(|i| {
                 let c = i.modifiers.ctrl;
                 (
                     i.key_pressed(Key::F5),
@@ -1681,6 +1850,7 @@ impl eframe::App for App {
                     c && i.key_pressed(Key::Num2),
                     c && i.key_pressed(Key::Num3),
                     c && i.key_pressed(Key::Num4),
+                    c && i.key_pressed(Key::Num5),
                 )
             });
             if f5 && !self.searching {
@@ -1696,6 +1866,9 @@ impl eframe::App for App {
                 self.page = Page::Settings;
             }
             if c4 {
+                self.page = Page::Diagnose;
+            }
+            if c5 {
                 self.page = Page::Help;
             }
         }
@@ -1740,6 +1913,9 @@ impl eframe::App for App {
 
         if self.session.is_some() {
             ctx.request_repaint();
+            if !self.searching && self.last_scan.elapsed() > Duration::from_secs(15) {
+                self.search();
+            }
             self.stream_ui(ctx);
             return;
         }
@@ -1778,6 +1954,7 @@ impl eframe::App for App {
                     Page::Home => (ic::HOUSE, "Übersicht"),
                     Page::Consoles => (ic::GAME_CONTROLLER, "Konsolen"),
                     Page::Settings => (ic::GEAR_SIX, "Einstellungen"),
+                    Page::Diagnose => (ic::STETHOSCOPE, "Diagnose"),
                     Page::Help => (ic::QUESTION, "Hilfe"),
                 };
                 let found = self.consoles.len();
@@ -1817,8 +1994,8 @@ impl eframe::App for App {
                 }
                 ui.add_space(18.0);
                 let old = self.page;
-                let pages = [Page::Home, Page::Consoles, Page::Settings, Page::Help];
-                let items = [(ic::HOUSE, "Übersicht"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::GEAR_SIX, "Einstellungen"), (ic::QUESTION, "Hilfe")];
+                let pages = [Page::Home, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
+                let items = [(ic::HOUSE, "Übersicht"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::GEAR_SIX, "Einstellungen"), (ic::STETHOSCOPE, "Diagnose"), (ic::QUESTION, "Hilfe")];
                 let top_y = ui.cursor().top();
                 let sel_idx = pages.iter().position(|p| *p == self.page).unwrap_or(0) as f32;
                 let hy = ui.ctx().animate_value_with_time(egui::Id::new("nav_hl"), sel_idx, 0.3);
@@ -1838,22 +2015,30 @@ impl eframe::App for App {
                     self.page_since = t;
                 }
                 ui.with_layout(Layout::bottom_up(Align::Min), |ui| {
-                    if self.update.is_some() {
-                        ui.label(RichText::new(format!("Version {VERSION}  •  Update verfügbar")).color(YELLOW).size(12.0));
-                    } else if self.update_checked {
-                        ui.label(RichText::new(format!("Version {VERSION}  •  aktuell")).color(GREEN).size(12.0));
-                    } else {
-                        ui.label(RichText::new(format!("Version {VERSION}")).color(TEXT_DIM).size(12.0));
-                    }
-                    if psn::id_from_b64(&self.settings.psn_account).is_some() {
-                        let who = if self.settings.psn_name.is_empty() { "PlayStation-Konto".to_string() } else { self.settings.psn_name.clone() };
-                        ui.label(RichText::new(format!("Angemeldet: {who}")).color(GREEN).size(12.0));
-                    } else {
-                        ui.label(RichText::new("Nicht angemeldet").color(YELLOW).size(12.0));
-                    }
-                    ui.label(RichText::new(if self.local_ip == "?" { "Netzwerk: offline" } else { "Netzwerk: verbunden" }).color(TEXT_DIM).size(12.0));
+                    let (rect, _) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 118.0), egui::Sense::hover());
+                    let p = ui.painter_at(rect);
+                    p.rect_filled(rect, Rounding::same(16.0), th_card());
+                    let logged = psn::id_from_b64(&self.settings.psn_account).is_some();
+                    let name = if !logged { "Nicht angemeldet".to_string() } else if self.settings.psn_name.is_empty() { "PlayStation-Konto".to_string() } else { self.settings.psn_name.clone() };
+                    // Avatar mit Anfangsbuchstabe
+                    let av = rect.min + Vec2::new(30.0, 30.0);
+                    p.circle_filled(av, 20.0, if logged { th_blue() } else { Color32::from_white_alpha(22) });
+                    p.circle_stroke(av, 20.0, Stroke::new(1.5, if logged { th_blue_light() } else { Color32::from_white_alpha(40) }));
+                    let initial = name.chars().next().map(|c| c.to_uppercase().to_string()).unwrap_or_else(|| "?".into());
+                    p.text(av, Align2::CENTER_CENTER, if logged { initial } else { ic::USER.to_string() }, FontId::proportional(18.0), Color32::WHITE);
+                    p.text(rect.min + Vec2::new(60.0, 21.0), Align2::LEFT_CENTER, name, FontId::proportional(13.5), Color32::WHITE);
+                    let (sub, subc) = if logged { ("PlayStation-Konto", GREEN) } else { ("Anmeldung offen", YELLOW) };
+                    p.text(rect.min + Vec2::new(60.0, 40.0), Align2::LEFT_CENTER, sub, FontId::proportional(11.5), subc);
+                    p.hline((rect.min.x + 14.0)..=(rect.max.x - 14.0), rect.min.y + 60.0, Stroke::new(1.0, Color32::from_white_alpha(14)));
+                    // Qualität und Netzwerk
+                    let online = self.local_ip != "?";
+                    let pulse = 0.55 + 0.45 * (self.now * 2.5).sin().abs() as f32;
+                    p.circle_filled(rect.min + Vec2::new(22.0, 78.0), 4.0, if online { GREEN.gamma_multiply(pulse) } else { RED });
+                    p.text(rect.min + Vec2::new(34.0, 78.0), Align2::LEFT_CENTER, if online { "Netzwerk verbunden" } else { "Netzwerk offline" }, FontId::proportional(11.5), TEXT_DIM);
                     let q = format!("{} • {} FPS", ["540p", "720p", "1080p"][self.settings.resolution], [30, 60][self.settings.fps]);
-                    ui.label(RichText::new(q).color(th_blue_light()).size(12.0));
+                    p.text(rect.min + Vec2::new(16.0, 98.0), Align2::LEFT_CENTER, q, FontId::proportional(11.5), th_blue_light());
+                    let (vt, vc) = if self.update.is_some() { (format!("v{VERSION} • Update"), YELLOW) } else if self.update_checked { (format!("v{VERSION} • aktuell"), GREEN) } else { (format!("v{VERSION}"), TEXT_DIM) };
+                    p.text(rect.max - Vec2::new(14.0, 20.0), Align2::RIGHT_CENTER, vt, FontId::proportional(11.5), vc);
                 });
             });
 
@@ -1898,6 +2083,7 @@ impl eframe::App for App {
                 Page::Home => self.home_page(ui, t),
                 Page::Consoles => self.consoles_page(ui, t),
                 Page::Settings => self.settings_page(ui),
+                Page::Diagnose => self.diag_page(ui, t),
                 Page::Help => self.help_page(ui),
             }
         });
@@ -1943,18 +2129,21 @@ fn discord_test() {
     let out = std::env::temp_dir().join("overlime-discord-test.txt");
     let mut f = std::fs::File::create(&out).unwrap();
     let mut h = discord::spawn();
+    let st = Settings::default();
+    let (details, state) = presence_lines(&st, 2, "EA SPORTS FC 26", true, 1);
+    let start = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let secs: u64 = std::env::args().skip_while(|a| a != "--discord-test").nth(1).and_then(|s| s.parse().ok()).unwrap_or(16);
     h.update(Some(discord::Presence {
         app_id: discord::DEFAULT_APP_ID.to_string(),
-        details: "Test".into(),
-        state: "OVERLIME Remote Play".into(),
-        start: None,
+        details,
+        state,
+        start: Some(start),
+        buttons: true,
+        large_text: format!("OVERLIME Remote Play {VERSION}"),
     }));
-    for i in 0..9 {
+    for i in 0..(secs / 2) {
         std::thread::sleep(Duration::from_secs(2));
         let _ = writeln!(f, "t={}s status={}", (i + 1) * 2, h.state());
-        if h.state() == discord::ST_CONNECTED {
-            break;
-        }
     }
     h.update(None);
     std::thread::sleep(Duration::from_secs(2));
@@ -1973,7 +2162,7 @@ fn main() -> eframe::Result<()> {
     let opts = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([960.0, 620.0])
-            .with_min_inner_size([760.0, 480.0])
+            .with_min_inner_size([780.0, 600.0])
             .with_title("OVERLIME Remote Play")
             .with_icon(std::sync::Arc::new(winui::app_icon())),
         ..Default::default()

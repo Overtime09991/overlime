@@ -8,7 +8,7 @@ const TOKEN_URL: &str = "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth
 const SCOPE: &str = "psn:clientapp referenceDataService:countryConfig.read pushNotification:webSocket.desktop.connect sessionManager:remotePlaySession.system.update";
 const REDIRECT: &str = "https://remoteplay.dl.playstation.net/remoteplay/redirect";
 
-fn enc(s: &str) -> String {
+pub fn enc(s: &str) -> String {
     let mut out = String::new();
     for b in s.bytes() {
         match b {

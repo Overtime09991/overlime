@@ -1,24 +1,23 @@
 ; OVERLIME Remote Play - Installer (Inno Setup 6)
-; Bauen: installer\build.ps1   (erzeugt installer\Output\OVERLIME-Setup-<Version>.exe)
+; Ein einziges Setup für alle: enthält die feste Basisversion 0.12. Beim ersten Start
+; aktualisiert sich die App selbst auf die neueste Version, das Setup muss nie neu gebaut werden.
+; Bauen: installer\build.ps1   (erzeugt installer\Output\OVERLIME-Setup.exe)
 
-#ifndef MyAppVersion
-  #define MyAppVersion "0.13"
-#endif
 #ifndef ExeDir
-  #define ExeDir "..\..\release-" + MyAppVersion
+  #define ExeDir "base"
 #endif
 #define MyAppExe "overlime.exe"
 
 [Setup]
 AppId={{7C1B1F52-3E6A-4E5C-9B0A-5D7D8E2A4F61}
 AppName=OVERLIME Remote Play
-AppVersion={#MyAppVersion}
-AppVerName=OVERLIME Remote Play {#MyAppVersion}
+AppVersion=aktualisiert sich selbst
+AppVerName=OVERLIME Remote Play
 AppPublisher=Overtime09991
 AppPublisherURL=https://github.com/Overtime09991/overlime
 AppSupportURL=https://github.com/Overtime09991/overlime/issues
 AppUpdatesURL=https://github.com/Overtime09991/overlime/releases
-VersionInfoVersion={#MyAppVersion}.0.0
+VersionInfoVersion=1.0.0.0
 DefaultDirName={autopf}\OVERLIME
 DefaultGroupName=OVERLIME
 DisableProgramGroupPage=yes
@@ -28,7 +27,7 @@ PrivilegesRequiredOverridesAllowed=dialog
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 OutputDir=Output
-OutputBaseFilename=OVERLIME-Setup-{#MyAppVersion}
+OutputBaseFilename=OVERLIME-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern

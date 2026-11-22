@@ -18,6 +18,8 @@ pub struct Presence {
     pub details: String,
     pub state: String,
     pub start: Option<i64>,
+    pub buttons: bool,
+    pub large_text: String,
 }
 
 enum Cmd {
@@ -109,7 +111,13 @@ pub fn spawn() -> Handle {
                             let mut act = activity::Activity::new()
                                 .details(&p.details)
                                 .state(&p.state)
-                                .assets(activity::Assets::new().large_image("overlime").large_text("OVERLIME Remote Play"));
+                                .assets(activity::Assets::new().large_image("overlime").large_text(&p.large_text));
+                            if p.buttons {
+                                act = act.buttons(vec![
+                                    activity::Button::new("OVERLIME herunterladen", "https://github.com/Overtime09991/overlime/releases/latest"),
+                                    activity::Button::new("Quellcode ansehen", "https://github.com/Overtime09991/overlime"),
+                                ]);
+                            }
                             if let Some(s) = p.start {
                                 act = act.timestamps(activity::Timestamps::new().start(s));
                             }

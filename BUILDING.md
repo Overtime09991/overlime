@@ -24,13 +24,13 @@ Der Stream-Kern (Protokoll, Takion, FEC, Video-/Audio-Empfang) stammt aus
 4. `native/build_shim.bat` baut `overlime_core.lib`
 5. `cd app && cargo build --release` (Pfade über `OVERLIME_NATIVE_BUILD` und `OVERLIME_VCPKG_LIB` anpassbar)
 
-## Installer bauen
+## Installer bauen (nur selten nötig)
+
+Es gibt **ein** Setup für alle. Es enthält die feste Basisversion 0.12, die App aktualisiert sich beim ersten Start selbst. Das Setup muss deshalb nicht bei jeder Version neu gebaut werden, nur wenn sich der Installer selbst ändern soll.
 
 1. Inno Setup 6 installieren (`winget install JRSoftware.InnoSetup`) und Pillow (`pip install pillow`)
-2. `installer\build.ps1 -Version 0.13 -ExeDir <Ordner mit overlime.exe>`
-3. Ergebnis: `installer\Output\OVERLIME-Setup-<Version>.exe`. Symbol und Bilder erzeugt `installer\make_assets.py`, sie liegen nicht im Repository.
-
-Die Setup-Datei als zusätzliches Asset an das Release hängen. Das automatische Update nutzt nur `overlime.exe` und `overlime.exe.sha256`.
+2. `installer\build.ps1` lädt die Basisversion von GitHub (Prüfsumme wird kontrolliert) und baut `installer\Output\OVERLIME-Setup.exe`. Symbol und Bilder erzeugt `installer\make_assets.py`, sie liegen nicht im Repository.
+3. Die Datei als Asset an ein Release mit dem festen Tag `installer` hängen (als Vorab-Version markiert, damit es nicht als „neuestes Release“ gilt). Der Link bleibt immer gleich: `https://github.com/Overtime09991/overlime/releases/download/installer/OVERLIME-Setup.exe`
 
 ## Updates veröffentlichen
 

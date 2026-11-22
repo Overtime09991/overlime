@@ -6,3 +6,4 @@ target/
 *.lib
 installer/assets/
 installer/Output/
+installer/base/

@@ -34,7 +34,8 @@ pub fn style_titlebar(title: &str, caption: Color32, border: Color32) {
         set(20, 1); // dunkler Modus
         set(35, colorref(caption)); // Leistenfarbe
         set(36, colorref(Color32::from_rgb(235, 240, 255))); // Titeltext
-        set(34, colorref(border)); // Rahmenfarbe
+        set(34, 0xFFFF_FFFE); // kein Rahmen (DWMWA_COLOR_NONE)
+        let _ = border;
     }
     #[cfg(not(windows))]
     let _ = (title, caption, border);

@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Neue Kopfleiste mit Seitentitel und Status-Chips",
-    "Fensterleiste passt sich dem Farbschema an",
-    "Eigenes App-Symbol statt des Standard-Symbols",
-    "Discord-Status: „Spielt OVERLIME“ (optional)",
+    "Neue Diagnose-Seite mit Problem-melden-Knopf",
+    "Automatisch verbinden beim Start (optional)",
+    "Screenshots im Stream mit F12",
+    "Neues Design: Profilbereich, animierte Konsole",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {
