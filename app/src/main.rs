@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.36";
+const VERSION: &str = "0.37";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -865,7 +865,7 @@ impl App {
                 }
                 Msg::UpdateErr(e) => {
                     // update_busy bleibt an, damit der Fehler im Update-Bildschirm sichtbar ist
-                    self.update_err = e;
+                    self.update_err = mask_ips(&friendly_error(&e));
                 }
                 Msg::News(v) => {
                     self.news = v;
@@ -900,7 +900,7 @@ impl App {
                 }
                 Msg::UpdateCheckFailed(e) => {
                     self.update_checking = false;
-                    self.update_msg = format!("Prüfung fehlgeschlagen: {}", mask_ips(&e));
+                    self.update_msg = format!("Prüfung fehlgeschlagen: {}", mask_ips(&friendly_error(&e)));
                 }
                 Msg::UpdateNone => {
                     self.update_checking = false;
@@ -915,6 +915,23 @@ impl App {
 
 /// Übersetzt chiaki-Fehlertexte in verständliches Deutsch.
 /// Ersetzt IPv4-Adressen (auch mit :Port) durch x.x.x.x, damit nirgends IPs auftauchen.
+/// Macht technische Netzwerkfehler zu einem klaren Satz (die Rohmeldung bleibt in Klammern für Fehlerberichte).
+fn friendly_error(e: &str) -> String {
+    let l = e.to_lowercase();
+    let msg = if l.contains("403") || l.contains("429") || l.contains("rate limit") {
+        "GitHub lässt gerade keine weiteren Anfragen zu. Das legt sich nach kurzer Zeit von selbst, bitte in ein paar Minuten erneut versuchen."
+    } else if l.contains("timed out") || l.contains("timeout") {
+        "Die Verbindung war zu langsam. Bitte Internet prüfen und erneut versuchen."
+    } else if l.contains("dns") || l.contains("failed to lookup") || l.contains("connection refused") || l.contains("connect") || l.contains("network") {
+        "Keine Verbindung zum Server. Bitte Internet prüfen und erneut versuchen."
+    } else if l.contains("signatur") || l.contains("signature") || l.contains("prüfsumme") || l.contains("sha") {
+        return e.to_string();
+    } else {
+        return e.to_string();
+    };
+    format!("{}  ({e})", lang::tr(msg))
+}
+
 fn mask_ips(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = String::with_capacity(s.len());
