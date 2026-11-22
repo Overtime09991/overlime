@@ -9,8 +9,6 @@ moderner Oberfläche und einem Start in unter einer Minute.
 
 [**Herunterladen**](https://github.com/Overtime09991/overlime/releases/latest) &nbsp;•&nbsp; Windows 10/11 &nbsp;•&nbsp; PS4 & PS5 &nbsp;•&nbsp; kostenlos & Open Source
 
-![Übersicht](docs/uebersicht.png)
-
 </div>
 
 > **Frühe Testversion.** Oberfläche, Anmeldung und Konsolensuche sind fertig. Das Koppeln und Streamen wird gerade mit echten Konsolen erprobt. Rückmeldungen sind willkommen.
@@ -24,16 +22,6 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Controller oder Tastatur.** Xbox-, PlayStation- und andere Controller werden automatisch erkannt. Ohne Controller geht es mit der Tastatur.
 - **Ton inklusive.** Spielton direkt auf deinem Standard-Wiedergabegerät.
 - **Bleibt aktuell.** Neue Versionen lädt die App selbst, prüft sie und startet neu.
-
-## So sieht es aus
-
-| Deine Konsolen | Einfach koppeln |
-| --- | --- |
-| ![Konsolen](docs/konsolen.png) | ![Koppeln](docs/koppeln.png) |
-
-| Einmal anmelden | Qualität einstellen |
-| --- | --- |
-| ![Anmeldung](docs/anmeldung.png) | ![Einstellungen](docs/einstellungen.png) |
 
 ## In drei Schritten loslegen
 

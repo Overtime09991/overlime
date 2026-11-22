@@ -9,7 +9,6 @@ Diese Hinweise sind für Entwickler. Die normale Nutzung steht in der [README](R
 | `app/` | Rust-Anwendung (Oberfläche, Discovery, PSN-Login, Audio, Eingabe, Updater) |
 | `native/` | Dünne C-Schnittstelle (`overlime_core`) um die chiaki-Bibliothek |
 | `patches/` | Kleine Änderung an `gf-complete` (fehlender `#include <intrin.h>`) für clang-cl |
-| `docs/` | Screenshots für die README |
 
 Der Stream-Kern (Protokoll, Takion, FEC, Video-/Audio-Empfang) stammt aus
 [chiaki-ng](https://github.com/streetpea/chiaki-ng) und wird beim Bauen separat geholt.
