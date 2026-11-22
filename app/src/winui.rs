@@ -87,3 +87,69 @@ pub fn app_icon() -> IconData {
     }
     IconData { rgba, width: n as u32, height: n as u32 }
 }
+
+#[cfg(windows)]
+mod sys2 {
+    #[link(name = "kernel32")]
+    extern "system" {
+        pub fn CreateMutexW(attr: *const std::ffi::c_void, owner: i32, name: *const u16) -> isize;
+        pub fn GetLastError() -> u32;
+        pub fn GlobalLock(h: isize) -> *const u16;
+        pub fn GlobalUnlock(h: isize) -> i32;
+    }
+    #[link(name = "user32")]
+    extern "system" {
+        pub fn FindWindowW(class: *const u16, title: *const u16) -> isize;
+        pub fn ShowWindow(hwnd: isize, cmd: i32) -> i32;
+        pub fn SetForegroundWindow(hwnd: isize) -> i32;
+        pub fn OpenClipboard(hwnd: isize) -> i32;
+        pub fn CloseClipboard() -> i32;
+        pub fn GetClipboardData(fmt: u32) -> isize;
+    }
+}
+
+/// Nur ein OVERLIME-Fenster gleichzeitig: Läuft schon eins, wird es nach vorn geholt und `false` zurückgegeben.
+pub fn single_instance() -> bool {
+    #[cfg(windows)]
+    unsafe {
+        let name: Vec<u16> = "Local\\OVERLIME_MAIN".encode_utf16().chain(std::iter::once(0)).collect();
+        let _h = sys2::CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+        if sys2::GetLastError() == 183 {
+            let t: Vec<u16> = "OVERLIME Remote Play".encode_utf16().chain(std::iter::once(0)).collect();
+            let hwnd = sys2::FindWindowW(std::ptr::null(), t.as_ptr());
+            if hwnd != 0 {
+                sys2::ShowWindow(hwnd, 9);
+                sys2::SetForegroundWindow(hwnd);
+            }
+            return false;
+        }
+    }
+    true
+}
+
+/// Text aus der Windows-Zwischenablage (leer, wenn keiner da ist).
+pub fn clipboard_text() -> String {
+    #[cfg(windows)]
+    unsafe {
+        if sys2::OpenClipboard(0) == 0 {
+            return String::new();
+        }
+        let mut out = String::new();
+        let h = sys2::GetClipboardData(13);
+        if h != 0 {
+            let p = sys2::GlobalLock(h);
+            if !p.is_null() {
+                let mut n = 0;
+                while *p.add(n) != 0 && n < 8192 {
+                    n += 1;
+                }
+                out = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+                sys2::GlobalUnlock(h);
+            }
+        }
+        sys2::CloseClipboard();
+        return out;
+    }
+    #[allow(unreachable_code)]
+    String::new()
+}

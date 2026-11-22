@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Symbol neben der Uhr: Klick weckt die PS5 und verbindet",
-    "Startet auf Wunsch mit Windows, braucht kaum Speicher",
-    "Neuigkeiten-Seite und kompaktere Oberfläche",
-    "Updates nur beim Start automatisch, nie im Spiel",
+    "Neuer Einrichtungs-Assistent beim ersten Start",
+    "Einstellungen mit Suche und Kategorien",
+    "Hilfe und Diagnose in einer Seite mit Reitern",
+    "OVERLIME öffnet sich nur noch einmal",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

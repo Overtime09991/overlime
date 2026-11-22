@@ -305,73 +305,267 @@ impl App {
         });
     }
 
-    pub fn help_page(&mut self, ui: &mut egui::Ui) {
-        ui.label(RichText::new("Hilfe & Infos").size(26.0).strong());
-        ui.label(RichText::new("Alles, was du für den Start brauchst.").color(TEXT_DIM).size(13.0));
-        ui.add_space(8.0);
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            section(ui, &format!("{}  Schnellstart", ic::ROCKET_LAUNCH), |ui| {
-                step_row(ui, "1", "Konsole einschalten, Remote Play aktivieren (Einstellungen > System > Remote Play).");
-                step_row(ui, "2", "In OVERLIME bei der Konsole auf „Koppeln“ klicken und dem Pop-up folgen.");
-                step_row(ui, "3", "Danach „Verbinden“ klicken – fertig.");
+    /// Hilfe & Diagnose in einer Seite mit Reitern.
+    pub fn help_page(&mut self, ui: &mut egui::Ui, _t: f64) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new("Hilfe & Diagnose").size(26.0).strong());
+            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if ui.add(egui::Button::new(format!("{} Problem melden", ic::BUG)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                    ui.ctx().copy_text(self.diag_report());
+                    let url = format!(
+                        "https://github.com/Overtime09991/overlime/issues/new?title={}&body={}",
+                        psn::enc(&format!("Problem mit OVERLIME {VERSION}")),
+                        psn::enc("Bitte hier den Bericht aus der Zwischenablage einfügen (Strg+V) und kurz beschreiben, was nicht klappt.\n\nWas habe ich getan?\n\nWas ist passiert?\n")
+                    );
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    self.toasts.push(("Bericht kopiert. Auf der GitHub-Seite mit Strg+V einfügen.".to_string(), 0, self.now));
+                }
+                if ui.add(egui::Button::new(format!("{} Bericht kopieren", ic::COPY)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                    ui.ctx().copy_text(self.diag_report());
+                    self.toasts.push(("Bericht in die Zwischenablage kopiert.".to_string(), 2, self.now));
+                }
             });
-            ui.add_space(6.0);
-            section(ui, &format!("{}  Steuerung", ic::GAME_CONTROLLER), |ui| {
-                ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere – auch per Bluetooth) wird automatisch erkannt, inklusive Vibration.").color(TEXT_DIM));
-                ui.label(RichText::new("Menüs: Steuerkreuz oder linker Stick = Auswahl, Kreuz-Taste = Bestätigen, L1/R1 = Seite wechseln.").color(TEXT_DIM).size(12.5));
-                ui.add_space(4.0);
-                egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
-                    for (i, act) in keys::ACTIONS.iter().enumerate() {
-                        ui.label(RichText::new(keys::pretty(&self.settings.keys[i])).monospace().color(th_blue_light()));
-                        ui.label(act.label);
-                        ui.end_row();
-                    }
-                    for (k, v) in [
-                        ("Esc", "Menü im Stream (beendet nichts aus Versehen)"),
-                        ("F1", "Tastenbelegung im Stream anzeigen"),
-                        ("F10", "Statusanzeige ein/aus"),
-                        ("F11", "Vollbild"),
-                        ("F5", "Konsolen neu suchen"),
-                        ("Strg + 1 bis 6", "Seite wechseln"),
-                    ] {
-                        ui.label(RichText::new(k).monospace().color(GREEN));
-                        ui.label(v);
-                        ui.end_row();
-                    }
+        });
+        ui.label(RichText::new("Prüft, ob alles bereit ist, erklärt den Start und hilft bei Problemen.").color(TEXT_DIM).size(13.0));
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            let tabs = [
+                (ic::STETHOSCOPE, "Prüfung"),
+                (ic::GAME_CONTROLLER, "Controller"),
+                (ic::ROCKET_LAUNCH, "Anleitung"),
+                (ic::QUESTION, "Fragen"),
+                (ic::INFO, "Über"),
+            ];
+            for (i, (icn, name)) in tabs.iter().enumerate() {
+                let sel = self.help_tab == i;
+                let b = egui::Button::new(RichText::new(format!("{icn}  {name}")).size(13.5).color(if sel { Color32::WHITE } else { TEXT_DIM }))
+                    .fill(if sel { th_blue() } else { th_card() })
+                    .rounding(16.0)
+                    .min_size(Vec2::new(0.0, 32.0));
+                if ui.add(b).clicked() {
+                    self.help_tab = i;
+                }
+            }
+        });
+        ui.add_space(10.0);
+        egui::ScrollArea::vertical().show(ui, |ui| match self.help_tab {
+            0 => self.tab_check(ui),
+            1 => self.tab_pad(ui),
+            2 => self.tab_guide(ui),
+            3 => self.tab_faq(ui),
+            _ => self.tab_about(ui),
+        });
+    }
+
+    fn tab_check(&mut self, ui: &mut egui::Ui) {
+        let online = self.local_ip != "?";
+        let found = self.consoles.len();
+        let first = self.consoles.first().cloned();
+        let paired_any = self.consoles.iter().any(|c| self.paired_for(c).is_some());
+        let psn_ok = psn::id_from_b64(&self.settings.psn_account).is_some();
+        let pad_ok = self.pad.connected();
+        let problems = [online, found > 0, psn_ok, paired_any].iter().filter(|b| !**b).count();
+
+        // Zusammenfassung
+        let (col, icn, head, sub) = if problems == 0 {
+            (GREEN, ic::CHECK_CIRCLE, "Alles bereit".to_string(), "Netzwerk, Konsole und Konto sind in Ordnung.".to_string())
+        } else {
+            (RED, ic::WARNING_CIRCLE, format!("{problems} {} brauchen Aufmerksamkeit", if problems == 1 { "Punkt" } else { "Punkte" }), "Unten steht bei jedem Punkt, was du tun kannst.".to_string())
+        };
+        egui::Frame::none().fill(col.gamma_multiply(0.14)).rounding(14.0).stroke(Stroke::new(1.0, col.gamma_multiply(0.5))).inner_margin(egui::Margin::same(16.0)).show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new(icn).size(30.0).color(col));
+                ui.vertical(|ui| {
+                    ui.label(RichText::new(head).size(18.0).strong());
+                    ui.label(RichText::new(sub).color(TEXT_DIM).size(13.0));
                 });
             });
+        });
+        ui.add_space(10.0);
+
+        section(ui, &format!("{}  Prüfung", ic::STETHOSCOPE), |ui| {
+            status_row(ui, if online { 0 } else { 2 }, "Netzwerk", if online { "Der PC ist mit einem Netzwerk verbunden." } else { "Kein Netzwerk. Mit WLAN oder LAN verbinden." });
             ui.add_space(6.0);
-            section(ui, &format!("{}  Probleme lösen", ic::WRENCH), |ui| {
-                for (q, a) in [
-                    ("Konsole wird nicht gefunden", "Gleiches Netzwerk? Konsole an oder im Ruhemodus mit „Mit dem Netzwerk verbunden bleiben“. Firewall-Abfrage von Windows erlauben."),
-                    ("Kopplung klappt nicht", "Der 8-stellige Code gilt nur kurz. „Gerät koppeln“ an der Konsole neu öffnen und den neuen Code eingeben."),
-                    ("Bild ruckelt oder hat Verzögerung", "Konsole per LAN-Kabel, PC per Kabel oder 5 GHz. In den Einstellungen Bitrate senken oder auf 720p stellen."),
-                    ("Kein Ton", "Standard-Wiedergabegerät in Windows prüfen."),
-                ] {
-                    ui.label(RichText::new(q).strong().size(14.0));
-                    ui.label(RichText::new(a).color(TEXT_DIM).size(13.0));
-                    ui.add_space(4.0);
-                }
-                ui.add_space(4.0);
-                if ui.add(egui::Button::new("Protokoll-Ordner öffnen").fill(th_card_hover()).rounding(10.0)).clicked() {
-                    if let Some(p) = log_path().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
-                        let _ = std::fs::create_dir_all(&p);
-                        let _ = std::process::Command::new("explorer").arg(p).spawn();
+            status_row(ui, if found > 0 { 0 } else { 2 }, "Konsole gefunden", if found > 0 { "Mindestens eine Konsole antwortet im Netzwerk." } else { "Keine Konsole gefunden. Einschalten (oder Ruhemodus mit Netzwerk), gleiches Netzwerk, Firewall-Abfrage erlauben." });
+            ui.add_space(6.0);
+            let st = match first.as_ref().map(|c| c.state.clone()) { Some(State::Ready) => 0, Some(State::Standby) => 1, Some(State::Unknown) => 1, None => 2 };
+            let st_txt = match first.as_ref().map(|c| c.state.clone()) {
+                Some(State::Ready) => "Die Konsole ist an und bereit.",
+                Some(State::Standby) => "Die Konsole ist im Ruhemodus. Mit „Aufwecken“ starten (dafür Remote Play und Netzwerk-Aufwecken aktivieren).",
+                _ => "Kein Zustand bekannt.",
+            };
+            status_row(ui, st, "Konsole bereit", st_txt);
+            ui.add_space(6.0);
+            status_row(ui, if psn_ok { 0 } else { 2 }, "PlayStation-Konto", if psn_ok { "Angemeldet." } else { "Nicht angemeldet. Beim Koppeln einmalig anmelden." });
+            ui.add_space(6.0);
+            status_row(ui, if paired_any { 0 } else { 2 }, "Konsole gekoppelt", if paired_any { "Die Konsole ist gekoppelt." } else { "Noch nicht gekoppelt. Bei der Konsole auf „Koppeln“ klicken." });
+            ui.add_space(6.0);
+            status_row(ui, if pad_ok { 0 } else { 1 }, "Controller", if pad_ok { "Ein Controller ist verbunden." } else { "Kein Controller erkannt. Das ist optional, es geht auch mit Tastatur." });
+            ui.add_space(6.0);
+            let (us, ut) = if self.update.is_some() { (1, "Ein Update ist verfügbar.") } else if self.update_checked { (0, "OVERLIME ist auf dem neuesten Stand.") } else { (1, "Noch nicht geprüft.") };
+            status_row(ui, us, "Version", &format!("{VERSION}. {ut}"));
+        });
+        ui.add_space(8.0);
+        section(ui, &format!("{}  Verbindungstest", ic::WIFI_HIGH), |ui| {
+            ui.label(RichText::new("Prüft, ob der Remote-Play-Port der Konsole erreichbar ist. Die Konsole muss dafür an sein.").color(TEXT_DIM).size(12.5));
+            ui.add_space(4.0);
+            ui.horizontal(|ui| {
+                let can = first.is_some() && !self.diag_busy;
+                if ui.add_enabled(can, big_button("Test starten", th_blue()).min_size(Vec2::new(160.0, 40.0))).clicked() {
+                    if let Some(c) = first.clone() {
+                        self.diag_busy = true;
+                        self.diag_port = None;
+                        let tx = self.tx.clone();
+                        let addr = c.addr.clone();
+                        std::thread::spawn(move || {
+                            let r = match format!("{addr}:9295").parse::<std::net::SocketAddr>() {
+                                Ok(sa) => match std::net::TcpStream::connect_timeout(&sa, Duration::from_millis(2500)) {
+                                    Ok(_) => (true, "Der Remote-Play-Port der Konsole ist erreichbar.".to_string()),
+                                    Err(e) => (false, format!("Der Port ist nicht erreichbar ({:?}). Ist Remote Play an der Konsole aktiviert und die Konsole an? Blockiert eine Firewall?", e.kind())),
+                                },
+                                Err(_) => (false, "Ungültige Adresse".to_string()),
+                            };
+                            let _ = tx.send(Msg::DiagPort(r.0, r.1));
+                        });
                     }
                 }
+                if self.diag_busy {
+                    ui.spinner();
+                    ui.label(RichText::new("Teste …").color(TEXT_DIM));
+                }
             });
+            if first.is_none() {
+                ui.label(RichText::new("Zuerst muss eine Konsole gefunden werden.").color(YELLOW).size(12.5));
+            }
+            if let Some((ok, txt)) = &self.diag_port {
+                ui.add_space(6.0);
+                status_row(ui, if *ok { 0 } else { 2 }, if *ok { "Erreichbar" } else { "Nicht erreichbar" }, txt);
+            }
+        });
+    }
+
+    fn tab_pad(&mut self, ui: &mut egui::Ui) {
+        section(ui, &format!("{}  Controller-Test", ic::GAME_CONTROLLER), |ui| {
+            let conn = self.pad.connected();
+            let inp = self.pad.poll();
+            let ex = self.pad.poll_extra();
+            ui.label(RichText::new("Drücke Tasten und bewege Sticks. Was hier reagiert, kommt auch im Spiel an. Die App selbst lässt sich nicht mit dem Controller bedienen.").color(TEXT_DIM).size(12.5));
+            ui.add_space(4.0);
+            pad_visual(ui, &inp, &ex, conn);
+            ui.ctx().request_repaint();
+            ui.add_space(8.0);
+            let devs = self.pad.devices();
+            if devs.is_empty() {
+                status_row(ui, 1, "Kein Gerät gefunden", "Windows meldet keinen Controller. Per USB-Kabel anschließen oder per Bluetooth koppeln (Windows: Einstellungen > Bluetooth und Geräte), dann „Neu suchen“ klicken. Ohne Bluetooth am PC hilft ein USB-Kabel oder ein Bluetooth-Stick.");
+            } else {
+                for (name, usable, vid, pid) in &devs {
+                    status_row(ui, if *usable { 0 } else { 1 }, &format!("{name}  ({vid:04x}:{pid:04x})"), if *usable { "Als Gamepad erkannt." } else { "Gerät gefunden, aber nicht als Gamepad nutzbar." });
+                    ui.add_space(4.0);
+                }
+            }
+            ui.add_space(4.0);
+            if ui.add(egui::Button::new(format!("{} Controller neu suchen", ic::ARROWS_CLOCKWISE)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                self.pad.rescan();
+                self.toasts.push(("Controller wird neu gesucht.".to_string(), 0, self.now));
+            }
+        });
+        ui.add_space(8.0);
+        section(ui, &format!("{}  Controller koppeln", ic::BLUETOOTH), |ui| {
+            step_row(ui, "1", "PS4-Controller: Share- und PS-Taste halten, bis die Leiste schnell blinkt. PS5-Controller: Create- und PS-Taste halten.");
+            step_row(ui, "2", "In Windows: Einstellungen > Bluetooth und Geräte > Gerät hinzufügen > Bluetooth.");
+            step_row(ui, "3", "Hier „Controller neu suchen“ klicken. Alternativ einfach per USB-Kabel anschließen.");
+        });
+    }
+
+    fn tab_guide(&mut self, ui: &mut egui::Ui) {
+        section(ui, &format!("{}  Schnellstart", ic::ROCKET_LAUNCH), |ui| {
+            step_row(ui, "1", "Konsole einschalten, Remote Play aktivieren (Einstellungen > System > Remote Play).");
+            step_row(ui, "2", "In OVERLIME bei der Konsole auf „Koppeln“ klicken und dem Pop-up folgen.");
+            step_row(ui, "3", "Danach „Verbinden“ klicken – fertig.");
+            ui.add_space(4.0);
+            ui.label(RichText::new("Tipp: Mit dem Symbol neben der Uhr (Einstellungen > App & Updates) weckt ein Klick die Konsole und verbindet automatisch.").color(TEXT_DIM).size(12.5));
+        });
+        ui.add_space(8.0);
+        section(ui, &format!("{}  Tasten", ic::KEYBOARD), |ui| {
+            ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt, inklusive Vibration. Diese Tastatur-Belegung gilt im Stream:").color(TEXT_DIM));
+            ui.add_space(4.0);
+            egui::Grid::new("keys").num_columns(2).spacing([24.0, 6.0]).show(ui, |ui| {
+                for (i, act) in keys::ACTIONS.iter().enumerate() {
+                    ui.label(RichText::new(keys::pretty(&self.settings.keys[i])).monospace().color(th_blue_light()));
+                    ui.label(act.label);
+                    ui.end_row();
+                }
+                for (k, v) in [
+                    ("Esc", "Menü im Stream (beendet nichts aus Versehen)"),
+                    ("F1", "Tastenbelegung im Stream anzeigen"),
+                    ("F10", "Statusanzeige ein/aus"),
+                    ("F11", "Vollbild"),
+                    ("F5", "Konsolen neu suchen"),
+                    ("Strg + 1 bis 5", "Seite wechseln"),
+                ] {
+                    ui.label(RichText::new(k).monospace().color(GREEN));
+                    ui.label(v);
+                    ui.end_row();
+                }
+            });
+        });
+    }
+
+    fn tab_faq(&mut self, ui: &mut egui::Ui) {
+        section(ui, &format!("{}  Häufige Fragen", ic::WRENCH), |ui| {
+            for (q, a) in [
+                ("Konsole wird nicht gefunden", "Gleiches Netzwerk? Konsole an oder im Ruhemodus mit „Mit dem Netzwerk verbunden bleiben“. Firewall-Abfrage von Windows erlauben."),
+                ("Kopplung klappt nicht", "Der 8-stellige Code gilt nur kurz. „Gerät koppeln“ an der Konsole neu öffnen und den neuen Code eingeben."),
+                ("Bild ruckelt oder hat Verzögerung", "Konsole per LAN-Kabel, PC per Kabel oder 5 GHz. In den Einstellungen Bitrate senken oder auf 720p stellen."),
+                ("Kein Ton", "Standard-Wiedergabegerät in Windows prüfen. In der Lautstärke-Mischung von Windows nachsehen, ob OVERLIME nicht stummgeschaltet ist."),
+                ("Controller wird nicht erkannt", "Im Reiter „Controller“ den Live-Test öffnen. Ohne Bluetooth am PC das USB-Kabel nutzen. Danach „Neu suchen“ klicken."),
+                ("Windows blockiert die App", "Bei „Intelligente App-Kontrolle“ oder SmartScreen: Die App ist noch nicht signiert. Bei SmartScreen „Weitere Informationen“ und „Trotzdem ausführen“ wählen."),
+                ("Anmeldung bei PlayStation schlägt fehl", "Die ganze Adresse aus der Adressleiste kopieren (sie beginnt mit https:// und enthält code=). Wenn sie abgelaufen ist, im Browser neu anmelden."),
+            ] {
+                egui::CollapsingHeader::new(RichText::new(q).strong().size(14.5)).show(ui, |ui| {
+                    ui.label(RichText::new(a).color(TEXT_DIM).size(13.0));
+                    ui.add_space(4.0);
+                });
+            }
+        });
+        ui.add_space(8.0);
+        section(ui, &format!("{}  Wenn etwas nicht klappt", ic::BUG), |ui| {
+            ui.label(RichText::new("Klicke oben auf „Problem melden“. OVERLIME kopiert einen Bericht (ohne IP-Adressen und Passwörter) und öffnet die Meldeseite auf GitHub. Dort fügst du ihn mit Strg+V ein und beschreibst kurz, was passiert ist.").color(TEXT_DIM).size(13.0));
             ui.add_space(6.0);
-            section(ui, &format!("{}  Über OVERLIME", ic::INFO), |ui| {
-                ui.label(RichText::new(format!("Version {VERSION}  •  PS4 & PS5  •  bis 1080p60 (Sony-Limit), Hochskalierung auf 4K")).color(TEXT_DIM));
-                ui.label(RichText::new("Der Stream-Kern basiert auf dem Open-Source-Projekt chiaki-ng (AGPL-3.0).").color(TEXT_DIM).size(12.5));
-            });
+            if ui.add(egui::Button::new("Protokoll-Ordner öffnen").fill(th_card_hover()).rounding(10.0)).clicked() {
+                if let Some(p) = log_path().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+                    let _ = std::fs::create_dir_all(&p);
+                    let _ = std::process::Command::new("explorer").arg(p).spawn();
+                }
+            }
+        });
+    }
+
+    fn tab_about(&mut self, ui: &mut egui::Ui) {
+        section(ui, &format!("{}  Über OVERLIME", ic::INFO), |ui| {
+            ui.label(RichText::new(format!("Version {VERSION}  •  PS4 & PS5  •  bis 1080p60 (Sony-Limit), Hochskalierung auf 4K")).color(TEXT_DIM));
+            ui.label(RichText::new("Der Stream-Kern basiert auf dem Open-Source-Projekt chiaki-ng (AGPL-3.0).").color(TEXT_DIM).size(12.5));
+            ui.add_space(6.0);
+            if ui.add(egui::Button::new(format!("{} Projektseite auf GitHub", ic::GITHUB_LOGO)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                ui.ctx().open_url(egui::OpenUrl::new_tab("https://github.com/Overtime09991/overlime"));
+            }
         });
     }
 }
 
 impl App {
-    /// Erster Start: Anmeldung bei PlayStation. Das Konto wird gespeichert.
+    /// Erster Start: geführter Assistent (Willkommen, Konto verbinden, Adresse einfügen).
     pub fn login_screen(&mut self, ctx: &egui::Context, t: f64) {
+        // Zwischenablage beobachten: Sony-Adresse wird automatisch erkannt
+        if self.login_step == 2 && self.login_pasted.is_empty() && t - self.clip_seen > 0.6 {
+            self.clip_seen = t;
+            let c = winui::clipboard_text();
+            if c.contains("code=") && psn::parse_code(&c).is_some() {
+                self.login_pasted = c.trim().to_string();
+            }
+        }
+        ctx.request_repaint_after(std::time::Duration::from_millis(300));
         egui::CentralPanel::default().frame(egui::Frame::none().fill(th_bg())).show(ctx, |ui| {
             let r = ui.max_rect();
             let p = ui.painter();
@@ -380,60 +574,142 @@ impl App {
             p.circle_filled(Pos2::new(r.width() * (0.85 + 0.04 * (a * 1.2).cos()), r.height() * 0.8), 360.0, Color32::from_rgb(100, 60, 230).gamma_multiply(0.08));
 
             ui.vertical_centered(|ui| {
-                ui.add_space((r.height() * 0.5 - 250.0).max(10.0));
+                ui.add_space((r.height() * 0.5 - 285.0).max(10.0));
                 ui.label(RichText::new("OVERLIME").font(FontId::proportional(44.0)).strong().color(Color32::WHITE));
                 ui.label(RichText::new("REMOTE PLAY").font(FontId::proportional(14.0)).color(th_blue_light()));
-                ui.add_space(18.0);
+                ui.add_space(14.0);
+                // Fortschritt
+                ui.horizontal(|ui| {
+                    let w = 3.0 * 34.0 + 2.0 * 8.0;
+                    ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
+                    for i in 0..3 {
+                        let (rc, _) = ui.allocate_exact_size(Vec2::new(34.0, 6.0), egui::Sense::hover());
+                        let k = ui.ctx().animate_value_with_time(egui::Id::new(("lg_dot", i)), if i <= self.login_step { 1.0 } else { 0.0 }, 0.3);
+                        let col = TEXT_DIM.gamma_multiply(0.25).lerp_to_gamma(th_blue_light(), k);
+                        ui.painter().rect_filled(rc, Rounding::same(3.0), col);
+                    }
+                });
+                ui.add_space(14.0);
                 egui::Frame::none()
                     .fill(th_card())
                     .rounding(22.0)
                     .stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.4)))
-                    .inner_margin(egui::Margin::same(28.0))
+                    .inner_margin(egui::Margin::same(30.0))
                     .show(ui, |ui| {
                         ui.set_width(500.0);
-                        ui.label(RichText::new("Willkommen!").size(24.0).strong());
-                        ui.label(RichText::new("Melde dich einmal mit deinem PlayStation-Konto an. Danach merkt sich die App das und fragt nie wieder.").color(TEXT_DIM));
-                        ui.add_space(10.0);
-                        step_row(ui, "1", "Auf „Bei PlayStation anmelden“ klicken und im Browser anmelden.");
-                        step_row(ui, "2", "Danach die komplette Adresse aus der Adressleiste kopieren.");
-                        step_row(ui, "3", "Hier einfügen und auf „Anmelden“ klicken.");
-                        ui.add_space(8.0);
-                        if ui.add(big_button("Bei PlayStation anmelden", th_card_hover()).min_size(Vec2::new(444.0, 46.0))).clicked() {
-                            ctx.open_url(egui::OpenUrl::new_tab(psn::login_url()));
-                        }
-                        ui.add(egui::TextEdit::singleline(&mut self.login_pasted).hint_text("Adresse hier einfügen (…redirect?code=…)").desired_width(444.0));
-                        if !self.login_error.is_empty() {
-                            ui.label(RichText::new(&self.login_error).color(RED).size(13.0));
-                        }
-                        let code = psn::parse_code(&self.login_pasted);
-                        ui.add_space(4.0);
-                        if self.login_busy {
-                            ui.horizontal(|ui| {
-                                ui.spinner();
-                                ui.label(RichText::new("Melde an …").color(TEXT_DIM));
-                            });
-                        } else if ui.add_enabled(code.is_some(), big_button("Anmelden", th_blue()).min_size(Vec2::new(444.0, 48.0))).clicked() {
-                            if let Some(code) = code {
-                                self.login_busy = true;
-                                self.login_error.clear();
-                                let tx = self.tx.clone();
-                                std::thread::spawn(move || {
-                                    let m = match psn::account_id_from_code(&code) {
-                                        Ok((id, name)) => Msg::PsnOk(id, name),
-                                        Err(e) => Msg::PsnErr(e),
-                                    };
-                                    let _ = tx.send(m);
+                        match self.login_step {
+                            0 => {
+                                ui.label(RichText::new("Willkommen!").size(26.0).strong());
+                                ui.add_space(4.0);
+                                ui.label(RichText::new("In zwei Minuten bist du startklar: einmal mit deinem PlayStation-Konto anmelden, danach spielst du von deinem PC aus.").color(TEXT_DIM).size(14.5));
+                                ui.add_space(14.0);
+                                for (icn, title, sub) in [
+                                    (ic::MONITOR_PLAY, "Bis 1080p mit 60 FPS", "Scharf hochgerechnet auf deinen Bildschirm"),
+                                    (ic::GAME_CONTROLLER, "Dein Controller, voll unterstützt", "Vibration, Touchpad und Bewegungssensor"),
+                                    (ic::POWER, "PS5 per Klick aufwecken", "Auch mit Symbol neben der Uhr"),
+                                ] {
+                                    ui.horizontal(|ui| {
+                                        let (rc, _) = ui.allocate_exact_size(Vec2::splat(38.0), egui::Sense::hover());
+                                        ui.painter().rect_filled(rc, Rounding::same(10.0), th_blue().gamma_multiply(0.25));
+                                        ui.painter().text(rc.center(), Align2::CENTER_CENTER, icn, FontId::proportional(20.0), th_blue_light());
+                                        ui.vertical(|ui| {
+                                            ui.label(RichText::new(title).strong().size(14.5));
+                                            ui.label(RichText::new(sub).color(TEXT_DIM).size(12.5));
+                                        });
+                                    });
+                                    ui.add_space(6.0);
+                                }
+                                ui.add_space(10.0);
+                                if ui.add(big_button("Los geht's", th_blue()).min_size(Vec2::new(440.0, 48.0))).clicked() {
+                                    self.login_step = 1;
+                                }
+                            }
+                            1 => {
+                                ui.label(RichText::new("Konto verbinden").size(24.0).strong());
+                                ui.add_space(4.0);
+                                ui.label(RichText::new("Die App braucht deine PlayStation-Konto-Nummer, damit die Konsole dich erkennt. Du meldest dich dafür auf der Seite von Sony an.").color(TEXT_DIM).size(14.5));
+                                ui.add_space(14.0);
+                                if ui.add(big_button("Bei PlayStation anmelden", th_blue()).min_size(Vec2::new(440.0, 50.0))).clicked() {
+                                    ctx.open_url(egui::OpenUrl::new_tab(psn::login_url()));
+                                    self.login_step = 2;
+                                    self.clip_seen = 0.0;
+                                }
+                                ui.add_space(12.0);
+                                egui::Frame::none().fill(th_bg().gamma_multiply(0.6)).rounding(12.0).inner_margin(egui::Margin::same(12.0)).show(ui, |ui| {
+                                    ui.set_width(416.0);
+                                    ui.horizontal_top(|ui| {
+                                        ui.label(RichText::new(ic::LOCK_KEY).size(20.0).color(GREEN));
+                                        ui.add(egui::Label::new(RichText::new("Dein Passwort gibst du nur bei Sony ein. OVERLIME speichert nur die Konto-Nummer, nie dein Passwort.").color(TEXT_DIM).size(12.5)).wrap());
+                                    });
                                 });
                             }
-                        }
-                        ui.add_space(6.0);
-                        ui.vertical_centered(|ui| {
-                            if ui.add(egui::Button::new(RichText::new("Später anmelden").color(TEXT_DIM)).frame(false)).clicked() {
-                                self.skip_login = true;
+                            _ => {
+                                ui.label(RichText::new("Adresse einfügen").size(24.0).strong());
+                                ui.add_space(4.0);
+                                ui.label(RichText::new("Nach der Anmeldung zeigt der Browser eine Seite mit einer langen Adresse. Kopiere sie aus der Adressleiste (Strg + L, dann Strg + C).").color(TEXT_DIM).size(14.5));
+                                ui.add_space(12.0);
+                                let code = psn::parse_code(&self.login_pasted);
+                                egui::Frame::none()
+                                    .fill(th_bg().gamma_multiply(0.7))
+                                    .rounding(12.0)
+                                    .stroke(Stroke::new(1.0, if code.is_some() { GREEN.gamma_multiply(0.7) } else { th_blue().gamma_multiply(0.35) }))
+                                    .inner_margin(egui::Margin::symmetric(12.0, 8.0))
+                                    .show(ui, |ui| {
+                                        ui.set_width(416.0);
+                                        ui.horizontal(|ui| {
+                                            ui.add(egui::TextEdit::singleline(&mut self.login_pasted).frame(false).hint_text("Adresse hier einfügen").desired_width(330.0));
+                                            if code.is_some() {
+                                                ui.label(RichText::new(ic::CHECK_CIRCLE).size(20.0).color(GREEN));
+                                            } else if ui.add(egui::Button::new(RichText::new("Einfügen").size(13.0)).fill(th_card_hover()).rounding(8.0)).clicked() {
+                                                self.login_pasted = winui::clipboard_text().trim().to_string();
+                                            }
+                                        });
+                                    });
+                                if code.is_some() {
+                                    ui.label(RichText::new("Adresse erkannt. Jetzt anmelden.").color(GREEN).size(13.0));
+                                }
+                                if !self.login_error.is_empty() {
+                                    ui.label(RichText::new(&self.login_error).color(RED).size(13.0));
+                                }
+                                ui.add_space(10.0);
+                                if self.login_busy {
+                                    ui.horizontal(|ui| {
+                                        ui.spinner();
+                                        ui.label(RichText::new("Melde an …").color(TEXT_DIM));
+                                    });
+                                } else if ui.add_enabled(code.is_some(), big_button("Anmelden", th_blue()).min_size(Vec2::new(440.0, 50.0))).clicked() {
+                                    if let Some(code) = code {
+                                        self.login_busy = true;
+                                        self.login_error.clear();
+                                        let tx = self.tx.clone();
+                                        std::thread::spawn(move || {
+                                            let m = match psn::account_id_from_code(&code) {
+                                                Ok((id, name)) => Msg::PsnOk(id, name),
+                                                Err(e) => Msg::PsnErr(e),
+                                            };
+                                            let _ = tx.send(m);
+                                        });
+                                    }
+                                }
+                                ui.add_space(4.0);
+                                if ui.add(egui::Button::new(RichText::new("Browser erneut öffnen").color(TEXT_DIM).size(12.5)).frame(false)).clicked() {
+                                    ctx.open_url(egui::OpenUrl::new_tab(psn::login_url()));
+                                }
                             }
-                        });
-                        ui.label(RichText::new("Dein Passwort gibst du nur auf der Seite von Sony ein. Die App speichert nur deine Konto-Nummer, kein Passwort.").color(TEXT_DIM).size(12.0));
+                        }
                     });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    let w = if self.login_step > 0 { 190.0 } else { 110.0 };
+                    ui.add_space(((ui.available_width() - w) / 2.0).max(0.0));
+                    if self.login_step > 0 && ui.add(egui::Button::new(RichText::new("Zurück").color(TEXT_DIM)).frame(false)).clicked() {
+                        self.login_step -= 1;
+                        self.login_error.clear();
+                    }
+                    if ui.add(egui::Button::new(RichText::new("Später anmelden").color(TEXT_DIM)).frame(false)).clicked() {
+                        self.skip_login = true;
+                    }
+                });
             });
         });
     }
@@ -537,134 +813,4 @@ pub fn pad_visual(ui: &mut egui::Ui, inp: &pad::Input, ex: &pad::Extra, connecte
     // Bewegung
     let motion = if ex.has_motion { format!("Bewegung: Gyro {:+.1} {:+.1} {:+.1}", ex.gyro[0], ex.gyro[1], ex.gyro[2]) } else { "Bewegung: nicht verfügbar".to_string() };
     p.text(Pos2::new(c.x, rect.max.y - 14.0), Align2::CENTER_CENTER, motion, FontId::monospace(11.0), TEXT_DIM);
-}
-
-impl App {
-    pub fn diag_page(&mut self, ui: &mut egui::Ui, t: f64) {
-        let online = self.local_ip != "?";
-        let found = self.consoles.len();
-        let first = self.consoles.first().cloned();
-        let paired_any = self.consoles.iter().any(|c| self.paired_for(c).is_some());
-        let psn_ok = psn::id_from_b64(&self.settings.psn_account).is_some();
-        let pad_ok = self.pad.connected();
-        let ps = self.page_since;
-        let _ = (t, ps);
-
-        ui.horizontal(|ui| {
-            ui.label(RichText::new("Diagnose").size(26.0).strong());
-            ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                if ui.add(egui::Button::new(format!("{} Problem melden", ic::BUG)).fill(th_card_hover()).rounding(10.0)).clicked() {
-                    ui.ctx().copy_text(self.diag_report());
-                    let url = format!(
-                        "https://github.com/Overtime09991/overlime/issues/new?title={}&body={}",
-                        psn::enc(&format!("Problem mit OVERLIME {VERSION}")),
-                        psn::enc("Bitte hier den Bericht aus der Zwischenablage einfügen (Strg+V) und kurz beschreiben, was nicht klappt.\n\nWas habe ich getan?\n\nWas ist passiert?\n")
-                    );
-                    ui.ctx().open_url(egui::OpenUrl::new_tab(url));
-                    self.toasts.push(("Bericht kopiert. Auf der GitHub-Seite mit Strg+V einfügen.".to_string(), 0, self.now));
-                }
-                if ui.add(egui::Button::new(format!("{} Bericht kopieren", ic::COPY)).fill(th_card_hover()).rounding(10.0)).clicked() {
-                    ui.ctx().copy_text(self.diag_report());
-                    self.toasts.push(("Bericht in die Zwischenablage kopiert.".to_string(), 2, self.now));
-                }
-            });
-        });
-        ui.label(RichText::new("Prüft, ob alles bereit ist, und zeigt dir bei Problemen, woran es liegt.").color(TEXT_DIM).size(13.0));
-        ui.add_space(8.0);
-
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            section(ui, &format!("{}  Prüfung", ic::STETHOSCOPE), |ui| {
-                status_row(ui, if online { 0 } else { 2 }, "Netzwerk", if online { "Der PC ist mit einem Netzwerk verbunden." } else { "Kein Netzwerk. Mit WLAN oder LAN verbinden." });
-                ui.add_space(6.0);
-                status_row(ui, if found > 0 { 0 } else { 2 }, "Konsole gefunden", if found > 0 { "Mindestens eine Konsole antwortet im Netzwerk." } else { "Keine Konsole gefunden. Einschalten (oder Ruhemodus mit Netzwerk), gleiches Netzwerk, Firewall-Abfrage erlauben." });
-                ui.add_space(6.0);
-                let st = match first.as_ref().map(|c| c.state.clone()) { Some(State::Ready) => 0, Some(State::Standby) => 1, Some(State::Unknown) => 1, None => 2 };
-                let st_txt = match first.as_ref().map(|c| c.state.clone()) {
-                    Some(State::Ready) => "Die Konsole ist an und bereit.",
-                    Some(State::Standby) => "Die Konsole ist im Ruhemodus. Mit „Aufwecken“ starten (dafür Remote Play und Netzwerk-Aufwecken aktivieren).",
-                    _ => "Kein Zustand bekannt.",
-                };
-                status_row(ui, st, "Konsole bereit", st_txt);
-                ui.add_space(6.0);
-                status_row(ui, if psn_ok { 0 } else { 2 }, "PlayStation-Konto", if psn_ok { "Angemeldet." } else { "Nicht angemeldet. Beim Koppeln einmalig anmelden." });
-                ui.add_space(6.0);
-                status_row(ui, if paired_any { 0 } else { 2 }, "Konsole gekoppelt", if paired_any { "Die Konsole ist gekoppelt." } else { "Noch nicht gekoppelt. Bei der Konsole auf „Koppeln“ klicken." });
-                ui.add_space(6.0);
-                status_row(ui, if pad_ok { 0 } else { 1 }, "Controller", if pad_ok { "Ein Controller ist verbunden." } else { "Kein Controller erkannt. Das ist optional, es geht auch mit Tastatur." });
-                ui.add_space(6.0);
-                let (us, ut) = if self.update.is_some() { (1, "Ein Update ist verfügbar.") } else if self.update_checked { (0, "OVERLIME ist auf dem neuesten Stand.") } else { (1, "Noch nicht geprüft.") };
-                status_row(ui, us, "Version", &format!("{VERSION}. {ut}"));
-            });
-            ui.add_space(6.0);
-            section(ui, &format!("{}  Controller", ic::GAME_CONTROLLER), |ui| {
-                let conn = self.pad.connected();
-                let inp = self.pad.poll();
-                let ex = self.pad.poll_extra();
-                ui.label(RichText::new("Live-Test: Drücke Tasten und bewege Sticks. Was hier reagiert, kommt auch im Spiel an.").color(TEXT_DIM).size(12.5));
-                ui.add_space(4.0);
-                pad_visual(ui, &inp, &ex, conn);
-                ui.ctx().request_repaint();
-                ui.add_space(8.0);
-                let devs = self.pad.devices();
-                if devs.is_empty() {
-                    status_row(ui, 1, "Kein Gerät gefunden", "Windows meldet keinen Controller. Per Bluetooth koppeln (Windows: Einstellungen > Bluetooth und Geräte), dann hier „Neu suchen“ klicken.");
-                } else {
-                    for (name, usable, vid, pid) in &devs {
-                        status_row(ui, if *usable { 0 } else { 1 }, &format!("{name}  ({vid:04x}:{pid:04x})"), if *usable { "Als Gamepad erkannt." } else { "Gerät gefunden, aber nicht als Gamepad nutzbar." });
-                        ui.add_space(4.0);
-                    }
-                }
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new(format!("{} Controller neu suchen", ic::ARROWS_CLOCKWISE)).fill(th_card_hover()).rounding(10.0)).clicked() {
-                        self.pad.rescan();
-                        self.toasts.push(("Controller wird neu gesucht.".to_string(), 0, self.now));
-                    }
-                });
-                ui.add_space(4.0);
-                ui.label(RichText::new("PS4-Controller koppeln: Share- und PS-Taste halten, bis die Leiste schnell blinkt. PS5-Controller: Create- und PS-Taste halten. Danach in Windows unter Bluetooth hinzufügen.").color(TEXT_DIM).size(12.5));
-            });
-            ui.add_space(6.0);
-            section(ui, &format!("{}  Verbindungstest", ic::WIFI_HIGH), |ui| {
-                ui.label(RichText::new("Prüft, ob der Remote-Play-Port der Konsole erreichbar ist. Die Konsole muss dafür an sein.").color(TEXT_DIM).size(12.5));
-                ui.add_space(4.0);
-                ui.horizontal(|ui| {
-                    let can = first.is_some() && !self.diag_busy;
-                    if ui.add_enabled(can, big_button("Test starten", th_blue()).min_size(Vec2::new(160.0, 40.0))).clicked() {
-                        if let Some(c) = first.clone() {
-                            self.diag_busy = true;
-                            self.diag_port = None;
-                            let tx = self.tx.clone();
-                            let addr = c.addr.clone();
-                            std::thread::spawn(move || {
-                                let r = match format!("{addr}:9295").parse::<std::net::SocketAddr>() {
-                                    Ok(sa) => match std::net::TcpStream::connect_timeout(&sa, Duration::from_millis(2500)) {
-                                        Ok(_) => (true, "Der Remote-Play-Port der Konsole ist erreichbar.".to_string()),
-                                        Err(e) => (false, format!("Der Port ist nicht erreichbar ({:?}). Ist Remote Play an der Konsole aktiviert und die Konsole an? Blockiert eine Firewall?", e.kind())),
-                                    },
-                                    Err(_) => (false, "Ungültige Adresse".to_string()),
-                                };
-                                let _ = tx.send(Msg::DiagPort(r.0, r.1));
-                            });
-                        }
-                    }
-                    if self.diag_busy {
-                        ui.spinner();
-                        ui.label(RichText::new("Teste …").color(TEXT_DIM));
-                    }
-                });
-                if first.is_none() {
-                    ui.label(RichText::new("Zuerst muss eine Konsole gefunden werden.").color(YELLOW).size(12.5));
-                }
-                if let Some((ok, txt)) = &self.diag_port {
-                    ui.add_space(6.0);
-                    status_row(ui, if *ok { 0 } else { 2 }, if *ok { "Erreichbar" } else { "Nicht erreichbar" }, txt);
-                }
-            });
-            ui.add_space(6.0);
-            section(ui, &format!("{}  Wenn etwas nicht klappt", ic::INFO), |ui| {
-                ui.label(RichText::new("Klicke oben auf „Problem melden“. OVERLIME kopiert einen Bericht (ohne IP-Adressen und Passwörter) und öffnet die Meldeseite auf GitHub. Dort fügst du ihn mit Strg+V ein und beschreibst kurz, was passiert ist.").color(TEXT_DIM).size(13.0));
-            });
-        });
-    }
 }

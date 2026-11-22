@@ -34,7 +34,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.22";
+const VERSION: &str = "0.23";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -42,7 +42,6 @@ enum Page {
     News,
     Consoles,
     Settings,
-    Diagnose,
     Help,
 }
 
@@ -138,6 +137,11 @@ struct App {
     update_err: String,
     skip_login: bool,
     login_pasted: String,
+    login_step: usize,
+    set_cat: usize,
+    help_tab: usize,
+    set_q: String,
+    clip_seen: f64,
     login_busy: bool,
     login_error: String,
     start_error: Option<String>,
@@ -243,6 +247,11 @@ impl App {
             update_err: String::new(),
             skip_login: false,
             login_pasted: String::new(),
+            set_cat: 0,
+            help_tab: 0,
+            set_q: String::new(),
+            login_step: std::env::args().find_map(|a| a.strip_prefix("--login-step=").and_then(|v| v.parse().ok())).unwrap_or(0),
+            clip_seen: 0.0,
             login_busy: false,
             login_error: String::new(),
             start_error: None,
@@ -362,7 +371,8 @@ impl App {
                 app.page = Page::News;
             }
             if std::env::args().any(|a| a == "--diag-page") {
-                app.page = Page::Diagnose;
+                app.page = Page::Help;
+                app.help_tab = 0;
             }
             if std::env::args().any(|a| a == "--help-page") {
                 app.page = Page::Help;
@@ -1082,13 +1092,53 @@ fn segmented(ui: &mut egui::Ui, value: &mut usize, labels: &[&str]) {
     });
 }
 
+thread_local! {
+    static SET_FILTER: std::cell::RefCell<Option<(usize, String)>> = const { std::cell::RefCell::new(None) };
+    static SET_DRAWN: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
+/// Kategorie (1 Bild & Ton, 2 Steuerung, 3 Darstellung, 4 Verbindung, 5 App & Updates) und Suchbegriffe je Abschnitt.
+fn section_meta(title: &str) -> (usize, &'static str) {
+    let t = title.to_lowercase();
+    let table: [(&str, usize, &str); 10] = [
+        ("videoqualität", 1, "auflösung bildrate fps bitrate codec hevc h.264 schärfe qualität 1080p"),
+        ("ton", 1, "ton lautstärke audio lautsprecher sound"),
+        ("steuerung", 2, "controller vibration touchpad gyro bewegung trigger led gamepad"),
+        ("tastatur", 2, "tastatur tasten belegung keyboard"),
+        ("darstellung", 3, "größe skalierung fenster vollbild anzeige kompakt"),
+        ("farbschema", 3, "farbe theme design themes schema"),
+        ("verbindung", 4, "ip adresse konto abmelden playstation psn internet vpn tailscale"),
+        ("discord", 5, "discord status presence"),
+        ("updates", 5, "update version aktualisieren installieren suchen"),
+        ("symbol neben der uhr", 5, "symbol tray uhr windows start autostart hintergrund wecken"),
+    ];
+    for (k, c, kw) in table {
+        if t.contains(k) {
+            return (c, kw);
+        }
+    }
+    (0, "")
+}
+
 fn section(ui: &mut egui::Ui, title: &str, add: impl FnOnce(&mut egui::Ui)) {
+    let filter = SET_FILTER.with(|f| f.borrow().clone());
+    if let Some((cat, q)) = filter {
+        let (c, kw) = section_meta(title);
+        let ok = if !q.is_empty() { title.to_lowercase().contains(&q) || kw.contains(&q) } else { cat == 0 || c == cat };
+        if !ok {
+            return;
+        }
+        SET_DRAWN.with(|d| d.set(d.get() + 1));
+    }
     egui::Frame::none().fill(th_card()).rounding(16.0).inner_margin(egui::Margin::same(18.0)).show(ui, |ui| {
         ui.set_width(ui.available_width());
         ui.label(RichText::new(title).size(17.0).strong());
         ui.add_space(4.0);
         add(ui);
     });
+    if SET_FILTER.with(|f| f.borrow().is_some()) {
+        ui.add_space(8.0);
+    }
 }
 
 fn label(ui: &mut egui::Ui, title: &str, desc: &str) {
@@ -1254,6 +1304,34 @@ impl App {
         });
         ui.label(RichText::new("Wird automatisch gespeichert.").color(TEXT_DIM).size(13.0));
         ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            egui::Frame::none().fill(th_card()).rounding(10.0).inner_margin(egui::Margin::symmetric(10.0, 4.0)).show(ui, |ui| {
+                ui.label(RichText::new(ic::MAGNIFYING_GLASS).color(TEXT_DIM));
+                ui.add(egui::TextEdit::singleline(&mut self.set_q).frame(false).hint_text("Einstellung suchen …").desired_width(220.0));
+                if !self.set_q.is_empty() && ui.add(egui::Button::new("x").frame(false)).clicked() {
+                    self.set_q.clear();
+                }
+            });
+        });
+        ui.add_space(6.0);
+        let searching = !self.set_q.trim().is_empty();
+        ui.horizontal_wrapped(|ui| {
+            let cats = ["Alle", "Bild & Ton", "Steuerung", "Darstellung", "Verbindung", "App & Updates"];
+            for (i, c) in cats.iter().enumerate() {
+                let sel = !searching && self.set_cat == i;
+                let b = egui::Button::new(RichText::new(*c).size(13.5).color(if sel { Color32::WHITE } else { TEXT_DIM }))
+                    .fill(if sel { th_blue() } else { th_card() })
+                    .rounding(16.0)
+                    .min_size(Vec2::new(0.0, 30.0));
+                if ui.add(b).clicked() {
+                    self.set_cat = i;
+                    self.set_q.clear();
+                }
+            }
+        });
+        ui.add_space(8.0);
+        SET_FILTER.with(|f| *f.borrow_mut() = Some((self.set_cat, self.set_q.trim().to_lowercase())));
+        SET_DRAWN.with(|d| d.set(0));
         let st = &mut self.settings;
         egui::ScrollArea::vertical().show(ui, |ui| {
             section(ui, &format!("{}  Updates", ic::ARROW_CIRCLE_UP), |ui| {
@@ -1300,8 +1378,7 @@ impl App {
                     };
                     ui.label(RichText::new(txt).color(TEXT_DIM).size(12.5));
                 }
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
+                    ui.horizontal(|ui| {
                     if self.update_checking {
                         ui.spinner();
                         ui.label(RichText::new("Suche …").color(TEXT_DIM));
@@ -1314,8 +1391,8 @@ impl App {
                 });
                 ui.add_space(4.0);
                 ui.checkbox(&mut st.auto_update, "Beim Start automatisch installieren (während der App-Nutzung nur Hinweis, nie während eines Spiels)");
-                ui.add_space(6.0);
-                ui.label(RichText::new("Symbol neben der Uhr").strong().size(14.0));
+            });
+            section(ui, &format!("{}  Symbol neben der Uhr", ic::POWER), |ui| {
                 ui.label(RichText::new("Ein kleines Symbol unten rechts: Ein Klick weckt die PlayStation und öffnet OVERLIME direkt verbunden. Es braucht kaum Speicher und startet auf Wunsch mit Windows.").color(TEXT_DIM).size(12.5));
                 let mut ta = self.tray_auto;
                 if ui.checkbox(&mut ta, "Mit Windows starten (Symbol im Hintergrund)").changed() {
@@ -1334,33 +1411,24 @@ impl App {
                     tray::spawn_tray();
                     self.toasts.push(("Symbol neben der Uhr gestartet (evtl. unter dem Pfeil ^).".to_string(), 0, self.now));
                 }
-                ui.add_space(6.0);
-            });
-            ui.add_space(6.0);
+                });
             section(ui, &format!("{}  Videoqualität", ic::FILM_STRIP), |ui| {
                 label(ui, "Auflösung", "Sony erlaubt im Remote Play höchstens 1080p.");
                 segmented(ui, &mut st.resolution, &["540p", "720p", "1080p"]);
-                ui.add_space(6.0);
-                label(ui, "Bildrate", "");
+                    label(ui, "Bildrate", "");
                 segmented(ui, &mut st.fps, &["30 FPS", "60 FPS"]);
-                ui.add_space(6.0);
-                label(ui, "Bitrate", "Höher = schärferes Bild, braucht aber eine schnelle Leitung.");
+                    label(ui, "Bitrate", "Höher = schärferes Bild, braucht aber eine schnelle Leitung.");
                 ui.add(egui::Slider::new(&mut st.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
-                ui.add_space(6.0);
-                label(ui, "Videocodec", "HEVC (H.265) ist bei gleicher Bitrate schärfer. Automatisch: HEVC bei der PS5, H.264 bei der PS4.");
+                    label(ui, "Videocodec", "HEVC (H.265) ist bei gleicher Bitrate schärfer. Automatisch: HEVC bei der PS5, H.264 bei der PS4.");
                 segmented(ui, &mut st.codec, &["Automatisch", "H.264", "HEVC"]);
             });
-            ui.add_space(6.0);
             section(ui, &format!("{}  Darstellung", ic::MONITOR), |ui| {
                 label(ui, "Hochskalierung auf 4K", "Die Konsole sendet max. 1080p. Die Grafikkarte rechnet hoch: „Aus“ = harte Pixel, „Weich“ = glatt, „Scharf“ und „Ultra“ = Schärfefilter (CAS).");
                 segmented(ui, &mut st.upscale, &["Aus", "Weich", "Scharf", "Ultra"]);
-                ui.add_space(6.0);
-                ui.checkbox(&mut st.fullscreen, "Vollbild beim Streamen");
-                ui.add_space(6.0);
-                label(ui, "Größe der Oberfläche", "Kompakt zeigt mehr auf einmal und wirkt aufgeräumter.");
+                    ui.checkbox(&mut st.fullscreen, "Vollbild beim Streamen");
+                    label(ui, "Größe der Oberfläche", "Kompakt zeigt mehr auf einmal und wirkt aufgeräumter.");
                 segmented(ui, &mut st.ui_scale, &["Kompakt", "Normal", "Groß"]);
             });
-            ui.add_space(6.0);
             section(ui, &format!("{}  Farbschema", ic::PALETTE), |ui| {
                 ui.label(RichText::new("Wähle ein Farbschema. Eigene Schemata legst du als Textdatei in den Themes-Ordner.").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
@@ -1395,7 +1463,6 @@ impl App {
                     }
                 });
             });
-            ui.add_space(6.0);
             section(ui, &format!("{}  Ton", ic::SPEAKER_HIGH), |ui| {
                 ui.label(RichText::new("Ausgabegerät und Lautstärke für den Ton aus dem Spiel. Ein anderes Gerät gilt ab dem nächsten Stream.").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
@@ -1427,19 +1494,16 @@ impl App {
                     }
                 });
             });
-            ui.add_space(6.0);
             section(ui, &format!("{}  Steuerung", ic::GAME_CONTROLLER), |ui| {
                 ui.checkbox(&mut st.rumble, "Controller-Vibration");
                 ui.checkbox(&mut st.ds_features, "DualSense-Funktionen: Touchpad, Bewegungssensor, adaptive Trigger, Lichtleiste (gilt ab dem nächsten Stream)");
                 ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt. Die Tastatur stellst du weiter unten ein.").color(TEXT_DIM).size(12.5));
             });
-            ui.add_space(6.0);
             section(ui, &format!("{}  Tastatur", ic::KEYBOARD), |ui| {
                 ui.label(RichText::new("Die Tastatur steuert das Spiel nur, wenn du sie brauchst. Die Kurztasten (Esc, F1, F10, F11, F12, M) funktionieren immer.").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
                 segmented(ui, &mut st.kb_mode, &["Automatisch (nur ohne Controller)", "Immer", "Aus"]);
-                ui.add_space(6.0);
-                egui::CollapsingHeader::new(RichText::new("Tasten anpassen").size(14.0).strong()).default_open(false).show(ui, |ui| {
+                    egui::CollapsingHeader::new(RichText::new("Tasten anpassen").size(14.0).strong()).default_open(false).show(ui, |ui| {
                 ui.label(RichText::new("Auf eine Taste klicken, dann die neue Taste drücken (Esc bricht ab).").color(TEXT_DIM).size(12.5));
                 ui.add_space(4.0);
                 egui::Grid::new("kbgrid").num_columns(2).spacing([20.0, 6.0]).show(ui, |ui| {
@@ -1469,7 +1533,6 @@ impl App {
                 }
                 });
             });
-            ui.add_space(6.0);
             section(ui, &format!("{}  Discord", ic::DISCORD_LOGO), |ui| {
                 let ready = !discord::DEFAULT_APP_ID.is_empty() || !st.discord_id.trim().is_empty();
                 ui.add_enabled_ui(ready, |ui| {
@@ -1530,20 +1593,25 @@ impl App {
                 }
                 ui.ctx().request_repaint_after(Duration::from_millis(500));
             });
-            ui.add_space(6.0);
             section(ui, &format!("{}  Verbindung", ic::GLOBE), |ui| {
                 label(ui, "Konsole per IP hinzufügen", "Nur für Internet/VPN (z. B. Tailscale). Im Heimnetz wird alles automatisch gefunden.");
                 ui.add(egui::TextEdit::singleline(&mut st.manual_ip).hint_text("IP-Adresse der Konsole").desired_width(260.0));
-                ui.add_space(6.0);
-                ui.add_space(6.0);
-                if !st.psn_account.is_empty() && ui.button("PlayStation-Konto abmelden").clicked() {
+                        if !st.psn_account.is_empty() && ui.button("PlayStation-Konto abmelden").clicked() {
                     st.psn_account.clear();
                     st.psn_name.clear();
                 }
             });
-            ui.add_space(10.0);
+            if SET_DRAWN.with(|d| d.get()) == 0 {
+                ui.add_space(20.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new("Nichts gefunden").size(16.0).strong());
+                    ui.label(RichText::new("Versuch es mit einem anderen Begriff, z. B. „Bitrate“ oder „Ton“.").color(TEXT_DIM));
+                });
+            }
+            ui.add_space(4.0);
             ui.label(RichText::new(format!("OVERLIME Remote Play {VERSION}")).color(TEXT_DIM).size(12.0));
         });
+        SET_FILTER.with(|f| *f.borrow_mut() = None);
     }
 
     fn dialog_ui(&mut self, ctx: &egui::Context) {
@@ -2538,29 +2606,9 @@ impl App {
 }
 
 impl eframe::App for App {
-    /// Controller-Bedienung der Menüs: Steuerkreuz/Stick = Auswahl, ✕ = Bestätigen, L1/R1 = Seite wechseln.
-    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
-        if self.session.is_some() {
-            self.nav_prev = 0;
-            return;
-        }
-        let inp = self.pad.poll();
-        let mut b = inp.buttons;
-        if inp.ly > 16000 { b |= 1 << 7; }
-        if inp.ly < -16000 { b |= 1 << 6; }
-        let pressed = b & !self.nav_prev;
-        self.nav_prev = b;
-        let key = |k: Key, shift: bool| {
-            let m = egui::Modifiers { shift, ..Default::default() };
-            [true, false].map(|down| egui::Event::Key { key: k, physical_key: Some(k), pressed: down, repeat: false, modifiers: m })
-        };
-        if pressed & (1 << 7) != 0 { raw.events.extend(key(Key::Tab, false)); }
-        if pressed & (1 << 6) != 0 { raw.events.extend(key(Key::Tab, true)); }
-        if pressed & (1 << 0) != 0 { raw.events.extend(key(Key::Enter, false)); }
-        let pages = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
-        let idx = pages.iter().position(|p| *p == self.page).unwrap_or(0);
-        if pressed & (1 << 9) != 0 && self.dialog.is_none() { self.page = pages[(idx + 1) % 6]; }
-        if pressed & (1 << 8) != 0 && self.dialog.is_none() { self.page = pages[(idx + 5) % 6]; }
+    /// Die Menüs werden bewusst nicht per Controller bedient (Controller-Test in der Diagnose).
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, _raw: &mut egui::RawInput) {
+        self.nav_prev = 0;
     }
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
@@ -2610,13 +2658,13 @@ impl eframe::App for App {
         if self.session.is_none() && self.dialog.is_none() && self.capturing.is_none() && !ctx.wants_keyboard_input() {
             let (f5, nums) = ctx.input(|i| {
                 let c = i.modifiers.ctrl;
-                let ks = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6];
+                let ks = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5];
                 (i.key_pressed(Key::F5), ks.map(|k| c && i.key_pressed(k)))
             });
             if f5 && !self.searching {
                 self.search();
             }
-            let hk = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
+            let hk = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Help];
             for (i, hit) in nums.iter().enumerate() {
                 if *hit {
                     self.page = hk[i];
@@ -2804,8 +2852,7 @@ impl eframe::App for App {
                     Page::News => (ic::NEWSPAPER, "Neuigkeiten"),
                     Page::Consoles => (ic::GAME_CONTROLLER, "Konsolen"),
                     Page::Settings => (ic::GEAR_SIX, "Einstellungen"),
-                    Page::Diagnose => (ic::STETHOSCOPE, "Diagnose"),
-                    Page::Help => (ic::QUESTION, "Hilfe"),
+                    Page::Help => (ic::QUESTION, "Hilfe & Diagnose"),
                 };
                 let found = self.consoles.len();
                 let pad_ok = self.pad.connected();
@@ -2851,8 +2898,8 @@ impl eframe::App for App {
                 }
                 ui.add_space(18.0);
                 let old = self.page;
-                let pages = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Diagnose, Page::Help];
-                let items = [(ic::HOUSE, "Übersicht"), (ic::NEWSPAPER, "Neuigkeiten"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::GEAR_SIX, "Einstellungen"), (ic::STETHOSCOPE, "Diagnose"), (ic::QUESTION, "Hilfe")];
+                let pages = [Page::Home, Page::News, Page::Consoles, Page::Settings, Page::Help];
+                let items = [(ic::HOUSE, "Übersicht"), (ic::NEWSPAPER, "Neuigkeiten"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::GEAR_SIX, "Einstellungen"), (ic::QUESTION, "Hilfe")];
                 let unseen = self.unseen_news();
                 let top_y = ui.cursor().top();
                 let sel_idx = pages.iter().position(|p| *p == self.page).unwrap_or(0) as f32;
@@ -2949,8 +2996,7 @@ impl eframe::App for App {
                 Page::News => self.news_page(ui, t),
                 Page::Consoles => self.consoles_page(ui, t),
                 Page::Settings => self.settings_page(ui),
-                Page::Diagnose => self.diag_page(ui, t),
-                Page::Help => self.help_page(ui),
+                Page::Help => self.help_page(ui, t),
             }
         });
 
@@ -3040,6 +3086,9 @@ fn audio_test() {
 fn main() -> eframe::Result<()> {
     if std::env::args().any(|a| a == "--tray") {
         tray::run();
+        return Ok(());
+    }
+    if !std::env::args().any(|a| a.starts_with("--") && a != "--connect-now") && !winui::single_instance() {
         return Ok(());
     }
     ffi::init();
