@@ -5,6 +5,8 @@
 #include <chiaki/discovery.h>
 #include <chiaki/ffmpegdecoder.h>
 #include <chiaki/opusdecoder.h>
+#include <chiaki/opusencoder.h>
+#include <opus/opus.h>
 #include <chiaki/controller.h>
 #include <chiaki/orientation.h>
 #include <chiaki/videoreceiver.h>
@@ -166,6 +168,8 @@ struct OlStream {
 	ChiakiSession session;
 	ChiakiFfmpegDecoder decoder;
 	ChiakiOpusDecoder opus;
+	ChiakiOpusEncoder mic_enc;
+	int mic_ready, mic_connected, mic_live;
 	int session_ok, decoder_ok, opus_ok;
 
 	ChiakiMutex mtx;
@@ -828,6 +832,14 @@ OlStream *ol_stream_start(const OlStreamParams *p, char *err, size_t err_size)
 	ChiakiAudioSink sink;
 	chiaki_opus_decoder_get_sink(&s->opus, &sink);
 	chiaki_session_set_audio_sink(&s->session, &sink);
+	// Mikrofon: Opus-Kodierer und Audio-Sender vorbereiten (Ton geht erst nach ol_mic_enable zur Konsole)
+	{
+		chiaki_opus_encoder_init(&s->mic_enc, &s->log);
+		ChiakiAudioHeader mh;
+		chiaki_audio_header_set(&mh, 2, 16, 48000, 480);
+		chiaki_opus_encoder_header(&mh, &s->mic_enc, &s->session);
+		s->mic_ready = s->mic_enc.audio_sender != NULL;
+	}
 	chiaki_session_set_video_sample_cb(&s->session, video_sample, s);
 	chiaki_session_set_event_cb(&s->session, event_cb, s);
 
@@ -1031,6 +1043,8 @@ void ol_stream_stop(OlStream *s)
 	chiaki_session_stop(&s->session);
 	chiaki_session_join(&s->session);
 	ol_record_stop(s);
+	s->mic_live = 0;
+	if(s->mic_ready) chiaki_opus_encoder_fini(&s->mic_enc);
 	chiaki_opus_decoder_fini(&s->opus);
 	chiaki_ffmpeg_decoder_fini(&s->decoder);
 	chiaki_session_fini(&s->session);
@@ -1384,4 +1398,74 @@ int ol_play_thumb(const char *path, int max_w, uint8_t *rgba, size_t cap, int *w
 	if(res == 0) { *w = p->out_w; *h = p->out_h; }
 	ol_play_close(p);
 	return res;
+}
+
+
+// ---------------------------------------------------------------- Mikrofon (Sprache zur Konsole)
+// Rueckgabe: 0 = ok, -1 = nicht bereit
+int ol_mic_enable(OlStream *s, int on)
+{
+	if(!s || !s->mic_ready)
+		return -1;
+	if(on && !s->mic_connected)
+	{
+		chiaki_session_connect_microphone(&s->session);
+		s->mic_connected = 1;
+	}
+	if(s->mic_connected)
+		chiaki_session_toggle_microphone(&s->session, on ? true : false);
+	s->mic_live = on ? 1 : 0;
+	return 0;
+}
+
+// genau 480 Stereo-Abtastwerte (960 int16, 48 kHz) = 10 ms
+void ol_mic_push(OlStream *s, const int16_t *pcm)
+{
+	if(!s || !s->mic_ready || !s->mic_live)
+		return;
+	chiaki_opus_encoder_frame((int16_t *)pcm, &s->mic_enc);
+}
+
+
+// ---------------------------------------------------------------- Opus fuer den Sprachchat (48 kHz, mono)
+void *ol_opus_enc_new(void)
+{
+	int err = 0;
+	OpusEncoder *e = opus_encoder_create(48000, 1, OPUS_APPLICATION_VOIP, &err);
+	if(!e || err != OPUS_OK) return NULL;
+	opus_encoder_ctl(e, OPUS_SET_BITRATE(28000));
+	opus_encoder_ctl(e, OPUS_SET_SIGNAL(OPUS_SIGNAL_VOICE));
+	opus_encoder_ctl(e, OPUS_SET_INBAND_FEC(1));
+	opus_encoder_ctl(e, OPUS_SET_PACKET_LOSS_PERC(8));
+	opus_encoder_ctl(e, OPUS_SET_DTX(0));
+	return e;
+}
+
+int ol_opus_enc(void *e, const int16_t *pcm, int frame, uint8_t *out, int cap)
+{
+	return opus_encode((OpusEncoder *)e, pcm, frame, out, cap);
+}
+
+void ol_opus_enc_free(void *e)
+{
+	if(e) opus_encoder_destroy((OpusEncoder *)e);
+}
+
+void *ol_opus_dec_new(void)
+{
+	int err = 0;
+	OpusDecoder *d = opus_decoder_create(48000, 1, &err);
+	if(!d || err != OPUS_OK) return NULL;
+	return d;
+}
+
+// data == NULL: Paketverlust ausgleichen
+int ol_opus_dec(void *d, const uint8_t *data, int len, int16_t *pcm, int frame)
+{
+	return opus_decode((OpusDecoder *)d, data, data ? len : 0, pcm, frame, 0);
+}
+
+void ol_opus_dec_free(void *d)
+{
+	if(d) opus_decoder_destroy((OpusDecoder *)d);
 }

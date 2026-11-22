@@ -114,6 +114,8 @@ extern "C" {
     pub fn ol_record_stop(s: *mut OlStream);
     pub fn ol_record_state(s: *mut OlStream) -> c_int;
     pub fn ol_record_bytes(s: *mut OlStream) -> u64;
+    pub fn ol_mic_enable(s: *mut OlStream, on: c_int) -> c_int;
+    pub fn ol_mic_push(s: *mut OlStream, pcm: *const i16);
     pub fn ol_record_selftest(inp: *const c_char, out: *const c_char, hevc: c_int, w: c_int, h: c_int, err: *mut c_char, err_size: usize) -> c_int;
 }
 
@@ -321,6 +323,20 @@ impl Stream {
 
     pub fn set_input(&self, buttons: u32, l2: u8, r2: u8, lx: i16, ly: i16, rx: i16, ry: i16) {
         unsafe { ol_stream_set_input(self.ptr, buttons, l2, r2, lx, ly, rx, ry) }
+    }
+}
+
+impl Stream {
+    /// Schaltet das Mikrofon zur Konsole ein oder aus. false, wenn die Konsole es (noch) nicht annimmt.
+    pub fn mic_enable(&self, on: bool) -> bool {
+        unsafe { ol_mic_enable(self.ptr, on as c_int) == 0 }
+    }
+
+    /// Ein 10-ms-Block (480 Stereo-Abtastwerte, 960 Werte) zur Konsole.
+    pub fn mic_push(&self, pcm: &[i16]) {
+        if pcm.len() >= 960 {
+            unsafe { ol_mic_push(self.ptr, pcm.as_ptr()) }
+        }
     }
 }
 

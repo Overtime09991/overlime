@@ -1,6 +1,9 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod audio;
+mod friends;
 mod gallery;
+mod mic;
+mod modules;
 mod discord;
 mod discovery;
 mod ffi;
@@ -19,6 +22,7 @@ mod theme;
 mod tuning;
 mod tray;
 mod update;
+mod voice;
 mod video;
 
 use discovery::{Console, State};
@@ -39,7 +43,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.46";
+const VERSION: &str = "0.47";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -47,6 +51,8 @@ enum Page {
     News,
     Consoles,
     Gallery,
+    Friends,
+    Modules,
     Settings,
     Help,
 }
@@ -233,6 +239,22 @@ struct App {
     feedback: Option<bool>,
     audio_devices: Vec<String>,
     audio_test: Option<(audio::Audio, f64)>,
+    mic: Option<mic::Mic>,
+    voice: Option<voice::Voice>,
+    v_status: String,
+    v_presence: Vec<voice::Friend>,
+    v_room: Option<(String, Vec<voice::Member>)>,
+    v_invites: Vec<friends::Invite>,
+    v_add: String,
+    v_add_msg: String,
+    v_muted: bool,
+    v_pending_invite: Option<String>,
+    v_demo_joined: bool,
+    mic_live: bool,
+    mic_test: Option<mic::Mic>,
+    mic_devices: Vec<String>,
+    mic_toggle_req: bool,
+    mic_err: String,
     muted: bool,
     gl_ok: bool,
     gl_info: String,
@@ -400,6 +422,22 @@ impl App {
             feedback: None,
             audio_devices: Vec::new(),
             audio_test: None,
+            mic: None,
+            voice: None,
+            v_status: "Verbinde …".to_string(),
+            v_presence: Vec::new(),
+            v_room: None,
+            v_invites: Vec::new(),
+            v_add: String::new(),
+            v_add_msg: String::new(),
+            v_muted: false,
+            v_pending_invite: None,
+            v_demo_joined: false,
+            mic_live: false,
+            mic_test: None,
+            mic_devices: Vec::new(),
+            mic_toggle_req: false,
+            mic_err: String::new(),
             muted: false,
             gl_ok: false,
             gl_info: String::new(),
@@ -458,6 +496,15 @@ impl App {
         };
         // Start-Animation: bei jedem normalen Start (ohne Startparameter), oder mit --intro
         app.intro_on = std::env::args().any(|a| a == "--intro") || (app.settings.intro && std::env::args().count() == 1);
+        if std::env::args().any(|a| a == "--demo-friends") {
+            app.page = Page::Friends;
+        }
+        if std::env::args().any(|a| a == "--demo-modules") {
+            app.page = Page::Modules;
+        }
+        if std::env::args().any(|a| a == "--demo-mic-test") {
+            app.mic_test = mic::start("", 1.5, 0.0, Arc::new(|_: &[i16]| {})).ok();
+        }
         if std::env::args().any(|a| a == "--demo-gallery") {
             app.page = Page::Gallery;
         }
@@ -684,6 +731,62 @@ impl App {
             self.demo_stream = false;
         }
         ctx.request_repaint();
+    }
+
+    /// Schaltet das Mikrofon zur Konsole ein oder aus (startet bei Bedarf die Aufnahme vom Gerät).
+    fn voice_set(&mut self, ctx: &egui::Context, on: bool) {
+        let Some(s) = self.session.as_ref() else { return };
+        let stream = s.stream.clone();
+        if on {
+            if self.mic.is_none() {
+                let st2 = stream.clone();
+                let dn_on = self.settings.mic_denoise;
+                let dn: std::sync::Mutex<(Box<nnnoiseless::DenoiseState<'static>>, u32)> = std::sync::Mutex::new((nnnoiseless::DenoiseState::new(), 0));
+                let sink: mic::Sink = Arc::new(move |pcm: &[i16]| {
+                    if dn_on && pcm.len() >= 960 {
+                        // Rauschfilter (RNNoise) wie im Sprachchat
+                        let inp: Vec<f32> = pcm.chunks(2).map(|fr| fr[0] as f32).collect();
+                        let mut out = vec![0.0f32; inp.len()];
+                        let (state, hold) = &mut *dn.lock().unwrap();
+                        let vad = state.process_frame(&mut out, &inp);
+                        if vad > 0.4 {
+                            *hold = 30;
+                        } else if *hold > 0 {
+                            *hold -= 1;
+                        }
+                        let open = *hold > 0;
+                        let mut st = vec![0i16; 960];
+                        for (i, v) in out.iter().enumerate() {
+                            let x = if open { v.clamp(-32768.0, 32767.0) as i16 } else { 0 };
+                            st[i * 2] = x;
+                            st[i * 2 + 1] = x;
+                        }
+                        st2.mic_push(&st);
+                    } else {
+                        st2.mic_push(pcm);
+                    }
+                });
+                match mic::start(&self.settings.mic_device, self.settings.mic_gain, if dn_on { 0.0 } else { self.settings.mic_gate }, sink) {
+                    Ok(m) => self.mic = Some(m),
+                    Err(e) => {
+                        self.toasts.push((format!("Mikrofon nicht möglich: {e}"), 1, self.now));
+                        return;
+                    }
+                }
+            }
+            if !stream.mic_enable(true) {
+                self.toasts.push(("Die Konsole nimmt das Mikrofon noch nicht an. Bitte gleich noch einmal versuchen.".to_string(), 1, self.now));
+                return;
+            }
+            self.mic_live = true;
+            self.toasts.push(("Mikrofon an. Du sprichst jetzt mit deiner Party.".to_string(), 2, self.now));
+        } else {
+            stream.mic_enable(false);
+            self.mic = None;
+            self.mic_live = false;
+            self.toasts.push(("Mikrofon aus.".to_string(), 0, self.now));
+        }
+        let _ = ctx;
     }
 
     fn open_dialog(&mut self, c: &Console) {
@@ -1777,7 +1880,8 @@ thread_local! {
 /// Kategorie (1 Bild & Ton, 2 Steuerung, 3 Darstellung, 4 Verbindung, 5 App & Updates) und Suchbegriffe je Abschnitt.
 fn section_meta(title: &str) -> (usize, &'static str) {
     let t = title.to_lowercase();
-    let table: [(&str, usize, &str); 11] = [
+    let table: [(&str, usize, &str); 12] = [
+        ("sprache", 1, "mikrofon sprache voice party chat mic sprechen"),
         ("statusanzeige", 3, "hud anzeige ping fps position oben links statistik einblendung uhrzeit"),
         ("aufnahmen", 1, "aufnahme video screenshot ordner mp4 aufnehmen"),
         ("videoqualität", 1, "auflösung bildrate fps bitrate codec hevc h.264 schärfe qualität 1080p zwischenbilder 120 hz interpolation flüssig"),
@@ -2258,6 +2362,78 @@ impl App {
                         self.audio_devices = audio::list_devices();
                     }
                 });
+            });
+            section(ui, &format!("{}  Sprache (Mikrofon)", ic::MICROPHONE), |ui| {
+                let on = st.module_on("voice");
+                if self.mic_devices.is_empty() {
+                    self.mic_devices = mic::list_inputs();
+                }
+                ui.label(RichText::new("Sprich im Stream mit deiner Party auf der Konsole. Dein Mikrofon geht zur Konsole, der Ton deiner Party kommt wie bisher im Stream an. Am besten mit Kopfhörer, damit es kein Echo gibt.").color(TEXT_DIM).size(12.5));
+                ui.add_space(4.0);
+                if !on {
+                    ui.label(RichText::new("Das Modul „Sprache“ ist ausgeschaltet (Seite Module).").color(YELLOW).size(12.5));
+                } else {
+                    let std_in = mic::default_input_name();
+                    let sel_text = if st.mic_device.is_empty() { format!("Standardgerät ({std_in})") } else { st.mic_device.clone() };
+                    egui::ComboBox::from_id_source("mdev").width(360.0).selected_text(sel_text).show_ui(ui, |ui| {
+                        ui.selectable_value(&mut st.mic_device, String::new(), format!("Standardgerät ({std_in})"));
+                        for d in self.mic_devices.iter() {
+                            ui.selectable_value(&mut st.mic_device, d.clone(), d);
+                        }
+                    });
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label("Lautstärke");
+                        ui.add(egui::Slider::new(&mut st.mic_gain, 0.3..=4.0).custom_formatter(|v, _| format!("{} %", (v * 100.0).round() as i32)));
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Rauschsperre");
+                        ui.add(egui::Slider::new(&mut st.mic_gate, 0.0..=0.1).custom_formatter(|v, _| if v <= 0.0001 { "aus".to_string() } else { format!("{:.0} %", v * 1000.0) }));
+                    });
+                    ui.add_space(4.0);
+                    ui.checkbox(&mut st.mic_denoise, "Rauschfilter (KI): Tastatur, Lüfter und Hintergrund herausfiltern");
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("Sprechen").size(13.0).color(TEXT_DIM));
+                    let mut m = if st.mic_ptt { 1 } else { 0 };
+                    segmented(ui, &mut m, &["Taste V schaltet um", "Taste V gedrückt halten"]);
+                    st.mic_ptt = m == 1;
+                    ui.add_space(6.0);
+                    // Pegelanzeige zum Testen
+                    ui.horizontal(|ui| {
+                        let testing = self.mic_test.is_some();
+                        if ui.add(egui::Button::new(format!("{} {}", ic::MICROPHONE, if testing { lang::tr("Test beenden") } else { lang::tr("Mikrofon testen") })).fill(if testing { RED.gamma_multiply(0.6) } else { th_card_hover() }).rounding(10.0)).clicked() {
+                            if testing {
+                                self.mic_test = None;
+                            } else {
+                                match mic::start(&st.mic_device, st.mic_gain, st.mic_gate, Arc::new(|_: &[i16]| {})) {
+                                    Ok(mm) => {
+                                        self.mic_test = Some(mm);
+                                        self.mic_err.clear();
+                                    }
+                                    Err(e) => self.mic_err = e,
+                                }
+                            }
+                        }
+                        if ui.add(egui::Button::new("Geräte neu laden").fill(th_card_hover()).rounding(10.0)).clicked() {
+                            self.mic_devices = mic::list_inputs();
+                        }
+                    });
+                    if let Some(mm) = self.mic_test.as_ref() {
+                        mm.set_gain(st.mic_gain);
+                        mm.set_gate(st.mic_gate);
+                        let lv = mm.level().clamp(0.0, 1.0);
+                        let (r, _) = ui.allocate_exact_size(Vec2::new(360.0, 14.0), egui::Sense::hover());
+                        let p = ui.painter();
+                        p.rect_filled(r, Rounding::same(7.0), Color32::from_white_alpha(16));
+                        let w = (lv.sqrt() * r.width()).max(4.0);
+                        p.rect_filled(Rect::from_min_size(r.min, Vec2::new(w, r.height())), Rounding::same(7.0), if lv > 0.85 { RED } else { GREEN });
+                        ui.label(RichText::new(mm.info.clone()).color(TEXT_DIM).size(11.5));
+                        ui.ctx().request_repaint_after(Duration::from_millis(40));
+                    }
+                    if !self.mic_err.is_empty() {
+                        ui.label(RichText::new(format!("Mikrofon nicht möglich: {}", self.mic_err)).color(RED).size(12.5));
+                    }
+                }
             });
             section(ui, &format!("{}  Aufnahmen", ic::RECORD), |ui| {
                 ui.label(RichText::new("Im Stream: F9 startet und beendet eine Video-Aufnahme (MP4, Bild unverändert vom Stream, Ton als AAC). F12 macht einen Screenshot.").color(TEXT_DIM).size(12.5));
@@ -2794,6 +2970,9 @@ impl App {
                         }
                         if tile(ui, ic::CAMERA, "Screenshot", tw, false) {
                             shot = true;
+                        }
+                        if self.settings.module_on("voice") && tile(ui, ic::MICROPHONE, if self.mic_live { "Sprache an" } else { "Sprache" }, tw, self.mic_live) {
+                            keys_btn = true;
                         }
                     });
                     ui.add_space(2.0);
@@ -3369,7 +3548,7 @@ impl App {
         let mut bar_rec = false;
         let mut bar_keys = false;
         let mut bar_quick = false;
-        let show_hud = self.show_hud;
+        let show_hud = self.show_hud && self.settings.module_on("hud");
         let muted_now = self.muted;
         let mut toggle_fs = false;
         let mut copy_log = false;
@@ -3403,7 +3582,7 @@ impl App {
             rx: pad_in.rx,
             ry: pad_in.ry,
         };
-        let input = tuning::apply(input, &self.settings);
+        let input = if self.settings.module_on("tuning") { tuning::apply(input, &self.settings) } else { input };
         let input = if self.stream_menu { pad::Input { buttons: 0, l2: 0, r2: 0, lx: 0, ly: 0, rx: 0, ry: 0 } } else { input };
         let pad_connected = self.pad.connected();
         let log_tail: String = self.log.lines().rev().take(12).collect::<Vec<_>>().into_iter().rev().collect::<Vec<_>>().join("\n");
@@ -3705,6 +3884,41 @@ impl App {
             self.muted = !self.muted;
             self.toasts.push((if self.muted { "Ton aus (M)".to_string() } else { "Ton an".to_string() }, 0, self.now));
         }
+        // Sprache zur Konsole: Taste V (Umschalten oder Halten) und Kachel im Pause-Menü
+        if self.settings.module_on("voice") && self.session.is_some() && !ctx.wants_keyboard_input() {
+            let (pressed, down, released) = ctx.input(|i| (i.key_pressed(Key::V), i.key_down(Key::V), i.key_released(Key::V)));
+            if self.settings.mic_ptt {
+                if pressed && !self.mic_live {
+                    self.voice_set(ctx, true);
+                }
+                if released && self.mic_live {
+                    self.voice_set(ctx, false);
+                }
+                let _ = down;
+            } else if pressed {
+                let want = !self.mic_live;
+                self.voice_set(ctx, want);
+            }
+            if self.mic_toggle_req {
+                self.mic_toggle_req = false;
+                let want = !self.mic_live;
+                self.voice_set(ctx, want);
+            }
+        }
+        if self.session.is_none() && (self.mic.is_some() || self.mic_live) {
+            self.mic = None;
+            self.mic_live = false;
+        }
+        self.voice_stream_overlay(ctx);
+        if self.mic_live {
+            let sc = ctx.screen_rect();
+            let p = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("mic_dot")));
+            let lv = self.mic.as_ref().map(|m| m.level()).unwrap_or(0.0).sqrt();
+            let c = Pos2::new(sc.right() - 76.0, sc.top() + 26.0);
+            p.rect_filled(Rect::from_center_size(c, Vec2::new(92.0, 28.0)), Rounding::same(14.0), Color32::from_black_alpha(150));
+            p.circle_filled(c - Vec2::new(30.0, 0.0), 5.0 + 3.0 * lv, RED);
+            p.text(c + Vec2::new(4.0, 0.0), Align2::CENTER_CENTER, format!("{} {}", ic::MICROPHONE, lang::tr("Sprache")), FontId::proportional(12.5), Color32::WHITE);
+        }
         let gain = if self.muted { 0.0 } else { self.settings.volume };
         if let Some(s) = self.session.as_ref() {
             if let Some(a) = &s.audio {
@@ -3805,8 +4019,7 @@ impl App {
             toggle_fs = true;
         }
         if o_keys {
-            self.stream_menu = false;
-            self.show_keys = true;
+            self.mic_toggle_req = true;
         }
         if o_stop {
             stop = true;
@@ -3887,6 +4100,7 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.gl_ok = frame.gl().is_some();
         lang::set(self.settings.language);
+        self.voice_tick(ctx);
         if self.intro_on {
             let tnow = ctx.input(|i| i.time);
             let t0 = *self.intro_t0.get_or_insert(tnow);
@@ -3963,13 +4177,13 @@ impl eframe::App for App {
         if self.session.is_none() && self.dialog.is_none() && self.capturing.is_none() && !ctx.wants_keyboard_input() {
             let (f5, nums) = ctx.input(|i| {
                 let c = i.modifiers.ctrl;
-                let ks = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6];
+                let ks = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8];
                 (i.key_pressed(Key::F5), ks.map(|k| c && i.key_pressed(k)))
             });
             if f5 && !self.searching {
                 self.search();
             }
-            let hk = [Page::Home, Page::News, Page::Consoles, Page::Gallery, Page::Settings, Page::Help];
+            let hk = [Page::Home, Page::News, Page::Consoles, Page::Gallery, Page::Friends, Page::Modules, Page::Settings, Page::Help];
             for (i, hit) in nums.iter().enumerate() {
                 if *hit {
                     self.page = hk[i];
@@ -4250,6 +4464,8 @@ impl eframe::App for App {
                     Page::News => (ic::NEWSPAPER, "Neuigkeiten"),
                     Page::Consoles => (ic::GAME_CONTROLLER, "Konsolen"),
                     Page::Gallery => (ic::IMAGES, "Galerie"),
+                    Page::Friends => (ic::USERS_THREE, "Freunde & Sprache"),
+                    Page::Modules => (ic::PUZZLE_PIECE, "Module"),
                     Page::Settings => (ic::GEAR_SIX, "Einstellungen"),
                     Page::Help => (ic::QUESTION, "Hilfe & Diagnose"),
                 };
@@ -4266,6 +4482,9 @@ impl eframe::App for App {
                     ui.label(RichText::new(page_icon).size(16.0).color(th_blue_light()));
                     ui.label(RichText::new(page_title).size(15.0).strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new(RichText::new(ic::QUESTION).size(16.0)).fill(th_card_hover()).rounding(15.0).min_size(Vec2::new(30.0, 30.0))).on_hover_text("Hilfe & Diagnose (Strg+8)").clicked() {
+                            self.page = Page::Help;
+                        }
                         if let Some(v) = &upd_ver {
                             let b = egui::Button::new(RichText::new(format!("{}  Update {v}", ic::ARROW_CIRCLE_UP)).size(12.5).color(Color32::WHITE)).fill(th_blue()).rounding(14.0).min_size(Vec2::new(0.0, 28.0));
                             if ui.add(b).on_hover_text("Zu den Updates").clicked() {
@@ -4297,11 +4516,11 @@ impl eframe::App for App {
                 }
                 ui.add_space(18.0);
                 let old = self.page;
-                let pages = [Page::Home, Page::News, Page::Consoles, Page::Gallery, Page::Settings, Page::Help];
-                let items = [(ic::HOUSE, "Übersicht"), (ic::NEWSPAPER, "Neuigkeiten"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::IMAGES, "Galerie"), (ic::GEAR_SIX, "Einstellungen"), (ic::QUESTION, "Hilfe")];
+                let pages = [Page::Home, Page::News, Page::Consoles, Page::Gallery, Page::Friends, Page::Modules, Page::Settings];
+                let items = [(ic::HOUSE, "Übersicht"), (ic::NEWSPAPER, "Neuigkeiten"), (ic::GAME_CONTROLLER, "Konsolen"), (ic::IMAGES, "Galerie"), (ic::USERS_THREE, "Freunde"), (ic::PUZZLE_PIECE, "Module"), (ic::GEAR_SIX, "Einstellungen")];
                 let unseen = self.unseen_news();
                 let top_y = ui.cursor().top();
-                let sel_idx = pages.iter().position(|p| *p == self.page).unwrap_or(0) as f32;
+                let sel_idx = pages.iter().position(|p| *p == self.page).map(|i| i as f32).unwrap_or(-2.0);
                 let hy = ui.ctx().animate_value_with_time(egui::Id::new("nav_hl"), sel_idx, 0.3);
                 {
                     let w = ui.available_width();
@@ -4311,7 +4530,7 @@ impl eframe::App for App {
                     ui.painter().rect_filled(bar, Rounding::same(2.0), th_blue_light());
                 }
                 for (i, (icon, label)) in items.iter().enumerate() {
-                    let badge = if i == 4 && self.update.is_some() {
+                    let badge = if i == 6 && self.update.is_some() {
                         Some("!".to_string())
                     } else if i == 1 && unseen > 0 && self.page != Page::News {
                         Some(unseen.min(9).to_string())
@@ -4395,11 +4614,14 @@ impl eframe::App for App {
                 Page::News => self.news_page(ui, t),
                 Page::Consoles => self.consoles_page(ui, t),
                 Page::Gallery => self.gallery_page(ui, t),
+                Page::Friends => self.friends_page(ui, t),
+                Page::Modules => self.modules_page(ui, t),
                 Page::Settings => self.settings_page(ui),
                 Page::Help => self.help_page(ui, t),
             }
         });
 
+        self.invites_overlay(ctx);
         if let Some(p) = self.open_req.take() {
             self.open_viewer(ctx, p);
         }
@@ -4648,6 +4870,52 @@ Gefunden: {}
         }
         return Ok(());
     }
+    if let Some(i) = std::env::args().position(|a| a == "--denoise-test") {
+        // overlime --denoise-test <sprache.wav> [Rauschstärke]: Sprache plus Lüfter-Rauschen, was bleibt nach dem Filter?
+        let a: Vec<String> = std::env::args().collect();
+        let data = std::fs::read(&a[i + 1]).unwrap_or_default();
+        let amp: f32 = a.get(i + 2).and_then(|v| v.parse().ok()).unwrap_or(1500.0);
+        let dpos = data.windows(4).position(|w| w == b"data").map(|p| p + 8).unwrap_or(44);
+        let pcm: Vec<f32> = data[dpos..].chunks(2).filter(|c| c.len() == 2).map(|c| i16::from_le_bytes([c[0], c[1]]) as f32).collect();
+        let mut st = nnnoiseless::DenoiseState::new();
+        let mut seed = 987654321u32;
+        let mut lp = 0f32;
+        let (mut sp_in, mut sp_out, mut gap_in, mut gap_out, mut n_sp, mut n_gap) = (0f64, 0f64, 0f64, 0f64, 0, 0);
+        let frames = pcm.len() / 480;
+        for n in 0..frames {
+            let clean = &pcm[n * 480..(n + 1) * 480];
+            let clean_e: f64 = clean.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 480.0;
+            let inp: Vec<f32> = clean.iter().map(|c| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let w = ((seed >> 16) as f32 / 65535.0 - 0.5) * 2.0;
+                lp = lp * 0.97 + w * 0.03 * 8.0; // tiefes Brummen wie ein Lüfter
+                c + lp * amp
+            }).collect();
+            let mut out = vec![0f32; 480];
+            st.process_frame(&mut out, &inp);
+            if n < 30 {
+                continue;
+            }
+            let e_in: f64 = inp.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 480.0;
+            let e_out: f64 = out.iter().map(|v| (*v as f64).powi(2)).sum::<f64>() / 480.0;
+            if clean_e > 1.0e5 {
+                sp_in += e_in; sp_out += e_out; n_sp += 1;
+            } else if clean_e < 100.0 {
+                gap_in += e_in; gap_out += e_out; n_gap += 1;
+            }
+        }
+        let db = |a: f64, b: f64| 10.0 * (a.max(1.0) / b.max(1.0)).log10();
+        println!("Sprachstücke: {n_sp}, Pausen: {n_gap}");
+        println!("In den Pausen (nur Rauschen): Dämpfung {:.1} dB", db(gap_in, gap_out));
+        println!("Während der Sprache: Pegel nachher {:.1} dB gegenüber vorher", -db(sp_in, sp_out));
+        std::process::exit(0);
+    }
+    if let Some(i) = std::env::args().position(|a| a == "--voice-selftest") {
+        // Selbsttest gegen den echten Server: zwei Spieler, Freunde, Raum, Sprache
+        let url = std::env::args().nth(i + 1).unwrap_or_else(|| voice::DEFAULT_SERVER.to_string());
+        let ok = voice_selftest(&url);
+        std::process::exit(if ok { 0 } else { 1 });
+    }
     if let Some(i) = std::env::args().position(|a| a == "--play-test") {
         let a: Vec<String> = std::env::args().collect();
         let path = std::path::PathBuf::from(a.get(i + 1).cloned().unwrap_or_default());
@@ -4757,4 +5025,113 @@ fn image_dump(path: &str, rgba: &[u8], w: u32, h: u32) -> Result<(), String> {
     enc.set_color(png::ColorType::Rgba);
     enc.set_depth(png::BitDepth::Eight);
     enc.write_header().map_err(|e| e.to_string())?.write_image_data(rgba).map_err(|e| e.to_string())
+}
+
+fn voice_selftest(url: &str) -> bool {
+    use std::time::{Duration, Instant};
+    let a = voice::Voice::start(voice::new_secret(), "Anna", url);
+    let b = voice::Voice::start(voice::new_secret(), "Ben", url);
+    println!("Anna {}  Ben {}", a.my_id, b.my_id);
+    let t0 = Instant::now();
+    while (!a.connected() || !b.connected()) && t0.elapsed() < Duration::from_secs(12) {
+        for e in a.poll().into_iter().chain(b.poll()) {
+            if let voice::Event::Disconnected(r) = e {
+                println!("  Hinweis: {r}");
+            }
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    if !a.connected() || !b.connected() {
+        println!("FEHLER: keine Verbindung zum Sprachserver");
+        return false;
+    }
+    println!("OK  beide angemeldet (TLS, Signatur)");
+    a.set_friends(vec![b.my_id.clone()]);
+    b.set_friends(vec![a.my_id.clone()]);
+    let mut seen = false;
+    let t0 = Instant::now();
+    while !seen && t0.elapsed() < Duration::from_secs(5) {
+        for e in a.poll() {
+            if let voice::Event::Presence(l) = e {
+                if l.iter().any(|f| f.id == b.my_id && f.name == "Ben") {
+                    seen = true;
+                }
+            }
+        }
+        b.poll();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !seen {
+        println!("FEHLER: Ben wurde nicht als online gesehen");
+        return false;
+    }
+    println!("OK  gegenseitige Freunde sehen sich");
+    a.join(None);
+    let mut room = String::new();
+    let t0 = Instant::now();
+    while room.is_empty() && t0.elapsed() < Duration::from_secs(5) {
+        for e in a.poll() {
+            if let voice::Event::Room { room: r, .. } = e {
+                room = r;
+            }
+        }
+        b.poll();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if room.is_empty() {
+        println!("FEHLER: kein Raum");
+        return false;
+    }
+    a.invite(&b.my_id);
+    let mut invited = false;
+    let t0 = Instant::now();
+    while !invited && t0.elapsed() < Duration::from_secs(5) {
+        for e in b.poll() {
+            if let voice::Event::Invite { room: r, from, .. } = e {
+                if r == room && from == a.my_id {
+                    invited = true;
+                }
+            }
+        }
+        a.poll();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !invited {
+        println!("FEHLER: keine Einladung angekommen");
+        return false;
+    }
+    b.join(Some(room.clone()));
+    let mut both = false;
+    let t0 = Instant::now();
+    while !both && t0.elapsed() < Duration::from_secs(5) {
+        for e in b.poll() {
+            if let voice::Event::Room { members, .. } = e {
+                if members.len() == 2 {
+                    both = true;
+                }
+            }
+        }
+        a.poll();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    if !both {
+        println!("FEHLER: Beitritt fehlgeschlagen");
+        return false;
+    }
+    println!("OK  Raum, Einladung, Beitritt");
+    let mut phase = 0.0f32;
+    for _ in 0..60 {
+        a.test_send_tone(&mut phase);
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let energy = b.test_decoded_energy();
+    println!("    entschlüsselte Sprache bei Ben: {energy}");
+    if energy < 1_000_000 {
+        println!("FEHLER: keine Sprache angekommen");
+        return false;
+    }
+    println!("OK  Sprache kommt an und wird entschlüsselt");
+    println!("ALLES BESTANDEN");
+    true
 }

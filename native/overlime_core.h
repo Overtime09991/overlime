@@ -112,6 +112,18 @@ enum {
 };
 
 
+// ---- Opus (Sprachchat)
+void *ol_opus_enc_new(void);
+int ol_opus_enc(void *e, const int16_t *pcm, int frame, uint8_t *out, int cap);
+void ol_opus_enc_free(void *e);
+void *ol_opus_dec_new(void);
+int ol_opus_dec(void *d, const uint8_t *data, int len, int16_t *pcm, int frame);
+void ol_opus_dec_free(void *d);
+
+// ---- Mikrofon
+int ol_mic_enable(OlStream *s, int on);
+void ol_mic_push(OlStream *s, const int16_t *pcm);
+
 // ---- Video-Wiedergabe fuer die Galerie
 typedef struct OlPlayer OlPlayer;
 OlPlayer *ol_play_open(const char *path, int max_w, int want, char *err, size_t err_size);

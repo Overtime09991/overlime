@@ -116,6 +116,19 @@ impl App {
 
     pub fn gallery_page(&mut self, ui: &mut egui::Ui, t: f64) {
         let ctx = ui.ctx().clone();
+        if !self.settings.module_on("gallery") {
+            ui.add_space(60.0);
+            ui.vertical_centered(|ui| {
+                ui.label(RichText::new(ic::PUZZLE_PIECE).size(54.0).color(Color32::from_white_alpha(60)));
+                ui.add_space(8.0);
+                ui.label(RichText::new("Das Modul „Galerie“ ist ausgeschaltet").size(20.0));
+                ui.add_space(10.0);
+                if ui.add(egui::Button::new("Einschalten").fill(th_blue()).rounding(10.0).min_size(Vec2::new(160.0, 38.0))).clicked() {
+                    self.settings.set_module("gallery", true);
+                }
+            });
+            return;
+        }
         self.gallery_poll_thumbs(&ctx);
         if t - self.gal_t > 2.0 {
             self.gal_t = t;
