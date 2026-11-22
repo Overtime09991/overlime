@@ -4,10 +4,9 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Zwischenbilder bei der Bildrate, mit großem Schalter",
-    "Statusanzeige mit Live-Vorschau",
-    "Größere, weich animierte Auswahlfelder und Knöpfe",
-    "Neuer Update-Bildschirm im Launcher-Stil",
+    "Update startet OVERLIME nahtlos neu",
+    "Schlichteres, flaches Design für Knöpfe und Auswahl",
+    "Ruhige Vorschau der Statusanzeige",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

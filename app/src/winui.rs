@@ -218,3 +218,12 @@ pub fn system_is_german() -> bool {
     #[allow(unreachable_code)]
     true
 }
+
+/// Legt die Instanz-Sperre an (ohne ein vorhandenes Fenster nach vorn zu holen). Für den Übergang nach einem Update.
+pub fn claim_instance() {
+    #[cfg(windows)]
+    unsafe {
+        let name: Vec<u16> = "Local\\OVERLIME_MAIN".encode_utf16().chain(std::iter::once(0)).collect();
+        let _h = sys2::CreateMutexW(std::ptr::null(), 0, name.as_ptr());
+    }
+}

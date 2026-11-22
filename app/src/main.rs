@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.31";
+const VERSION: &str = "0.32";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -176,6 +176,8 @@ struct App {
     help_tab: usize,
     wiz: Option<pad::Wizard>,
     news_lang: usize,
+    post_update: Option<String>,
+    post_t0: Option<f64>,
     report_open: bool,
     crash_pending: bool,
     tour: Option<usize>,
@@ -316,6 +318,8 @@ impl App {
             help_tab: 0,
             wiz: None,
             news_lang: usize::MAX,
+            post_update: std::env::args().find_map(|a| a.strip_prefix("--from=").map(|v| v.to_string())).filter(|_| std::env::args().any(|a| a == "--after-update")),
+            post_t0: None,
             net_res: None,
             profile_active: None,
             saved_global: None,
@@ -1395,6 +1399,7 @@ fn sparkline(ui: &mut egui::Ui, data: &[f32], color: Color32, min_top: f32, unit
     p.text(Pos2::new(rect.min.x + 8.0, rect.min.y + 9.0), Align2::LEFT_CENTER, format!("max {:.0}", top), FontId::proportional(10.5), TEXT_DIM);
 }
 
+/// Auswahlleiste: flache Fläche, die Auswahl gleitet weich zur neuen Stelle.
 fn segmented(ui: &mut egui::Ui, value: &mut usize, labels: &[&str]) {
     if labels.is_empty() {
         return;
@@ -1402,55 +1407,47 @@ fn segmented(ui: &mut egui::Ui, value: &mut usize, labels: &[&str]) {
     let ctx = ui.ctx().clone();
     let painter = ui.painter().clone();
     let avail = ui.available_width();
-    let mut font = 14.5;
+    let mut font = 14.0;
     let texts: Vec<String> = labels.iter().map(|l| lang::tr(l)).collect();
-    let measure = |font: f32| -> Vec<f32> { texts.iter().map(|t| (painter.layout_no_wrap(t.clone(), FontId::proportional(font), Color32::WHITE).size().x + 38.0).max(84.0)).collect() };
-    let mut widths = measure(font);
-    let mut total: f32 = widths.iter().sum::<f32>() + 8.0;
+    let measure = |font: f32, pad: f32, min: f32| -> Vec<f32> { texts.iter().map(|t| (painter.layout_no_wrap(t.clone(), FontId::proportional(font), Color32::WHITE).size().x + pad).max(min)).collect() };
+    let mut widths = measure(font, 36.0, 76.0);
+    let mut total: f32 = widths.iter().sum::<f32>() + 6.0;
     if total > avail {
-        // zu breit: kleinere Schrift und engere Flächen
         font = 12.5;
-        widths = texts.iter().map(|t| (painter.layout_no_wrap(t.clone(), FontId::proportional(font), Color32::WHITE).size().x + 22.0).max(52.0)).collect();
-        total = widths.iter().sum::<f32>() + 8.0;
+        widths = measure(font, 20.0, 48.0);
+        total = widths.iter().sum::<f32>() + 6.0;
         if total > avail {
-            let k = (avail - 8.0) / (total - 8.0);
+            let k = (avail - 6.0) / (total - 6.0);
             for w in widths.iter_mut() {
                 *w *= k;
             }
             total = avail;
         }
     }
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(total, 46.0), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(total, 40.0), egui::Sense::hover());
     let id = ui.id().with(("seg", labels.join("|")));
-    painter.rect_filled(rect, Rounding::same(15.0), Color32::from_rgba_unmultiplied(255, 255, 255, 9));
-    painter.rect_stroke(rect, Rounding::same(15.0), Stroke::new(1.0, Color32::from_white_alpha(16)));
-    let mut x = rect.left() + 4.0;
+    painter.rect_filled(rect, Rounding::same(10.0), Color32::from_rgba_unmultiplied(255, 255, 255, 9));
+    let mut x = rect.left() + 3.0;
     let mut rects = Vec::with_capacity(widths.len());
     for w in &widths {
-        rects.push(Rect::from_min_size(Pos2::new(x, rect.top() + 4.0), Vec2::new(*w, 38.0)));
+        rects.push(Rect::from_min_size(Pos2::new(x, rect.top() + 3.0), Vec2::new(*w, 34.0)));
         x += *w;
     }
     let sel = (*value).min(rects.len() - 1);
-    // Auswahl gleitet weich zur neuen Stelle
-    let ax = ctx.animate_value_with_time(id.with("x"), rects[sel].left(), 0.24);
-    let aw = ctx.animate_value_with_time(id.with("w"), rects[sel].width(), 0.24);
-    let pill = Rect::from_min_size(Pos2::new(ax, rect.top() + 4.0), Vec2::new(aw, 38.0));
-    for g in 1..4 {
-        painter.rect_filled(pill.expand(g as f32 * 2.0), Rounding::same(12.0 + g as f32 * 2.0), th_blue().gamma_multiply(0.07));
-    }
-    painter.rect_filled(pill, Rounding::same(12.0), th_blue());
-    painter.rect_filled(Rect::from_min_size(pill.min + Vec2::new(6.0, 2.0), Vec2::new(pill.width() - 12.0, 1.5)), Rounding::same(1.0), Color32::from_white_alpha(60));
+    let ax = ctx.animate_value_with_time(id.with("x"), rects[sel].left() - rect.left(), 0.2) + rect.left();
+    let aw = ctx.animate_value_with_time(id.with("w"), rects[sel].width(), 0.2);
+    let pill = Rect::from_min_size(Pos2::new(ax, rect.top() + 3.0), Vec2::new(aw, 34.0));
+    painter.rect_filled(pill, Rounding::same(8.0), th_blue());
     let mut clicked = None;
     for (i, r) in rects.iter().enumerate() {
         let resp = ui.interact(*r, id.with(i), egui::Sense::click());
-        let hv = ctx.animate_bool_with_time(id.with(("h", i)), resp.hovered() && i != sel, 0.14);
-        let press = resp.is_pointer_button_down_on();
+        let hv = ctx.animate_bool_with_time(id.with(("h", i)), resp.hovered() && i != sel, 0.12);
         if hv > 0.01 {
-            painter.rect_filled(r.shrink(if press { 2.0 } else { 0.0 }), Rounding::same(11.0), Color32::from_white_alpha((20.0 * hv) as u8));
+            painter.rect_filled(*r, Rounding::same(8.0), Color32::from_white_alpha((14.0 * hv) as u8));
         }
-        let near = (pill.center().x - r.center().x).abs() < r.width() * 0.5;
-        let col = if near || i == sel { Color32::WHITE } else { TEXT_DIM.lerp_to_gamma(Color32::WHITE, hv) };
-        painter.text(r.center() + Vec2::new(0.0, if press { 1.0 } else { 0.0 }), Align2::CENTER_CENTER, labels[i], FontId::proportional(font), col);
+        let on = (pill.center().x - r.center().x).abs() < r.width() * 0.5;
+        let col = if on { Color32::WHITE } else { TEXT_DIM.lerp_to_gamma(Color32::WHITE, hv * 0.8) };
+        painter.text(r.center(), Align2::CENTER_CENTER, labels[i], FontId::proportional(font), col);
         if resp.clicked() {
             clicked = Some(i);
         }
@@ -1460,62 +1457,47 @@ fn segmented(ui: &mut egui::Ui, value: &mut usize, labels: &[&str]) {
     }
 }
 
-/// Großer, weich animierter Schalter-Chip (Name, Haken, Hover und Druck).
+/// Schlichter Auswahl-Chip: eingeschaltet gefüllt in Akzentfarbe, sonst dezent.
 fn chip_toggle(ui: &mut egui::Ui, name: &str, on: bool) -> bool {
     let ctx = ui.ctx().clone();
     let painter = ui.painter().clone();
     let text = lang::tr(name);
-    let g = painter.layout_no_wrap(text.clone(), FontId::proportional(14.0), Color32::WHITE);
-    let w = g.size().x + 54.0;
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 40.0), egui::Sense::click());
+    let g = painter.layout_no_wrap(text.clone(), FontId::proportional(13.5), Color32::WHITE);
+    let w = g.size().x + 40.0;
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, 36.0), egui::Sense::click());
     let id = resp.id;
-    let a_on = ctx.animate_bool_with_time(id.with("on"), on, 0.2);
-    let hv = ctx.animate_bool_with_time(id.with("hv"), resp.hovered(), 0.14);
-    let press = resp.is_pointer_button_down_on();
-    let rc = if press { rect.shrink(1.5) } else { rect };
-    let base = Color32::from_rgba_unmultiplied(255, 255, 255, 12);
-    let fill = base.lerp_to_gamma(th_blue(), a_on);
-    if a_on > 0.02 {
-        painter.rect_filled(rc.expand(3.0), Rounding::same(16.0), th_blue().gamma_multiply(0.14 * a_on));
-    }
-    painter.rect_filled(rc, Rounding::same(14.0), fill);
-    painter.rect_stroke(rc, Rounding::same(14.0), Stroke::new(1.0, Color32::from_white_alpha((20.0 + 40.0 * hv) as u8)));
+    let a_on = ctx.animate_bool_with_time(id.with("on"), on, 0.16);
+    let hv = ctx.animate_bool_with_time(id.with("hv"), resp.hovered(), 0.12);
+    let base = Color32::from_rgba_unmultiplied(255, 255, 255, 10);
+    painter.rect_filled(rect, Rounding::same(10.0), base.lerp_to_gamma(th_blue(), a_on));
     if hv > 0.01 {
-        painter.rect_filled(rc, Rounding::same(14.0), Color32::from_white_alpha((14.0 * hv) as u8));
+        painter.rect_filled(rect, Rounding::same(10.0), Color32::from_white_alpha((12.0 * hv) as u8));
     }
-    // Haken
-    let ic = Pos2::new(rc.left() + 20.0, rc.center().y);
-    painter.circle_stroke(ic, 8.0, Stroke::new(1.6, Color32::from_white_alpha(60).lerp_to_gamma(Color32::WHITE, a_on)));
+    // kleiner Haken, nur wenn eingeschaltet
+    let ic = Pos2::new(rect.left() + 17.0, rect.center().y);
     if a_on > 0.02 {
-        painter.circle_filled(ic, 8.0 * a_on, Color32::WHITE.gamma_multiply(0.95));
-        splash::tick(&painter, ic, 9.0, th_blue(), a_on);
+        splash::tick(&painter, ic, 10.0, Color32::WHITE.gamma_multiply(a_on), a_on);
     }
-    painter.text(Pos2::new(rc.left() + 36.0, rc.center().y), Align2::LEFT_CENTER, text, FontId::proportional(14.0), TEXT_DIM.lerp_to_gamma(Color32::WHITE, (a_on * 0.9 + hv * 0.5).min(1.0)));
+    painter.text(Pos2::new(rect.left() + 30.0, rect.center().y), Align2::LEFT_CENTER, text, FontId::proportional(13.5), TEXT_DIM.lerp_to_gamma(Color32::WHITE, (a_on + hv * 0.5).min(1.0)));
     resp.clicked()
 }
 
-/// Großer Schalter mit Titel und Erklärung (zum Beispiel für die Zwischenbilder).
+/// Schalter mit Titel und Erklärung (zum Beispiel für die Zwischenbilder). Flach, ohne Leuchten.
 fn fancy_switch(ui: &mut egui::Ui, value: &mut bool, title: &str, desc: &str, badge: &str) {
     let ctx = ui.ctx().clone();
     let width = ui.available_width();
     let id = ui.id().with(("fsw", title));
-    let a_on = ctx.animate_bool_with_time(id.with("on"), *value, 0.22);
-    let frame = egui::Frame::none()
-        .fill(Color32::from_rgba_unmultiplied(255, 255, 255, 10).lerp_to_gamma(th_blue().gamma_multiply(0.22), a_on))
-        .rounding(16.0)
-        .inner_margin(egui::Margin::symmetric(16.0, 12.0));
+    let a_on = ctx.animate_bool_with_time(id.with("on"), *value, 0.18);
+    let frame = egui::Frame::none().fill(Color32::from_rgba_unmultiplied(255, 255, 255, 8)).rounding(12.0).inner_margin(egui::Margin::symmetric(16.0, 12.0));
     let inner = frame.show(ui, |ui| {
         ui.set_width(width - 32.0);
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
-                ui.set_width(width - 32.0 - 76.0);
+                ui.set_width(width - 32.0 - 64.0);
                 ui.horizontal(|ui| {
-                    ui.label(RichText::new(title).size(15.5).strong());
+                    ui.label(RichText::new(title).size(15.0).strong());
                     if !badge.is_empty() {
-                        let col = YELLOW;
-                        egui::Frame::none().fill(col.gamma_multiply(0.18)).rounding(9.0).inner_margin(egui::Margin::symmetric(8.0, 1.0)).show(ui, |ui| {
-                            ui.label(RichText::new(badge).size(11.0).color(col));
-                        });
+                        ui.label(RichText::new(badge).size(12.0).color(YELLOW));
                     }
                 });
                 if !desc.is_empty() {
@@ -1523,69 +1505,65 @@ fn fancy_switch(ui: &mut egui::Ui, value: &mut bool, title: &str, desc: &str, ba
                 }
             });
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-                let (r, _) = ui.allocate_exact_size(Vec2::new(60.0, 32.0), egui::Sense::hover());
+                let (r, _) = ui.allocate_exact_size(Vec2::new(46.0, 26.0), egui::Sense::hover());
                 let p = ui.painter();
-                let track = Color32::from_white_alpha(28).lerp_to_gamma(th_blue(), a_on);
-                if a_on > 0.02 {
-                    p.rect_filled(r.expand(3.0), Rounding::same(19.0), th_blue().gamma_multiply(0.20 * a_on));
-                }
-                p.rect_filled(r, Rounding::same(16.0), track);
-                let kx = r.left() + 16.0 + (r.width() - 32.0) * a_on;
-                p.circle_filled(Pos2::new(kx, r.center().y + 1.0), 12.5, Color32::from_black_alpha(50));
-                p.circle_filled(Pos2::new(kx, r.center().y), 12.0, Color32::WHITE);
+                p.rect_filled(r, Rounding::same(13.0), Color32::from_white_alpha(30).lerp_to_gamma(th_blue(), a_on));
+                let kx = r.left() + 13.0 + (r.width() - 26.0) * a_on;
+                p.circle_filled(Pos2::new(kx, r.center().y), 9.5, Color32::WHITE);
             });
         });
     });
     let resp = ui.interact(inner.response.rect, id, egui::Sense::click());
-    let hv = ctx.animate_bool_with_time(id.with("hv"), resp.hovered(), 0.14);
-    ui.painter().rect_stroke(inner.response.rect, Rounding::same(16.0), Stroke::new(1.2, Color32::from_white_alpha(18).lerp_to_gamma(th_blue_light(), (a_on * 0.7 + hv * 0.5).min(1.0))));
+    let hv = ctx.animate_bool_with_time(id.with("hv"), resp.hovered(), 0.12);
+    if hv > 0.01 {
+        ui.painter().rect_filled(inner.response.rect, Rounding::same(12.0), Color32::from_white_alpha((8.0 * hv) as u8));
+    }
     if resp.clicked() {
         *value = !*value;
     }
 }
 
-/// Vorschau der Statusanzeige auf einem nachgebauten Spielbild.
+/// Vorschau der Statusanzeige: ein schlichter Bildschirm, die Anzeige liegt an der gewählten Ecke.
 fn hud_preview(ui: &mut egui::Ui, st: &Settings) {
     let ctx = ui.ctx().clone();
-    let w = ui.available_width().min(480.0);
+    let w = ui.available_width().min(520.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(w, w * 9.0 / 16.0), egui::Sense::hover());
     let p = ui.painter_at(rect);
-    // Nachgebautes Spielbild: Himmel, Berge, Straße
+    // ruhiger Hintergrund mit leichtem Verlauf
     let mut m = egui::epaint::Mesh::default();
-    let (c_top, c_bot) = (Color32::from_rgb(34, 52, 112), Color32::from_rgb(214, 120, 96));
+    let (c_top, c_bot) = (Color32::from_rgb(26, 31, 48), Color32::from_rgb(14, 17, 28));
     m.colored_vertex(rect.left_top(), c_top);
     m.colored_vertex(rect.right_top(), c_top);
-    m.colored_vertex(Pos2::new(rect.left(), rect.top() + rect.height() * 0.62), c_bot);
-    m.colored_vertex(Pos2::new(rect.right(), rect.top() + rect.height() * 0.62), c_bot);
+    m.colored_vertex(rect.left_bottom(), c_bot);
+    m.colored_vertex(rect.right_bottom(), c_bot);
     m.add_triangle(0, 1, 2);
     m.add_triangle(1, 3, 2);
     p.add(Shape::mesh(m));
-    let h0 = rect.top() + rect.height() * 0.62;
-    p.circle_filled(Pos2::new(rect.left() + w * 0.72, rect.top() + rect.height() * 0.40), w * 0.06, Color32::from_rgb(255, 226, 170));
-    let mount = |pts: &[(f32, f32)], col: Color32| {
-        let mut v: Vec<Pos2> = pts.iter().map(|(x, y)| Pos2::new(rect.left() + w * x, h0 - rect.height() * y)).collect();
-        v.push(Pos2::new(rect.right(), h0 + 1.0));
-        v.push(Pos2::new(rect.left(), h0 + 1.0));
-        p.add(Shape::convex_polygon(v, col, Stroke::NONE));
-    };
-    mount(&[(0.0, 0.10), (0.18, 0.28), (0.34, 0.12), (0.52, 0.32), (0.70, 0.14), (0.86, 0.26), (1.0, 0.12)], Color32::from_rgb(40, 38, 86));
-    mount(&[(0.0, 0.04), (0.25, 0.14), (0.5, 0.05), (0.78, 0.16), (1.0, 0.05)], Color32::from_rgb(24, 24, 56));
-    let road = Rect::from_min_max(Pos2::new(rect.left(), h0), rect.right_bottom());
-    p.rect_filled(road, Rounding::ZERO, Color32::from_rgb(28, 28, 44));
-    for k in 0..4 {
-        let y = h0 + (rect.bottom() - h0) * (0.2 + 0.2 * k as f32);
-        let l = 18.0 + 26.0 * k as f32;
-        p.line_segment([Pos2::new(rect.center().x - l / 2.0, y), Pos2::new(rect.center().x + l / 2.0, y)], Stroke::new(2.0 + k as f32, Color32::from_white_alpha(90)));
-    }
-    // Statusanzeige an der gewählten Stelle, mit weicher Bewegung
+    p.rect_stroke(rect, Rounding::ZERO, Stroke::new(1.0, Color32::from_white_alpha(22)));
+    p.text(rect.center(), Align2::CENTER_CENTER, lang::tr("Spielbild"), FontId::proportional(13.0), Color32::from_white_alpha(40));
+
     let demo = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll"];
     let parts: Vec<String> = demo.iter().enumerate().filter(|(i, _)| st.hud_items & (1 << i) != 0).map(|(_, s)| lang::tr(s)).collect();
     if parts.is_empty() {
-        p.text(rect.center(), Align2::CENTER_CENTER, lang::tr("Nichts ausgewählt"), FontId::proportional(14.0), Color32::from_white_alpha(140));
-    } else {
-        paint_hud_scaled(&p, rect, parts.join("  •  "), st, 0.0, w / 900.0, Some(&ctx));
+        p.text(rect.center() + Vec2::new(0.0, 22.0), Align2::CENTER_CENTER, lang::tr("Nichts ausgewählt"), FontId::proportional(13.0), Color32::from_white_alpha(120));
+        return;
     }
-    p.rect_stroke(rect, Rounding::ZERO, Stroke::new(1.0, Color32::from_white_alpha(26)));
+    // Die Vorschau zeigt die Anzeige größer als im echten Bild und bricht lange Zeilen um, damit alles lesbar bleibt.
+    let size = [11.0, 12.5, 15.0][st.hud_size.min(2)] * 0.92;
+    let pad = if st.hud_box { 8.0 } else { 0.0 };
+    let margin = 12.0;
+    let g = p.layout(parts.join("  •  "), FontId::monospace(size), Color32::from_white_alpha(if st.hud_box { 235 } else { 200 }), (w * 0.62).max(120.0));
+    let (bw, bh) = (g.size().x + 2.0 * pad, g.size().y + 2.0 * pad);
+    // Bewegung in Anteilen der Vorschau (nicht in Bildschirm-Pixeln), damit sie beim Scrollen nicht mitwandert
+    let fx = ctx.animate_value_with_time(egui::Id::new("hud_prev_fx"), if st.hud_pos % 2 == 0 { 0.0 } else { 1.0 }, 0.25);
+    let fy = ctx.animate_value_with_time(egui::Id::new("hud_prev_fy"), if st.hud_pos < 2 { 0.0 } else { 1.0 }, 0.25);
+    let x = rect.left() + margin + (rect.width() - 2.0 * margin - bw) * fx;
+    let y = rect.top() + margin + (rect.height() - 2.0 * margin - bh) * fy;
+    let r = Rect::from_min_size(Pos2::new(x, y), Vec2::new(bw, bh));
+    if st.hud_box {
+        p.rect_filled(r, Rounding::same(8.0), Color32::from_black_alpha(160));
+    }
+    p.galley(r.min + Vec2::splat(pad), g, Color32::WHITE);
 }
 
 thread_local! {
@@ -3645,6 +3623,14 @@ impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.gl_ok = frame.gl().is_some();
         lang::set(self.settings.language);
+        ctx.input(|i| {
+            let v = i.viewport();
+            if let (Some(o), Some(inn)) = (v.outer_rect, v.inner_rect) {
+                if let Ok(mut g) = update::WIN_RECT.lock() {
+                    *g = Some([o.min.x, o.min.y, inn.width(), inn.height(), if v.maximized.unwrap_or(false) { 1.0 } else { 0.0 }]);
+                }
+            }
+        });
         if self.news_lang != self.settings.language {
             let first = self.news_lang == usize::MAX;
             self.news_lang = self.settings.language;
@@ -3864,6 +3850,26 @@ impl eframe::App for App {
             return;
         }
         // Update-Animation
+        if let Some(from) = self.post_update.clone() {
+            let t0 = *self.post_t0.get_or_insert_with(|| {
+                // Das Endbild des alten Fensters übernehmen: Stufe "Neustart" ist schon eine Weile aktiv
+                ctx.data_mut(|d| d.insert_temp(egui::Id::new("upd_stage_t"), (4u8, t - 2.6)));
+                t
+            });
+            ctx.request_repaint();
+            let mut prog = update::Progress::default();
+            prog.stage = 4;
+            prog.pct = 100.0;
+            splash::update_screen(ctx, t, &prog, 1.0, &from, VERSION);
+            // Nach dem ersten gezeichneten Bild meldet sich das neue Fenster beim alten
+            if t - t0 > 0.05 {
+                update::signal_ready();
+            }
+            if t - t0 > 1.0 {
+                self.post_update = None;
+            }
+            return;
+        }
         if self.update_busy && self.update.is_some() {
             ctx.request_repaint();
             let prog = self.upd_progress.lock().unwrap().clone();
@@ -4308,6 +4314,12 @@ Gefunden: {}
         if tray::autostart_enabled() {
             tray::spawn_tray();
         }
+    } else if std::env::args().any(|a| a == "--after-update") {
+        // Neue Version nach einem Update: gleiche Aufgaben wie beim normalen Start, aber ohne Prüfung auf ein zweites Fenster
+        winui::claim_instance();
+        if tray::autostart_enabled() {
+            tray::spawn_tray();
+        }
     }
     if let Some(i) = std::env::args().position(|a| a == "--verify-sig") {
         let a: Vec<String> = std::env::args().collect();
@@ -4328,13 +4340,29 @@ Gefunden: {}
         selftest();
         return Ok(());
     }
-    let opts = eframe::NativeOptions {
-        viewport: egui::ViewportBuilder::default()
-            .with_inner_size([960.0, 620.0])
-            .with_min_inner_size([780.0, 600.0])
-            .with_title("OVERLIME Remote Play")
-            .with_icon(std::sync::Arc::new(winui::app_icon())),
-        ..Default::default()
-    };
+    let mut vb = egui::ViewportBuilder::default()
+        .with_inner_size([960.0, 620.0])
+        .with_min_inner_size([780.0, 600.0])
+        .with_title("OVERLIME Remote Play")
+        .with_icon(std::sync::Arc::new(winui::app_icon()));
+    // Nach einem Update: Fenster an derselben Stelle und in derselben Größe wie vorher
+    if std::env::args().any(|a| a == "--after-update") {
+        let pair = |key: &str| -> Option<(f32, f32)> {
+            let v = std::env::args().find_map(|a| a.strip_prefix(key).map(|v| v.to_string()))?;
+            let (a, b) = v.split_once(',')?;
+            Some((a.parse().ok()?, b.parse().ok()?))
+        };
+        if std::env::args().any(|a| a == "--maximized") {
+            vb = vb.with_maximized(true);
+        } else {
+            if let Some((w, h)) = pair("--size=") {
+                vb = vb.with_inner_size([w.max(780.0), h.max(600.0)]);
+            }
+            if let Some((x, y)) = pair("--pos=") {
+                vb = vb.with_position([x, y]);
+            }
+        }
+    }
+    let opts = eframe::NativeOptions { viewport: vb, ..Default::default() };
     eframe::run_native("OVERLIME Remote Play", opts, Box::new(|cc| Ok(Box::new(App::new(cc)))))
 }

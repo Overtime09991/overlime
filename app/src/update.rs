@@ -132,6 +132,45 @@ fn download(url: &str, limit: u64) -> Result<Vec<u8>, String> {
 }
 
 
+/// Lage des Fensters (x, y, Breite, Höhe, maximiert). Wird von der Oberfläche laufend gesetzt,
+/// damit sich die neue Version nach dem Update genau an dieselbe Stelle öffnet.
+pub static WIN_RECT: Mutex<Option<[f32; 5]>> = Mutex::new(None);
+
+fn ready_file() -> std::path::PathBuf {
+    std::env::temp_dir().join("overlime_update_ready")
+}
+
+/// Meldet dem alten Prozess, dass das neue Fenster da ist (wird von der neuen Version aufgerufen).
+pub fn signal_ready() {
+    let _ = std::fs::write(ready_file(), b"ok");
+}
+
+/// Startet die neue Version an derselben Fensterstelle und wartet, bis ihr Fenster sichtbar ist.
+/// Erst danach beendet sich die alte Version, so entsteht kein Loch zwischen den Fenstern.
+fn restart_after_update(exe: &std::path::Path) -> Result<(), String> {
+    let _ = std::fs::remove_file(ready_file());
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg("--after-update").arg(format!("--from={}", crate::VERSION));
+    if let Ok(g) = WIN_RECT.lock() {
+        if let Some(r) = *g {
+            if r[4] > 0.5 {
+                cmd.arg("--maximized");
+            } else {
+                cmd.arg(format!("--pos={:.0},{:.0}", r[0], r[1])).arg(format!("--size={:.0},{:.0}", r[2], r[3]));
+            }
+        }
+    }
+    cmd.spawn().map_err(|e| e.to_string())?;
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(7) && !ready_file().exists() {
+        std::thread::sleep(Duration::from_millis(40));
+    }
+    // kurz überlappen lassen, damit das neue Fenster sicher gezeichnet ist
+    std::thread::sleep(Duration::from_millis(250));
+    let _ = std::fs::remove_file(ready_file());
+    Ok(())
+}
+
 /// Beendet andere laufende OVERLIME-Prozesse (z. B. das Symbol neben der Uhr), damit die Datei ersetzt werden kann.
 fn stop_other_instances() {
     use std::os::windows::process::CommandExt;
@@ -182,7 +221,7 @@ pub fn install(rel: &Release) -> Result<(), String> {
     let sig_txt = String::from_utf8(download(&rel.sig_url, 4096)?).map_err(|e| e.to_string())?;
     verify_signature(&data, &sig_txt)?;
     let exe = swap_in(&data)?;
-    std::process::Command::new(&exe).spawn().map_err(|e| e.to_string())?;
+    restart_after_update(&exe)?;
     std::process::exit(0);
 }
 
@@ -302,8 +341,8 @@ pub fn install_ui(rel: &Release, p: Arc<Mutex<Progress>>) -> Result<(), String> 
         // 4: Neustart
         let t4 = Instant::now();
         set(&p, 4, 0.0);
-        hold(t4, Duration::from_millis(2000));
-        std::process::Command::new(&exe).spawn().map_err(|e| e.to_string())?;
+        hold(t4, Duration::from_millis(1600));
+        restart_after_update(&exe)?;
         std::process::exit(0);
     })();
     if let Err(e) = &r {
