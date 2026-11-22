@@ -4,6 +4,7 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Großer Haupt-Knopf auf der Startseite",
     "Demo-Modus zum Ausprobieren ohne Konsole",
     "Verständliche Fehlermeldungen beim Update",
     "Neues App-Symbol",
@@ -607,7 +608,7 @@ pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> boo
         let slide = |delay: f32| (1.0 - a(delay)) * 12.0;
 
         // Karte
-        let n = NEWS.len() as f32;
+        let n = NEWS.len().min(5) as f32;
         let (cw, ch) = (500.0f32.min(r.width() - 40.0), 150.0 + 70.0 + 46.0 + 36.0 + n * 30.0 + 96.0);
         let card_a = a(0.0);
         let rc = Rect::from_center_size(Pos2::new(r.center().x, r.center().y + (1.0 - card_a) * 18.0), Vec2::new(cw, ch));
@@ -669,7 +670,7 @@ pub fn welcome_screen(ctx: &egui::Context, ts: f64, from: &str, to: &str) -> boo
         ny += 16.0;
         p.text(Pos2::new(rc.left() + 40.0, ny), Align2::LEFT_TOP, "NEU IN DIESER VERSION", FontId::proportional(11.0), th_blue_light().gamma_multiply(a4));
         ny += 26.0;
-        for (i, line) in NEWS.iter().enumerate() {
+        for (i, line) in NEWS.iter().take(5).enumerate() {
             let d = 2.4 + i as f32 * 0.3;
             let al = a(d);
             let yy = ny + slide(d);

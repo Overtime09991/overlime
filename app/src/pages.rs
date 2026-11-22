@@ -147,7 +147,8 @@ impl App {
         egui::ScrollArea::vertical().show(ui, |ui| {
             // Hero
             let w = ui.available_width();
-            let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 150.0), egui::Sense::hover());
+            let hero_target: Option<Console> = ready.first().cloned().or_else(|| self.consoles.first().cloned());
+            let (rect, _) = ui.allocate_exact_size(Vec2::new(w, if hero_target.is_some() { 190.0 } else { 150.0 }), egui::Sense::hover());
             let p = ui.painter_at(rect);
             p.rect_filled(rect, Rounding::same(22.0), Color32::from_rgb(12, 34, 82));
             let a = (t * 0.4) as f32;
@@ -155,7 +156,14 @@ impl App {
             p.circle_filled(rect.right_bottom() + Vec2::new(-200.0 + 30.0 * (a * 0.8).cos(), 40.0), 130.0, Color32::from_rgb(110, 70, 240).gamma_multiply(0.25));
             p.circle_filled(rect.left_bottom() + Vec2::new(60.0, 60.0), 110.0, th_blue_light().gamma_multiply(0.12));
             let (hi, line) = if let Some(c) = ready.first() {
-                (format!("{} ist bereit", c.name), "Drück auf Verbinden und leg los.".to_string())
+                let line = if self.demo_mode {
+                    "Das ist eine Demo – starte den Teststream mit einem Klick."
+                } else if self.paired_for(c).is_none() {
+                    "Einmal koppeln, danach startest du mit einem Klick."
+                } else {
+                    "Drück auf Spielen und leg los."
+                };
+                (format!("{} ist bereit", c.name), line.to_string())
             } else if found > 0 {
                 ("Konsole im Ruhemodus".to_string(), "Wecke sie auf – dann kann es losgehen.".to_string())
             } else {
@@ -174,6 +182,30 @@ impl App {
             if let Some((ps5, on)) = hero_console {
                 let sc = 0.95 + 0.04 * ((t * 1.3).sin() as f32);
                 paint_console(&p, rect.right_center() + Vec2::new(-130.0, 0.0), 1.15 * sc, ps5, on, t, 0.0);
+            }
+
+            // Haupt-Knopf: je nach Zustand spielen, aufwecken oder koppeln
+            if let Some(c) = hero_target {
+                let paired = self.paired_for(&c);
+                let busy = self.starting.is_some() || self.session.is_some();
+                let (label, kind): (String, u8) = if self.demo_mode {
+                    (format!("{}  Demo starten", ic::PLAY), 0)
+                } else {
+                    match (&paired, c.state == State::Standby) {
+                        (None, _) => (format!("{}  Konsole koppeln", ic::LINK), 1),
+                        (Some(_), true) => (format!("{}  Aufwecken", ic::POWER), 2),
+                        (Some(_), false) => (if busy { "Verbinde …".to_string() } else { format!("{}  Spielen", ic::PLAY) }, 3),
+                    }
+                };
+                let br = Rect::from_min_size(rect.min + Vec2::new(30.0, 140.0), Vec2::new(200.0, 40.0));
+                if ui.put(br, egui::Button::new(RichText::new(label.as_str()).size(16.0).strong().color(Color32::from_rgb(10, 30, 80))).fill(Color32::WHITE).rounding(12.0).min_size(Vec2::new(200.0, 40.0))).clicked() && !busy {
+                    match (kind, paired) {
+                        (0, _) | (1, _) => self.open_dialog(&c),
+                        (2, Some(pr)) => self.wake(&c, &pr),
+                        (3, Some(pr)) => self.connect(&c, &pr),
+                        _ => {}
+                    }
+                }
             }
 
             ui.add_space(14.0);
