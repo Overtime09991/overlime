@@ -74,11 +74,50 @@ pub fn cleanup_old() {
     }
 }
 
-/// Prüft, ob es eine neuere Version gibt. Blockierend.
+/// Ausweg ohne GitHub-API (die Zugriffe pro Stunde begrenzt): die normale Release-Seite leitet auf den neuesten Tag um.
+fn latest_tag_via_redirect() -> Result<String, String> {
+    let url = format!("https://github.com/{UPDATE_REPO}/releases/latest");
+    let agent = ureq::AgentBuilder::new().redirects(0).timeout(std::time::Duration::from_secs(10)).build();
+    let resp = match agent.get(&url).set("User-Agent", "overlime-updater").call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(_, r)) => r,
+        Err(e) => return Err(e.to_string()),
+    };
+    let loc = resp.header("location").unwrap_or("").to_string();
+    match loc.rsplit_once("/tag/") {
+        Some((_, tag)) if !tag.is_empty() => Ok(tag.trim().to_string()),
+        _ => Err("Kein Release gefunden".into()),
+    }
+}
+
+/// Prüft, ob es eine neuere Version gibt. Blockierend. Bei Problemen mit der GitHub-API wird ein zweiter Weg versucht.
 pub fn check(current: &str) -> Result<Option<Release>, String> {
     if !enabled() {
         return Ok(None);
     }
+    let api = if std::env::var_os("OL_NO_API").is_some() { Err("API aus (Test)".to_string()) } else { check_api(current) };
+    match api {
+        Ok(r) => Ok(r),
+        Err(api_err) => match latest_tag_via_redirect() {
+            Ok(tag) => {
+                if !is_newer(&tag, current) {
+                    return Ok(None);
+                }
+                let base = format!("https://github.com/{UPDATE_REPO}/releases/download/{tag}");
+                Ok(Some(Release {
+                    version: tag.trim_start_matches(['v', 'V']).to_string(),
+                    url: format!("{base}/overlime.exe"),
+                    sha_url: format!("{base}/overlime.exe.sha256"),
+                    sig_url: format!("{base}/overlime.exe.sig"),
+                    notes: String::new(),
+                }))
+            }
+            Err(e2) => Err(format!("{api_err} / {e2}")),
+        },
+    }
+}
+
+fn check_api(current: &str) -> Result<Option<Release>, String> {
     let url = format!("https://api.github.com/repos/{UPDATE_REPO}/releases/latest");
     let v: serde_json::Value = ureq::get(&url)
         .set("User-Agent", "overlime-updater")

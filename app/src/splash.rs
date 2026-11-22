@@ -4,6 +4,7 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Updateprüfung klappt auch bei GitHub-Limit",
     "Neuer, ruhiger Update-Abschlussbildschirm",
     "Update startet OVERLIME nahtlos neu",
     "Schlichteres, flaches Design für Knöpfe und Auswahl",

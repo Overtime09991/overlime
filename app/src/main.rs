@@ -36,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.33";
+const VERSION: &str = "0.34";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -4320,6 +4320,14 @@ Gefunden: {}
         if tray::autostart_enabled() {
             tray::spawn_tray();
         }
+    }
+    if std::env::args().any(|a| a == "--check-test") {
+        match update::check("0.30") {
+            Ok(Some(r)) => println!("neu: {} {} {}", r.version, r.url, r.sig_url),
+            Ok(None) => println!("aktuell"),
+            Err(e) => println!("fehler: {e}"),
+        }
+        return Ok(());
     }
     if let Some(i) = std::env::args().position(|a| a == "--verify-sig") {
         let a: Vec<String> = std::env::args().collect();
