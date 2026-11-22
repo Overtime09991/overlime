@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Latenz, Ping und Datenrate oben in der Leiste",
-    "PS5-Controller: Touchpad, Bewegung, adaptive Trigger",
-    "Lichtleiste und Vibration wie im Spiel, Akkustand",
-    "Bild auf der Grafikkarte, echter Schärfefilter",
+    "Update-Bereich in den Einstellungen mit Neuerungen",
+    "Update-Knopf oben und Hinweis an „Einstellungen“",
+    "Prüft auch während des Betriebs auf neue Versionen",
+    "Latenz, PS5-Controller-Funktionen, Schnell-Menü im Stream",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

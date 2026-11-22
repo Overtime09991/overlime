@@ -33,7 +33,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.18";
+const VERSION: &str = "0.19";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -57,6 +57,7 @@ enum Msg {
     UpdateAvail(update::Release),
     UpdateNone,
     DiagPort(bool, String),
+    UpdateCheckFailed(String),
     UpdateErr(String),
 }
 
@@ -171,6 +172,11 @@ struct App {
     last_connect: Option<(Console, Paired, (usize, usize, i32, usize))>,
     pending_reconnect: Option<(Console, Paired, Instant)>,
     reconnecting: bool,
+    update_click: bool,
+    check_click: bool,
+    update_checking: bool,
+    update_checked_at: Option<Instant>,
+    last_update_check: Instant,
     demo_gpu: Option<Arc<video::VideoGpu>>,
     close_hint: bool,
     fullscreen: bool,
@@ -263,6 +269,11 @@ impl App {
             last_connect: None,
             pending_reconnect: None,
             reconnecting: false,
+            update_click: false,
+            check_click: false,
+            update_checking: false,
+            update_checked_at: None,
+            last_update_check: Instant::now(),
             demo_gpu: None,
             close_hint: false,
             fullscreen: false,
@@ -276,6 +287,15 @@ impl App {
             app.local_ip = "192.168.0.10".into();
             if std::env::args().any(|a| a == "--demo-welcome") {
                 app.welcome = Some(("0.10".into(), "0.11".into()));
+            }
+            if std::env::args().any(|a| a == "--demo-update-avail") {
+                app.update = Some(update::Release {
+                    version: "0.20".into(),
+                    url: String::new(),
+                    sha_url: String::new(),
+                    notes: "### Neu in 0.20\n- **Neue Funktion** zum Ausprobieren\n- Schnelleres Verbinden\n- Viele kleine Verbesserungen\n".into(),
+                });
+                app.update_checked = true;
             }
             if std::env::args().any(|a| a == "--demo-update") {
                 app.update = Some(update::Release { version: "0.11".into(), url: String::new(), sha_url: String::new(), notes: String::new() });
@@ -615,6 +635,11 @@ impl App {
                     self.start_error = Some(mask_ips(&e));
                 }
                 Msg::UpdateAvail(r) => {
+                    self.update_checking = false;
+                    self.update_checked_at = Some(Instant::now());
+                    if self.update.as_ref().map(|u| u.version != r.version).unwrap_or(true) {
+                        self.toasts.push((format!("Update {} verfügbar", r.version), 0, self.now));
+                    }
                     if self.settings.auto_update && !self.update_busy && self.session.is_none() {
                         self.update_busy = true;
                         let tx = self.tx.clone();
@@ -638,7 +663,13 @@ impl App {
                     self.diag_busy = false;
                     self.diag_port = Some((ok, text));
                 }
+                Msg::UpdateCheckFailed(e) => {
+                    self.update_checking = false;
+                    self.update_msg = format!("Prüfung fehlgeschlagen: {}", mask_ips(&e));
+                }
                 Msg::UpdateNone => {
+                    self.update_checking = false;
+                    self.update_checked_at = Some(Instant::now());
                     self.update_checked = true;
                     self.update_msg = "Du hast die neueste Version.".into();
                 }
@@ -1018,7 +1049,7 @@ fn label(ui: &mut egui::Ui, title: &str, desc: &str) {
     }
 }
 
-fn nav_item(ui: &mut egui::Ui, icon: &str, text: &str, selected: bool) -> bool {
+fn nav_item(ui: &mut egui::Ui, icon: &str, text: &str, selected: bool, badge: bool) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(ui.available_width(), 44.0), egui::Sense::click());
     let h = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     if !selected && h > 0.01 {
@@ -1028,6 +1059,11 @@ fn nav_item(ui: &mut egui::Ui, icon: &str, text: &str, selected: bool) -> bool {
     let ic_col = if selected { th_blue_light() } else { col };
     ui.painter().text(rect.left_center() + Vec2::new(18.0, 0.0), Align2::LEFT_CENTER, icon, FontId::proportional(18.0), ic_col);
     ui.painter().text(rect.left_center() + Vec2::new(48.0, 0.0), Align2::LEFT_CENTER, text, FontId::proportional(15.0), col);
+    if badge {
+        let c = rect.right_center() - Vec2::new(16.0, 0.0);
+        ui.painter().circle_filled(c, 9.0, th_blue());
+        ui.painter().text(c, Align2::CENTER_CENTER, "!", FontId::proportional(12.0), Color32::WHITE);
+    }
     resp.clicked()
 }
 
@@ -1171,6 +1207,66 @@ impl App {
         ui.add_space(8.0);
         let st = &mut self.settings;
         egui::ScrollArea::vertical().show(ui, |ui| {
+            section(ui, &format!("{}  Updates", ic::ARROW_CIRCLE_UP), |ui| {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new(format!("Installierte Version: {VERSION}")).size(14.5).strong());
+                    if self.update.is_none() && self.update_checked {
+                        pill(ui, "Aktuell", GREEN);
+                    }
+                });
+                if let Some(rel) = self.update.clone() {
+                    ui.add_space(4.0);
+                    egui::Frame::none().fill(th_blue().gamma_multiply(0.18)).rounding(12.0).stroke(Stroke::new(1.0, th_blue().gamma_multiply(0.5))).inner_margin(egui::Margin::same(14.0)).show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(RichText::new(format!("Version {} ist verfügbar", rel.version)).size(16.0).strong());
+                        let hl = update::highlights(&rel.notes);
+                        if !hl.is_empty() {
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("Neu:").color(TEXT_DIM).size(12.5));
+                            for h in hl {
+                                ui.label(RichText::new(format!("•  {h}")).size(13.0));
+                            }
+                        }
+                        ui.add_space(8.0);
+                        ui.horizontal(|ui| {
+                            if self.update_busy {
+                                ui.spinner();
+                                ui.label(RichText::new("Wird installiert …").color(TEXT_DIM));
+                            } else if ui.add(big_button("Jetzt aktualisieren", th_blue()).min_size(Vec2::new(200.0, 42.0))).clicked() {
+                                self.update_click = true;
+                            }
+                            ui.label(RichText::new("OVERLIME startet danach neu.").color(TEXT_DIM).size(12.0));
+                        });
+                        if !self.update_err.is_empty() {
+                            ui.label(RichText::new(&self.update_err).color(RED).size(12.5));
+                        }
+                    });
+                } else {
+                    ui.add_space(2.0);
+                    let ago = self.update_checked_at.map(|t| t.elapsed().as_secs() / 60);
+                    let txt = match ago {
+                        Some(0) => "Zuletzt geprüft: gerade eben".to_string(),
+                        Some(n) => format!("Zuletzt geprüft: vor {n} Min."),
+                        None => "Noch nicht geprüft.".to_string(),
+                    };
+                    ui.label(RichText::new(txt).color(TEXT_DIM).size(12.5));
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if self.update_checking {
+                        ui.spinner();
+                        ui.label(RichText::new("Suche …").color(TEXT_DIM));
+                    } else if ui.add(egui::Button::new(format!("{} Nach Updates suchen", ic::ARROWS_CLOCKWISE)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                        self.check_click = true;
+                    }
+                    if !self.update_msg.is_empty() {
+                        ui.label(RichText::new(&self.update_msg).color(TEXT_DIM).size(12.5));
+                    }
+                });
+                ui.add_space(4.0);
+                ui.checkbox(&mut st.auto_update, "Updates automatisch installieren (nie während eines Streams)");
+            });
+            ui.add_space(6.0);
             section(ui, &format!("{}  Videoqualität", ic::FILM_STRIP), |ui| {
                 label(ui, "Auflösung", "Sony erlaubt im Remote Play höchstens 1080p.");
                 segmented(ui, &mut st.resolution, &["540p", "720p", "1080p"]);
@@ -1366,30 +1462,6 @@ impl App {
                 label(ui, "Konsole per IP hinzufügen", "Nur für Internet/VPN (z. B. Tailscale). Im Heimnetz wird alles automatisch gefunden.");
                 ui.add(egui::TextEdit::singleline(&mut st.manual_ip).hint_text("IP-Adresse der Konsole").desired_width(260.0));
                 ui.add_space(6.0);
-                ui.checkbox(&mut st.auto_update, "Updates automatisch installieren");
-                ui.checkbox(&mut st.ask_feedback, "Nach dem Streamen kurz fragen, wie es lief");
-                ui.checkbox(&mut st.autoconnect, "Beim Start automatisch mit meiner Konsole verbinden (weckt sie bei Bedarf auf)");
-                ui.checkbox(&mut st.welcome_anim, "Willkommensbild nach einem Update zeigen");
-                ui.horizontal(|ui| {
-                    if ui.add(egui::Button::new("Nach Updates suchen").fill(th_card_hover()).rounding(10.0)).clicked() {
-                        self.update_msg = "Suche …".into();
-                        let tx = self.tx.clone();
-                        std::thread::spawn(move || {
-                            match update::check(VERSION) {
-                                Ok(Some(r)) => {
-                                    let _ = tx.send(Msg::UpdateAvail(r));
-                                }
-                                Ok(None) => {
-                                    let _ = tx.send(Msg::UpdateNone);
-                                }
-                                Err(e) => {
-                                    let _ = tx.send(Msg::Info(format!("Update-Suche fehlgeschlagen: {}", mask_ips(&e))));
-                                }
-                            }
-                        });
-                    }
-                    ui.label(RichText::new(&self.update_msg).color(TEXT_DIM).size(12.5));
-                });
                 ui.add_space(6.0);
                 if !st.psn_account.is_empty() && ui.button("PlayStation-Konto abmelden").clicked() {
                     st.psn_account.clear();
@@ -1827,6 +1899,9 @@ impl App {
         r.push_str(&format!("Netzwerk: {}\n", if self.local_ip == "?" { "offline" } else { "verbunden" }));
         r.push_str(&format!("Angemeldet: {}\n", if psn::id_from_b64(&self.settings.psn_account).is_some() { "ja" } else { "nein" }));
         r.push_str(&format!("Controller: {}\n", if self.pad_name_cache.is_empty() { "keiner".to_string() } else { self.pad_name_cache.clone() }));
+        for (name, usable, vid, pid) in self.pad.devices() {
+            r.push_str(&format!("Gerät: {} ({:04x}:{:04x}) {}\n", name, vid, pid, if usable { "als Gamepad nutzbar" } else { "nicht als Gamepad erkannt" }));
+        }
         r.push_str(&format!("Konsolen gefunden: {}\n", self.consoles.len()));
         for c in &self.consoles {
             r.push_str(&format!("- {} ({}, Software {}), gekoppelt: {}\n", if c.is_ps5 { "PS5" } else { "PS4" }, match c.state { State::Ready => "bereit", State::Standby => "Ruhemodus", State::Unknown => "unbekannt" }, pretty_version(&c.system_version), if self.paired_for(c).is_some() { "ja" } else { "nein" }));
@@ -1921,6 +1996,47 @@ impl App {
         } else if later {
             self.feedback = None;
         }
+    }
+
+    /// Startet die Prüfung auf Updates im Hintergrund.
+    fn check_updates(&mut self) {
+        if self.update_checking {
+            return;
+        }
+        self.update_checking = true;
+        self.update_msg.clear();
+        self.last_update_check = Instant::now();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || match update::check(VERSION) {
+            Ok(Some(r)) => {
+                let _ = tx.send(Msg::UpdateAvail(r));
+            }
+            Ok(None) => {
+                let _ = tx.send(Msg::UpdateNone);
+            }
+            Err(e) => {
+                let _ = tx.send(Msg::UpdateCheckFailed(e));
+            }
+        });
+    }
+
+    /// Lädt und installiert das gefundene Update (mit Animation).
+    fn start_update_install(&mut self) {
+        let Some(rel) = self.update.clone() else { return };
+        if self.update_busy {
+            return;
+        }
+        self.update_busy = true;
+        self.update_err.clear();
+        *self.upd_progress.lock().unwrap() = update::Progress::default();
+        self.upd_shown = 0.0;
+        let tx = self.tx.clone();
+        let prog = self.upd_progress.clone();
+        std::thread::spawn(move || {
+            if let Err(e) = update::install_ui(&rel, prog) {
+                let _ = tx.send(Msg::UpdateErr(e));
+            }
+        });
     }
 
     fn keyboard_input(&self, ctx: &egui::Context, pad_connected: bool) -> pad::Input {
@@ -2423,6 +2539,22 @@ impl eframe::App for App {
         }
 
         self.update_discord();
+        if std::env::args().any(|a| a == "--demo-pad") {
+            let conn = self.pad.connected();
+            let inp = self.pad.poll();
+            let ex = self.pad.poll_extra();
+            let devs = self.pad.devices();
+            egui::CentralPanel::default().show(ctx, |ui| {
+                ui.add_space(10.0);
+                pages::pad_visual(ui, &inp, &ex, conn);
+                ui.add_space(8.0);
+                for (n, u, v, p) in devs {
+                    ui.label(format!("{n}  ({v:04x}:{p:04x})  {}", if u { "als Gamepad nutzbar" } else { "nicht nutzbar" }));
+                }
+            });
+            ctx.request_repaint();
+            return;
+        }
         if std::env::args().any(|a| a == "--demo-video") {
             // Testbild über denselben Grafikkarten-Weg wie der Stream
             let mode: usize = std::env::args().find_map(|a| a.strip_prefix("--mode=").and_then(|v| v.parse().ok())).unwrap_or(2);
@@ -2465,6 +2597,17 @@ impl eframe::App for App {
             }
             ctx.request_repaint();
             return;
+        }
+        if self.update_click {
+            self.update_click = false;
+            self.start_update_install();
+        }
+        if self.check_click {
+            self.check_click = false;
+            self.check_updates();
+        }
+        if self.session.is_none() && self.last_update_check.elapsed() > Duration::from_secs(20 * 60) {
+            self.check_updates();
         }
         // Qualität angewendet: kurz neu verbinden
         if self.reconnecting && self.session.is_none() {
@@ -2568,12 +2711,19 @@ impl eframe::App for App {
                 let logged = psn::id_from_b64(&self.settings.psn_account).is_some();
                 let acc_txt = if logged { if self.settings.psn_name.is_empty() { "Angemeldet".to_string() } else { self.settings.psn_name.clone() } } else { "Nicht angemeldet".to_string() };
                 let searching = self.searching;
+                let upd_ver = self.update.as_ref().map(|r| r.version.clone());
                 ui.horizontal_centered(|ui| {
                     ui.label(RichText::new("OVERLIME").size(13.0).strong().color(TEXT_DIM));
                     ui.label(RichText::new("/").size(13.0).color(TEXT_DIM.gamma_multiply(0.6)));
                     ui.label(RichText::new(page_icon).size(16.0).color(th_blue_light()));
                     ui.label(RichText::new(page_title).size(15.0).strong());
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if let Some(v) = &upd_ver {
+                            let b = egui::Button::new(RichText::new(format!("{}  Update {v}", ic::ARROW_CIRCLE_UP)).size(12.5).color(Color32::WHITE)).fill(th_blue()).rounding(14.0).min_size(Vec2::new(0.0, 28.0));
+                            if ui.add(b).on_hover_text("Zu den Updates").clicked() {
+                                self.page = Page::Settings;
+                            }
+                        }
                         top_chip(ui, ic::USER_CIRCLE, &acc_txt, if logged { GREEN } else { YELLOW });
                         top_chip(ui, ic::GAME_CONTROLLER, &pad_txt, if pad_ok { GREEN } else { TEXT_DIM });
                         let (ctxt, ccol) = if searching && found == 0 { ("Suche …".to_string(), th_blue_light()) } else if found == 0 { ("Keine Konsole".to_string(), TEXT_DIM) } else if found == 1 { ("1 Konsole".to_string(), GREEN) } else { (format!("{found} Konsolen"), GREEN) };
@@ -2612,7 +2762,7 @@ impl eframe::App for App {
                     ui.painter().rect_filled(bar, Rounding::same(2.0), th_blue_light());
                 }
                 for (i, (icon, label)) in items.iter().enumerate() {
-                    if nav_item(ui, icon, label, self.page == pages[i]) {
+                    if nav_item(ui, icon, label, self.page == pages[i], i == 2 && self.update.is_some()) {
                         self.page = pages[i];
                     }
                 }
@@ -2639,11 +2789,11 @@ impl eframe::App for App {
                     let online = self.local_ip != "?";
                     let pulse = 0.55 + 0.45 * (self.now * 2.5).sin().abs() as f32;
                     p.circle_filled(rect.min + Vec2::new(22.0, 78.0), 4.0, if online { GREEN.gamma_multiply(pulse) } else { RED });
-                    p.text(rect.min + Vec2::new(34.0, 78.0), Align2::LEFT_CENTER, if online { "Netzwerk verbunden" } else { "Netzwerk offline" }, FontId::proportional(11.5), TEXT_DIM);
+                    p.text(rect.min + Vec2::new(34.0, 78.0), Align2::LEFT_CENTER, if online { "Online" } else { "Offline" }, FontId::proportional(11.5), TEXT_DIM);
                     let q = format!("{} • {} FPS", ["540p", "720p", "1080p"][self.settings.resolution], [30, 60][self.settings.fps]);
                     p.text(rect.min + Vec2::new(16.0, 98.0), Align2::LEFT_CENTER, q, FontId::proportional(11.5), th_blue_light());
                     let (vt, vc) = if self.update.is_some() { (format!("v{VERSION} • Update"), YELLOW) } else if self.update_checked { (format!("v{VERSION} • aktuell"), GREEN) } else { (format!("v{VERSION}"), TEXT_DIM) };
-                    p.text(rect.max - Vec2::new(14.0, 20.0), Align2::RIGHT_CENTER, vt, FontId::proportional(11.5), vc);
+                    p.text(Pos2::new(rect.max.x - 14.0, rect.min.y + 78.0), Align2::RIGHT_CENTER, vt, FontId::proportional(11.5), vc);
                 });
             });
 

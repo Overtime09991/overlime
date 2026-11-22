@@ -347,6 +347,79 @@ fn status_row(ui: &mut egui::Ui, state: u8, title: &str, sub: &str) {
     });
 }
 
+/// Live-Ansicht eines Controllers (Tasten, Sticks, Trigger, Touchpad, Bewegung).
+pub fn pad_visual(ui: &mut egui::Ui, inp: &pad::Input, ex: &pad::Extra, connected: bool) {
+    let w = ui.available_width().min(560.0);
+    let (rect, _) = ui.allocate_exact_size(Vec2::new(w, 250.0), egui::Sense::hover());
+    let p = ui.painter_at(rect);
+    p.rect_filled(rect, Rounding::same(18.0), th_bg());
+    p.rect_stroke(rect, Rounding::same(18.0), Stroke::new(1.0, Color32::from_white_alpha(18)));
+    let on = th_blue_light();
+    let off = Color32::from_white_alpha(26);
+    let bt = |m: u32| inp.buttons & m != 0;
+    let c = rect.center();
+    if !connected {
+        p.text(c, Align2::CENTER_CENTER, "Kein Controller erkannt", FontId::proportional(16.0), TEXT_DIM);
+        return;
+    }
+    // Schultertasten und Trigger
+    for (i, (m, tv)) in [(1u32 << 8, inp.l2), (1u32 << 9, inp.r2)].iter().enumerate() {
+        let x = if i == 0 { rect.min.x + 60.0 } else { rect.max.x - 60.0 - 90.0 };
+        let sh = Rect::from_min_size(Pos2::new(x, rect.min.y + 14.0), Vec2::new(90.0, 14.0));
+        p.rect_filled(sh, Rounding::same(7.0), if bt(*m) { on } else { off });
+        let tr = Rect::from_min_size(Pos2::new(x, rect.min.y + 34.0), Vec2::new(90.0, 12.0));
+        p.rect_filled(tr, Rounding::same(6.0), off);
+        p.rect_filled(Rect::from_min_size(tr.min, Vec2::new(90.0 * (*tv as f32 / 255.0), 12.0)), Rounding::same(6.0), on);
+        p.text(Pos2::new(x + 45.0, rect.min.y + 54.0), Align2::CENTER_CENTER, if i == 0 { "L1 / L2" } else { "R1 / R2" }, FontId::proportional(10.5), TEXT_DIM);
+    }
+    // Steuerkreuz
+    let dc = Pos2::new(rect.min.x + 100.0, rect.min.y + 100.0);
+    for (m, dx, dy) in [(1u32 << 6, 0.0, -24.0), (1u32 << 7, 0.0, 24.0), (1u32 << 4, -24.0, 0.0), (1u32 << 5, 24.0, 0.0)] {
+        p.rect_filled(Rect::from_center_size(dc + Vec2::new(dx, dy), Vec2::splat(22.0)), Rounding::same(6.0), if bt(m) { on } else { off });
+    }
+    // Aktionstasten (Kreuz unten, Kreis rechts, Quadrat links, Dreieck oben)
+    let fc = Pos2::new(rect.max.x - 100.0, rect.min.y + 100.0);
+    let r = 11.0;
+    p.circle_filled(fc + Vec2::new(0.0, 24.0), r, if bt(1 << 0) { on } else { off });
+    p.circle_filled(fc + Vec2::new(24.0, 0.0), r, if bt(1 << 1) { on } else { off });
+    p.circle_filled(fc + Vec2::new(-24.0, 0.0), r, if bt(1 << 2) { on } else { off });
+    p.circle_filled(fc + Vec2::new(0.0, -24.0), r, if bt(1 << 3) { on } else { off });
+    let ic_col = Color32::from_white_alpha(170);
+    let xs = Stroke::new(1.6, ic_col);
+    let cx = fc + Vec2::new(0.0, 24.0);
+    p.line_segment([cx + Vec2::new(-4.0, -4.0), cx + Vec2::new(4.0, 4.0)], xs);
+    p.line_segment([cx + Vec2::new(4.0, -4.0), cx + Vec2::new(-4.0, 4.0)], xs);
+    p.circle_stroke(fc + Vec2::new(24.0, 0.0), 4.5, xs);
+    p.rect_stroke(Rect::from_center_size(fc + Vec2::new(-24.0, 0.0), Vec2::splat(9.0)), Rounding::ZERO, xs);
+    let tc = fc + Vec2::new(0.0, -24.0);
+    p.add(Shape::closed_line(vec![tc + Vec2::new(0.0, -5.0), tc + Vec2::new(5.0, 4.0), tc + Vec2::new(-5.0, 4.0)], xs));
+    // Sticks
+    for (i, (sx, sy, m)) in [(inp.lx, inp.ly, 1u32 << 10), (inp.rx, inp.ry, 1u32 << 11)].iter().enumerate() {
+        let sc = Pos2::new(rect.min.x + w * if i == 0 { 0.33 } else { 0.67 }, rect.min.y + 170.0);
+        p.circle_filled(sc, 36.0, off);
+        p.circle_stroke(sc, 36.0, Stroke::new(1.0, Color32::from_white_alpha(40)));
+        let dot = sc + Vec2::new(*sx as f32 / 32768.0 * 28.0, *sy as f32 / 32768.0 * 28.0);
+        p.circle_filled(dot, 12.0, if bt(*m) { on } else { Color32::from_white_alpha(150) });
+    }
+    // Mitte: Share, PS, Options, Touchpad
+    let mid = Pos2::new(c.x, rect.min.y + 70.0);
+    let tp = Rect::from_center_size(mid, Vec2::new(120.0, 52.0));
+    p.rect_filled(tp, Rounding::same(8.0), if bt(1 << 14) { on.gamma_multiply(0.6) } else { off });
+    for f in 0..2 {
+        if ex.touch_down[f] {
+            p.circle_filled(Pos2::new(tp.min.x + ex.touch_x[f] * tp.width(), tp.min.y + ex.touch_y[f] * tp.height()), 6.0, Color32::WHITE);
+        }
+    }
+    p.circle_filled(Pos2::new(c.x, rect.min.y + 118.0), 8.0, if bt(1 << 15) { on } else { off });
+    p.circle_filled(Pos2::new(c.x - 44.0, rect.min.y + 118.0), 6.0, if bt(1 << 13) { on } else { off });
+    p.circle_filled(Pos2::new(c.x + 44.0, rect.min.y + 118.0), 6.0, if bt(1 << 12) { on } else { off });
+    p.text(Pos2::new(c.x - 44.0, rect.min.y + 134.0), Align2::CENTER_CENTER, "Share", FontId::proportional(10.0), TEXT_DIM);
+    p.text(Pos2::new(c.x + 44.0, rect.min.y + 134.0), Align2::CENTER_CENTER, "Options", FontId::proportional(10.0), TEXT_DIM);
+    // Bewegung
+    let motion = if ex.has_motion { format!("Bewegung: Gyro {:+.1} {:+.1} {:+.1}", ex.gyro[0], ex.gyro[1], ex.gyro[2]) } else { "Bewegung: nicht verfügbar".to_string() };
+    p.text(Pos2::new(c.x, rect.max.y - 14.0), Align2::CENTER_CENTER, motion, FontId::monospace(11.0), TEXT_DIM);
+}
+
 impl App {
     pub fn diag_page(&mut self, ui: &mut egui::Ui, t: f64) {
         let online = self.local_ip != "?";
@@ -402,6 +475,35 @@ impl App {
                 ui.add_space(6.0);
                 let (us, ut) = if self.update.is_some() { (1, "Ein Update ist verfügbar.") } else if self.update_checked { (0, "OVERLIME ist auf dem neuesten Stand.") } else { (1, "Noch nicht geprüft.") };
                 status_row(ui, us, "Version", &format!("{VERSION}. {ut}"));
+            });
+            ui.add_space(6.0);
+            section(ui, &format!("{}  Controller", ic::GAME_CONTROLLER), |ui| {
+                let conn = self.pad.connected();
+                let inp = self.pad.poll();
+                let ex = self.pad.poll_extra();
+                ui.label(RichText::new("Live-Test: Drücke Tasten und bewege Sticks. Was hier reagiert, kommt auch im Spiel an.").color(TEXT_DIM).size(12.5));
+                ui.add_space(4.0);
+                pad_visual(ui, &inp, &ex, conn);
+                ui.ctx().request_repaint();
+                ui.add_space(8.0);
+                let devs = self.pad.devices();
+                if devs.is_empty() {
+                    status_row(ui, 1, "Kein Gerät gefunden", "Windows meldet keinen Controller. Per Bluetooth koppeln (Windows: Einstellungen > Bluetooth und Geräte), dann hier „Neu suchen“ klicken.");
+                } else {
+                    for (name, usable, vid, pid) in &devs {
+                        status_row(ui, if *usable { 0 } else { 1 }, &format!("{name}  ({vid:04x}:{pid:04x})"), if *usable { "Als Gamepad erkannt." } else { "Gerät gefunden, aber nicht als Gamepad nutzbar." });
+                        ui.add_space(4.0);
+                    }
+                }
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui.add(egui::Button::new(format!("{} Controller neu suchen", ic::ARROWS_CLOCKWISE)).fill(th_card_hover()).rounding(10.0)).clicked() {
+                        self.pad.rescan();
+                        self.toasts.push(("Controller wird neu gesucht.".to_string(), 0, self.now));
+                    }
+                });
+                ui.add_space(4.0);
+                ui.label(RichText::new("PS4-Controller koppeln: Share- und PS-Taste halten, bis die Leiste schnell blinkt. PS5-Controller: Create- und PS-Taste halten. Danach in Windows unter Bluetooth hinzufügen.").color(TEXT_DIM).size(12.5));
             });
             ui.add_space(6.0);
             section(ui, &format!("{}  Verbindungstest", ic::WIFI_HIGH), |ui| {

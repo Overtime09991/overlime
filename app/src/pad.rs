@@ -16,6 +16,9 @@ extern "C" {
     fn SDL_GameControllerName(c: *mut c_void) -> *const c_char;
     fn SDL_GameControllerGetJoystick(c: *mut c_void) -> *mut c_void;
     fn SDL_JoystickInstanceID(j: *mut c_void) -> i32;
+    fn SDL_JoystickNameForIndex(idx: c_int) -> *const c_char;
+    fn SDL_JoystickGetDeviceVendor(idx: c_int) -> u16;
+    fn SDL_JoystickGetDeviceProduct(idx: c_int) -> u16;
     fn SDL_GameControllerGetType(c: *mut c_void) -> c_int;
     fn SDL_GameControllerGetNumTouchpads(c: *mut c_void) -> c_int;
     fn SDL_GameControllerGetTouchpadFinger(c: *mut c_void, touchpad: c_int, finger: c_int, state: *mut u8, x: *mut f32, y: *mut f32, pressure: *mut f32) -> c_int;
@@ -357,5 +360,34 @@ impl Pad {
                 SDL_GameControllerSetPlayerIndex(self.ctrl, idx as c_int);
             }
         }
+    }
+
+    /// Alle Geräte, die SDL sieht: (Name, als Gamepad nutzbar, Hersteller-ID, Produkt-ID).
+    pub fn devices(&self) -> Vec<(String, bool, u16, u16)> {
+        let mut v = Vec::new();
+        if !self.ok {
+            return v;
+        }
+        unsafe {
+            for i in 0..SDL_NumJoysticks() {
+                let np = SDL_JoystickNameForIndex(i);
+                let name = if np.is_null() { "?".to_string() } else { CStr::from_ptr(np).to_string_lossy().to_string() };
+                v.push((name, SDL_IsGameController(i) != 0, SDL_JoystickGetDeviceVendor(i), SDL_JoystickGetDeviceProduct(i)));
+            }
+        }
+        v
+    }
+
+    /// Controller neu suchen (nach dem Koppeln per Bluetooth).
+    pub fn rescan(&mut self) {
+        if !self.ctrl.is_null() {
+            unsafe {
+                SDL_GameControllerClose(self.ctrl);
+            }
+            self.ctrl = std::ptr::null_mut();
+            self.instance = -1;
+        }
+        self.pump();
+        self.open_any();
     }
 }

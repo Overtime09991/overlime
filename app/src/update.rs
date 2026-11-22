@@ -78,7 +78,7 @@ pub fn check(current: &str) -> Result<Option<Release>, String> {
             version: tag.trim_start_matches(['v', 'V']).to_string(),
             url,
             sha_url,
-            notes: v["body"].as_str().unwrap_or("").chars().take(400).collect(),
+            notes: v["body"].as_str().unwrap_or("").chars().take(3000).collect(),
         })),
         _ => Err("Release ohne overlime.exe/overlime.exe.sha256".into()),
     }
@@ -228,4 +228,24 @@ pub fn install_ui(rel: &Release, p: Arc<Mutex<Progress>>) -> Result<(), String> 
         }
     }
     r
+}
+
+/// Zieht die Stichpunkte unter "Neu in ..." aus den Release-Notizen (ohne Markdown-Zeichen).
+pub fn highlights(notes: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut inside = false;
+    for line in notes.lines() {
+        let t = line.trim();
+        if t.starts_with("###") {
+            inside = t.to_lowercase().contains("neu");
+            continue;
+        }
+        if inside {
+            if let Some(rest) = t.strip_prefix("- ") {
+                out.push(rest.replace("**", "").replace('`', ""));
+            }
+        }
+    }
+    out.truncate(6);
+    out
 }
