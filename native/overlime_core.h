@@ -120,6 +120,18 @@ void *ol_opus_dec_new(void);
 int ol_opus_dec(void *d, const uint8_t *data, int len, int16_t *pcm, int frame);
 void ol_opus_dec_free(void *d);
 
+// ---- Zuschneiden
+int ol_trim(const char *in_path, const char *out_path, int64_t start_ms, int64_t end_ms, char *err, size_t err_size);
+
+// ---- Ruhemodus
+int ol_stream_standby(OlStream *s);
+
+// ---- Replay-Clips
+int ol_replay_enable(OlStream *s, int secs);
+int ol_replay_buffered_ms(OlStream *s);
+int ol_replay_save(OlStream *s, const char *path, char *err, size_t err_size);
+int ol_replay_selftest(const char *in_path, const char *out_path, int hevc, int w, int h, int secs, char *err, size_t err_size);
+
 // ---- Mikrofon
 int ol_mic_enable(OlStream *s, int on);
 void ol_mic_push(OlStream *s, const int16_t *pcm);

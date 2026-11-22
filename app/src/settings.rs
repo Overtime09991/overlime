@@ -20,6 +20,12 @@ pub struct Settings {
     pub hud_box: bool,
     pub tour_done: bool,
     pub intro: bool,
+    pub auto_highlight: bool,
+    pub hl_sens: usize,
+    pub discord_webhook: String,
+    pub light_ambi: bool,
+    pub light_bright: f32,
+    pub replay_secs: i32,
     pub voice_secret: String,
     pub voice_name: String,
     pub voice_friends: String,
@@ -94,6 +100,12 @@ impl Default for Settings {
             hud_box: false,
             tour_done: false,
             intro: true,
+            auto_highlight: false,
+            hl_sens: 1,
+            discord_webhook: String::new(),
+            light_ambi: false,
+            light_bright: 0.8,
+            replay_secs: 30,
             voice_secret: String::new(),
             voice_name: String::new(),
             voice_friends: String::new(),
@@ -224,6 +236,12 @@ impl Settings {
                 "hud_box" => s.hud_box = v.trim() == "true",
                 "tour_done" => s.tour_done = v.trim() == "true",
                 "intro" => s.intro = v.trim() != "false",
+                "auto_highlight" => s.auto_highlight = v.trim() == "true",
+                "hl_sens" => s.hl_sens = v.trim().parse::<usize>().unwrap_or(1).min(2),
+                "discord_webhook" => s.discord_webhook = v.trim().to_string(),
+                "light_ambi" => s.light_ambi = v.trim() == "true",
+                "light_bright" => s.light_bright = v.trim().parse().unwrap_or(0.8f32).clamp(0.2, 1.0),
+                "replay_secs" => s.replay_secs = v.trim().parse().unwrap_or(30i32).clamp(0, 120),
                 "voice_secret" => s.voice_secret = v.trim().to_string(),
                 "voice_name" => s.voice_name = v.trim().to_string(),
                 "voice_friends" => s.voice_friends = v.trim().to_string(),
@@ -310,7 +328,7 @@ impl Settings {
         text.push_str(&format!("eq_bass={}\neq_mid={}\neq_treble={}\n", self.eq_bass, self.eq_mid, self.eq_treble));
         text.push_str(&format!("notify_ready={}\n", self.notify_ready));
         text.push_str(&format!("tour_done={}\n", self.tour_done));
-        text.push_str(&format!("intro={}\n", self.intro));
+        text.push_str(&format!("intro={}\nreplay_secs={}\nlight_ambi={}\nlight_bright={}\nauto_highlight={}\nhl_sens={}\ndiscord_webhook={}\n", self.intro, self.replay_secs, self.light_ambi, self.light_bright, self.auto_highlight, self.hl_sens, self.discord_webhook));
         text.push_str(&format!("voice_secret={}\nvoice_name={}\nvoice_friends={}\nvoice_blocked={}\nvoice_server={}\nvoice_online={}\nchat_ptt={}\nchat_vol={}\nchat_denoise={}\nmic_denoise={}\nchat_ring={}\n", self.voice_secret, self.voice_name.replace('\n', " "), self.voice_friends, self.voice_blocked, self.voice_server, self.voice_online, self.chat_ptt, self.chat_vol, self.chat_denoise, self.mic_denoise, self.chat_ring));
         text.push_str(&format!("modules_off={}\nmic_device={}\nmic_gain={}\nmic_gate={}\nmic_ptt={}\n", self.modules_off, self.mic_device, self.mic_gain, self.mic_gate, self.mic_ptt));
         text.push_str(&format!("tune_dead_l={}\ntune_dead_r={}\ntune_sens_l={}\ntune_sens_r={}\ntune_curve_l={}\ntune_curve_r={}\naim_slow={}\naim_slow_pct={}\n", self.tune_dead_l, self.tune_dead_r, self.tune_sens_l, self.tune_sens_r, self.tune_curve_l, self.tune_curve_r, self.aim_slow, self.aim_slow_pct));

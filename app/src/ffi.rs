@@ -114,6 +114,11 @@ extern "C" {
     pub fn ol_record_stop(s: *mut OlStream);
     pub fn ol_record_state(s: *mut OlStream) -> c_int;
     pub fn ol_record_bytes(s: *mut OlStream) -> u64;
+    pub fn ol_stream_standby(s: *mut OlStream) -> c_int;
+    pub fn ol_replay_enable(s: *mut OlStream, secs: c_int) -> c_int;
+    pub fn ol_replay_buffered_ms(s: *mut OlStream) -> c_int;
+    pub fn ol_replay_save(s: *mut OlStream, path: *const c_char, err: *mut c_char, err_size: usize) -> c_int;
+    pub fn ol_replay_selftest(inp: *const c_char, out: *const c_char, hevc: c_int, w: c_int, h: c_int, secs: c_int, err: *mut c_char, err_size: usize) -> c_int;
     pub fn ol_mic_enable(s: *mut OlStream, on: c_int) -> c_int;
     pub fn ol_mic_push(s: *mut OlStream, pcm: *const i16);
     pub fn ol_record_selftest(inp: *const c_char, out: *const c_char, hevc: c_int, w: c_int, h: c_int, err: *mut c_char, err_size: usize) -> c_int;
@@ -323,6 +328,32 @@ impl Stream {
 
     pub fn set_input(&self, buttons: u32, l2: u8, r2: u8, lx: i16, ly: i16, rx: i16, ry: i16) {
         unsafe { ol_stream_set_input(self.ptr, buttons, l2, r2, lx, ly, rx, ry) }
+    }
+}
+
+impl Stream {
+    /// Schickt die Konsole in den Ruhemodus.
+    pub fn standby(&self) -> bool {
+        unsafe { ol_stream_standby(self.ptr) == 0 }
+    }
+}
+
+impl Stream {
+    /// Schaltet den Replay-Puffer ein (Sekunden) oder aus (0).
+    pub fn replay_enable(&self, secs: i32) -> bool {
+        unsafe { ol_replay_enable(self.ptr, secs) == 0 }
+    }
+
+    pub fn replay_buffered_ms(&self) -> i32 {
+        unsafe { ol_replay_buffered_ms(self.ptr) }
+    }
+
+    /// Speichert die letzten Sekunden als MP4 (blockiert kurz, darum in einem eigenen Thread aufrufen).
+    pub fn replay_save(&self, path: &str) -> Result<(), String> {
+        let c = CString::new(path).map_err(|e| e.to_string())?;
+        let mut err = [0 as c_char; 160];
+        let r = unsafe { ol_replay_save(self.ptr, c.as_ptr(), err.as_mut_ptr(), err.len()) };
+        if r == 0 { Ok(()) } else { Err(cstr(&err)) }
     }
 }
 

@@ -12,8 +12,12 @@ pub struct ModuleDef {
     pub cat: usize,
 }
 
-pub const MODULES: [ModuleDef; 6] = [
+pub const MODULES: [ModuleDef; 10] = [
     ModuleDef { id: "gallery", icon: ic::IMAGES, title: "Galerie", desc: "Aufnahmen und Screenshots ansehen, Videos abspielen, Dateien teilen.", cat: 1 },
+    ModuleDef { id: "light", icon: ic::LIGHTBULB, title: "Controller-Licht", desc: "Die Lichtleiste deines Controllers nimmt die Farbe des Spielbilds an.", cat: 2 },
+    ModuleDef { id: "highlights", icon: ic::SPARKLE, title: "Auto-Highlights", desc: "Erkennt laute Momente im Spielton und speichert dann von selbst einen Clip.", cat: 1 },
+    ModuleDef { id: "discordsend", icon: ic::PAPER_PLANE_TILT, title: "Clips an Discord senden", desc: "Schickt Clips und Screenshots mit einem Klick in deinen eigenen Discord-Kanal.", cat: 5 },
+    ModuleDef { id: "replay", icon: ic::CLOCK_COUNTER_CLOCKWISE, title: "Replay-Clips", desc: "Eine Taste (F8) speichert die letzten Sekunden des Spiels, auch wenn keine Aufnahme läuft.", cat: 1 },
     ModuleDef { id: "friends", icon: ic::USERS_THREE, title: "Freunde & Sprache", desc: "Eigener Sprachchat mit Freundesliste. Sprich mit Freunden in Sprachräumen, auch während du spielst.", cat: 1 },
     ModuleDef { id: "voice", icon: ic::MICROPHONE, title: "Sprache (Mikrofon)", desc: "Sprich über dein Mikrofon mit deiner Party auf der Konsole. Der Ton deiner Party kommt wie bisher im Stream an.", cat: 1 },
     ModuleDef { id: "tuning", icon: ic::SLIDERS_HORIZONTAL, title: "Controller-Feinabstimmung", desc: "Totzone, Empfindlichkeit und Kurve der Sticks, dazu die Zielhilfe beim Halten von L2.", cat: 2 },

@@ -4,6 +4,9 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Replay-Clips, Auto-Highlights und Videos zuschneiden",
+    "Controller-Licht und Clips an Discord senden",
+    "Zeitlupe, Einzelbild und Profile pro Spiel",
     "Anrufe mit Klingelton, auch im Spiel",
     "Freunde & Sprache: eigener Sprachchat",
     "Rauschfilter wie Krisp",

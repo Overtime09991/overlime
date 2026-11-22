@@ -2,6 +2,8 @@
 mod audio;
 mod friends;
 mod gallery;
+mod highlight;
+mod hook;
 mod mic;
 mod modules;
 mod discord;
@@ -43,7 +45,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.48";
+const VERSION: &str = "0.49";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -85,6 +87,8 @@ pub fn net_recommend(r: &NetResult) -> (usize, usize, f32, &'static str) {
 }
 
 enum Msg {
+    Notice(String, u8),
+    ReplayDone(Result<String, String>),
     Found(Vec<Console>),
     Error(String),
     Info(String),
@@ -234,6 +238,16 @@ struct App {
     pad_name_cache: String,
     shot_requested: bool,
     rec_toggle: bool,
+    replay_req: bool,
+    standby_req: bool,
+    trim: Option<(i64, i64)>,
+    trim_busy: bool,
+    hl_at: Option<Instant>,
+    standby_at: Option<Instant>,
+    amb_col: [f32; 3],
+    amb_last: Instant,
+    amb_new: Option<[f32; 3]>,
+    replay_busy: bool,
     rec_started: Option<Instant>,
     rec_name: String,
     feedback: Option<bool>,
@@ -420,6 +434,16 @@ impl App {
             pad_name_cache: String::new(),
             shot_requested: false,
             rec_toggle: false,
+            replay_req: false,
+            standby_req: false,
+            trim: None,
+            trim_busy: false,
+            hl_at: None,
+            standby_at: None,
+            amb_col: [0.3, 0.3, 0.3],
+            amb_last: Instant::now(),
+            amb_new: None,
+            replay_busy: false,
             rec_started: None,
             rec_name: String::new(),
             feedback: None,
@@ -723,6 +747,16 @@ impl App {
             let mut f = gpu.frame.lock().unwrap();
             f.nv12 = video::shift_nv12(&self.demo_base, 1280, 720, (step * 8) % 1280);
             f.dirty = true;
+            // Controller-Licht auch im Demo-Teststream zeigen (zum Ausprobieren ohne Konsole)
+            if self.settings.light_ambi && self.settings.module_on("light") {
+                if let Some(c) = video::nv12_avg_color(&f.nv12, 1280, 720) {
+                    let t = video::ambilight_color(c, self.settings.light_bright);
+                    for i in 0..3 {
+                        self.amb_col[i] += (t[i] - self.amb_col[i]) * 0.35;
+                    }
+                    self.pad.set_led((self.amb_col[0] * 255.0) as u8, (self.amb_col[1] * 255.0) as u8, (self.amb_col[2] * 255.0) as u8);
+                }
+            }
         }
         egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |ui| {
             let full = ui.max_rect();
@@ -816,7 +850,7 @@ impl App {
             return;
         }
         self.start_error = None;
-        self.profile_apply(&c.id);
+        self.profile_apply(&c.id, &c.running_app);
         self.starting = Some(c.name.clone());
         self.last_connect = Some((c.clone(), p.clone(), (self.settings.resolution, self.settings.fps, self.settings.bitrate as i32, self.settings.codec)));
         let (w, h) = [(960, 540), (1280, 720), (1920, 1080)][self.settings.resolution];
@@ -849,11 +883,13 @@ impl App {
     }
 
     /// Wendet die eigene Qualität der Konsole an (falls eingerichtet) und merkt sich die allgemeinen Werte.
-    fn profile_apply(&mut self, console_id: &str) {
+    fn profile_apply(&mut self, console_id: &str, app: &str) {
         self.profile_release();
-        let Some(pr) = self.settings.profiles.iter().find(|(id, _)| id == console_id).map(|(_, p)| p.clone()) else { return };
+        // Eigenes Profil für das laufende Spiel hat Vorrang, sonst das der Konsole
+        let key = game_key(console_id, app).filter(|k| self.settings.profiles.iter().any(|(id, _)| id == k)).unwrap_or_else(|| console_id.to_string());
+        let Some(pr) = self.settings.profiles.iter().find(|(id, _)| *id == key).map(|(_, p)| p.clone()) else { return };
         self.saved_global = Some((self.settings.resolution, self.settings.fps, self.settings.bitrate, self.settings.codec));
-        self.profile_active = Some(console_id.to_string());
+        self.profile_active = Some(key);
         self.settings.resolution = pr.resolution;
         self.settings.fps = pr.fps;
         self.settings.bitrate = pr.bitrate;
@@ -1007,6 +1043,10 @@ impl App {
                         stream.set_rgba(true);
                     }
                     let stream = Arc::new(stream);
+                    if self.settings.module_on("replay") && self.settings.replay_secs > 0 {
+                        stream.replay_enable(self.settings.replay_secs);
+                    }
+                    highlight::reset();
                     let (audio, audio_err) = match audio::start(stream.clone(), &self.settings.audio_device, self.settings.volume) {
                         Ok(a) => {
                             let info = a.shared.info.lock().map(|g| g.clone()).unwrap_or_default();
@@ -1139,6 +1179,17 @@ impl App {
                     self.update_checking = false;
                     self.update_msg = format!("Prüfung fehlgeschlagen: {}", mask_ips(&friendly_error(&e)));
                 }
+                Msg::Notice(t, kind) => {
+                    self.trim_busy = false;
+                    self.toasts.push((t, kind, self.now));
+                }
+                Msg::ReplayDone(r) => {
+                    self.replay_busy = false;
+                    match r {
+                        Ok(name) => self.toasts.push((format!("Replay gespeichert: {name}"), 2, self.now)),
+                        Err(e) => self.toasts.push((format!("Replay nicht möglich: {e}"), 1, self.now)),
+                    }
+                }
                 Msg::UpdateNone => {
                     self.update_checking = false;
                     self.update_checked_at = Some(Instant::now());
@@ -1167,6 +1218,40 @@ fn friendly_error(e: &str) -> String {
         return e.to_string();
     };
     format!("{}  ({e})", lang::tr(msg))
+}
+
+/// Schlüssel für das Profil eines Spiels auf einer Konsole (ohne Zeichen, die das Speicherformat stören).
+fn game_key(console_id: &str, app: &str) -> Option<String> {
+    let a = app.trim();
+    if a.is_empty() {
+        return None;
+    }
+    let clean: String = a.chars().map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' }).take(60).collect();
+    Some(format!("{console_id}#{clean}"))
+}
+
+/// Eine Zeile „Eigene Qualität“ mit Haken und Bearbeitung (für Konsole oder Spiel).
+fn profile_row(ui: &mut egui::Ui, st: &mut Settings, key: &str, label: &str, id_src: u32) {
+    let idx = st.profiles.iter().position(|(id, _)| id == key);
+    let mut on = idx.is_some();
+    if ui.checkbox(&mut on, RichText::new(label).size(13.0).color(TEXT_DIM)).changed() {
+        if on {
+            st.profiles.push((key.to_string(), settings::Profile { resolution: st.resolution, fps: st.fps, bitrate: st.bitrate, codec: st.codec }));
+        } else if let Some(i) = idx {
+            st.profiles.remove(i);
+        }
+    }
+    if let Some(i) = st.profiles.iter().position(|(id, _)| id == key) {
+        let pr = &mut st.profiles[i].1;
+        let summary = format!("{} • {} FPS • {} Mbit/s • {}", ["540p", "720p", "1080p"][pr.resolution], [30, 60][pr.fps], pr.bitrate as i32, ["Auto", "H.264", "HEVC"][pr.codec]);
+        egui::CollapsingHeader::new(RichText::new(summary).size(13.0).color(th_blue_light())).id_source(("prof", id_src, i)).show(ui, |ui| {
+            segmented(ui, &mut pr.resolution, &["540p", "720p", "1080p"]);
+            segmented(ui, &mut pr.fps, &["30 FPS", "60 FPS"]);
+            ui.spacing_mut().slider_width = 220.0;
+            ui.add(egui::Slider::new(&mut pr.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
+            segmented(ui, &mut pr.codec, &["Auto", "H.264", "HEVC"]);
+        });
+    }
 }
 
 fn mask_ips(s: &str) -> String {
@@ -2046,25 +2131,9 @@ impl App {
                                     ui.label(RichText::new(format!("{} {}", ic::GAME_CONTROLLER, c.running_app)).color(TEXT_DIM).size(13.0));
                                 }
                                 if paired.is_some() {
-                                    let idx = self.settings.profiles.iter().position(|(id, _)| *id == c.id);
-                                    let mut on = idx.is_some();
-                                    if ui.checkbox(&mut on, RichText::new("Eigene Qualität für diese Konsole").size(13.0).color(TEXT_DIM)).changed() {
-                                        if on {
-                                            self.settings.profiles.push((c.id.clone(), settings::Profile { resolution: self.settings.resolution, fps: self.settings.fps, bitrate: self.settings.bitrate, codec: self.settings.codec }));
-                                        } else if let Some(i) = idx {
-                                            self.settings.profiles.remove(i);
-                                        }
-                                    }
-                                    if let Some(i) = self.settings.profiles.iter().position(|(id, _)| *id == c.id) {
-                                        let pr = &mut self.settings.profiles[i].1;
-                                        let summary = format!("{} • {} FPS • {} Mbit/s • {}", ["540p", "720p", "1080p"][pr.resolution], [30, 60][pr.fps], pr.bitrate as i32, ["Auto", "H.264", "HEVC"][pr.codec]);
-                                        egui::CollapsingHeader::new(RichText::new(summary).size(13.0).color(th_blue_light())).id_source(("prof", i)).show(ui, |ui| {
-                                            segmented(ui, &mut pr.resolution, &["540p", "720p", "1080p"]);
-                                            segmented(ui, &mut pr.fps, &["30 FPS", "60 FPS"]);
-                                            ui.spacing_mut().slider_width = 220.0;
-                                            ui.add(egui::Slider::new(&mut pr.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
-                                            segmented(ui, &mut pr.codec, &["Auto", "H.264", "HEVC"]);
-                                        });
+                                    profile_row(ui, &mut self.settings, &c.id, &lang::tr("Eigene Qualität für diese Konsole"), 0);
+                                    if let Some(gk) = game_key(&c.id, &c.running_app) {
+                                        profile_row(ui, &mut self.settings, &gk, &format!("{} „{}“", lang::tr("Eigene Qualität für das Spiel"), c.running_app), 1);
                                     }
                                 }
                             });
@@ -2463,6 +2532,22 @@ impl App {
                         }
                     }
                 });
+                ui.add_space(8.0);
+                ui.label(RichText::new("Replay-Clips: F8 speichert die letzten Sekunden, auch wenn keine Aufnahme läuft. Der Speicher wird dafür laufend gebraucht (etwa 40 bis 120 MB).").color(TEXT_DIM).size(12.5));
+                let mut ridx = match st.replay_secs { 0 => 0, 1..=20 => 1, 21..=45 => 2, _ => 3 };
+                let old = ridx;
+                segmented(ui, &mut ridx, &["Aus", "15 s", "30 s", "60 s"]);
+                if ridx != old {
+                    st.replay_secs = [0, 15, 30, 60][ridx];
+                }
+                if st.module_on("highlights") && st.replay_secs > 0 {
+                    ui.add_space(6.0);
+                    ui.checkbox(&mut st.auto_highlight, "Auto-Highlights: laute Momente automatisch als Clip speichern");
+                    if st.auto_highlight {
+                        ui.label(RichText::new("Wenn der Spielton plötzlich deutlich lauter wird (Explosion, Jubel), speichert OVERLIME kurz danach den Clip. Höchstens einer alle 25 Sekunden.").color(TEXT_DIM).size(12.0));
+                        segmented(ui, &mut st.hl_sens, &["Selten", "Mittel", "Oft"]);
+                    }
+                }
                 // Neueste Aufnahmen und Screenshots
                 let now_t = ui.input(|i| i.time);
                 if now_t - self.media_t > 2.0 {
@@ -2519,6 +2604,15 @@ impl App {
             });
             section(ui, &format!("{}  Steuerung", ic::GAME_CONTROLLER), |ui| {
                 ui.checkbox(&mut st.rumble, "Controller-Vibration");
+                if st.module_on("light") {
+                    ui.checkbox(&mut st.light_ambi, "Controller-Licht: Lichtleiste nimmt die Farbe des Spielbilds an");
+                    if st.light_ambi {
+                        ui.horizontal(|ui| {
+                            ui.label("Helligkeit");
+                            ui.add(egui::Slider::new(&mut st.light_bright, 0.2..=1.0).custom_formatter(|v, _| format!("{} %", (v * 100.0).round() as i32)));
+                        });
+                    }
+                }
                 ui.checkbox(&mut st.ds_features, "DualSense-Funktionen: Touchpad, Bewegungssensor, adaptive Trigger, Lichtleiste (gilt ab dem nächsten Stream)");
                 ui.label(RichText::new("Controller (PS5, PS4, Xbox, andere) werden automatisch erkannt.").color(TEXT_DIM).size(12.5));
                 ui.add_space(6.0);
@@ -2585,6 +2679,16 @@ impl App {
                     ui.checkbox(&mut st.discord, "Meinen Status auf Discord anzeigen");
                     ui.checkbox(&mut st.discord_game, "Spielnamen anzeigen");
                 });
+                if st.module_on("discordsend") {
+                    ui.add_space(6.0);
+                    ui.label(RichText::new("Clips an Discord senden").size(14.0).strong());
+                    ui.label(RichText::new("Lege in deinem Discord-Server unter Kanal bearbeiten > Integrationen > Webhooks einen Webhook an und füge seine Adresse hier ein. Dann kannst du in der Galerie Clips und Screenshots mit einem Klick in diesen Kanal schicken. Die Datei geht direkt von deinem PC zu Discord.").color(TEXT_DIM).size(12.0));
+                    ui.add(egui::TextEdit::singleline(&mut st.discord_webhook).hint_text("https://discord.com/api/webhooks/…").password(true).desired_width(420.0));
+                    if !st.discord_webhook.is_empty() && !hook::valid_webhook(&st.discord_webhook) {
+                        ui.label(RichText::new("Das sieht nicht wie eine Discord-Webhook-Adresse aus.").color(YELLOW).size(12.0));
+                    }
+                    ui.add_space(6.0);
+                }
                 ui.label(RichText::new("Auf Discord steht „Spielt OVERLIME“ mit dem Spiel und der Konsole (PS5 oder PS4). Sonst wird nichts gesendet, keine IP-Adressen und keine Konsolennamen. Die Discord-App muss auf diesem PC laufen.").color(TEXT_DIM).size(12.5));
                 if !ready {
                     ui.label(RichText::new("Noch nicht verfügbar: OVERLIME ist bei Discord noch nicht registriert.").color(YELLOW).size(12.5));
@@ -3000,6 +3104,15 @@ impl App {
                             self.muted = !self.muted;
                         }
                     });
+                    if self.settings.module_on("replay") && self.settings.replay_secs > 0 {
+                        ui.add_space(4.0);
+                        let ms = self.session.as_ref().map(|s| s.stream.replay_buffered_ms()).unwrap_or(0);
+                        let label = format!("{}  Replay speichern (F8)  •  {} s bereit", ic::CLOCK_COUNTER_CLOCKWISE, (ms / 1000).min(self.settings.replay_secs));
+                        if ui.add_enabled(!self.replay_busy && ms > 1500, egui::Button::new(RichText::new(label).size(13.5)).fill(th_card_hover()).rounding(10.0).min_size(Vec2::new(360.0, 34.0))).clicked() {
+                            self.replay_req = true;
+                            self.stream_menu = false;
+                        }
+                    }
                     // Sprachchat: anrufen oder den Raum steuern, ohne das Spiel zu verlassen
                     if self.settings.module_on("friends") && self.settings.voice_online && self.voice.as_ref().map(|v| v.connected()).unwrap_or(false) {
                         ui.add_space(6.0);
@@ -3044,6 +3157,9 @@ impl App {
                     ui.add_space(4.0);
                     if ui.add(big_button("Stream beenden", RED.gamma_multiply(0.55)).min_size(Vec2::new(360.0, 42.0))).clicked() {
                         stop = true;
+                    }
+                    if ui.add(egui::Button::new(RichText::new(format!("{}  Stream beenden und Konsole ausschalten", ic::POWER)).color(TEXT_DIM)).frame(false)).clicked() {
+                        self.standby_req = true;
                     }
                     if ui.add(egui::Button::new(RichText::new("OVERLIME komplett schließen").color(TEXT_DIM)).frame(false)).clicked() {
                         quit = true;
@@ -3651,7 +3767,9 @@ impl App {
                     self.pad.trigger_effects(e.type_left, &e.left, e.type_right, &e.right, inten);
                 }
                 if e.led_new != 0 {
-                    self.pad.set_led(e.led[0], e.led[1], e.led[2]);
+                    if !(self.settings.light_ambi && self.settings.module_on("light")) {
+                        self.pad.set_led(e.led[0], e.led[1], e.led[2]);
+                    }
                 }
                 if e.player_new != 0 {
                     self.pad.set_player(e.player);
@@ -3712,6 +3830,11 @@ impl App {
                     f.sharp = sharp;
                     f.nearest = nearest;
                     f.interp = self.settings.interp;
+                    // Lichtleiste: Durchschnittsfarbe nur ab und zu berechnen
+                    if self.settings.light_ambi && self.amb_last.elapsed() > Duration::from_millis(60) {
+                        self.amb_last = Instant::now();
+                        self.amb_new = video::nv12_avg_color(&f.nv12, fw, fh);
+                    }
                 }
                 s.has_video = true;
                 s.vsize = (fw, fh);
@@ -3925,6 +4048,16 @@ impl App {
             self.muted = !self.muted;
             self.toasts.push((if self.muted { "Ton aus (M)".to_string() } else { "Ton an".to_string() }, 0, self.now));
         }
+        // Controller-Licht: Farbe des Spielbilds sanft auf die Lichtleiste legen
+        if self.settings.light_ambi && self.settings.module_on("light") {
+            if let Some(c) = self.amb_new.take() {
+                let t = video::ambilight_color(c, self.settings.light_bright);
+                for i in 0..3 {
+                    self.amb_col[i] += (t[i] - self.amb_col[i]) * 0.35;
+                }
+                self.pad.set_led((self.amb_col[0] * 255.0) as u8, (self.amb_col[1] * 255.0) as u8, (self.amb_col[2] * 255.0) as u8);
+            }
+        }
         // Sprache zur Konsole: Taste V (Umschalten oder Halten) und Kachel im Pause-Menü
         if self.settings.module_on("voice") && self.session.is_some() && !ctx.wants_keyboard_input() {
             let (pressed, down, released) = ctx.input(|i| (i.key_pressed(Key::V), i.key_down(Key::V), i.key_released(Key::V)));
@@ -3988,6 +4121,45 @@ impl App {
             }
         }
 
+        // Auto-Highlights: Erkennung ein- und ausschalten, bei einem lauten Moment kurz danach den Clip speichern
+        let hl_on = self.settings.auto_highlight && self.settings.module_on("highlights") && self.settings.module_on("replay") && self.settings.replay_secs > 0;
+        highlight::ENABLED.store(hl_on, std::sync::atomic::Ordering::Relaxed);
+        highlight::SENSITIVITY.store(self.settings.hl_sens as u32, std::sync::atomic::Ordering::Relaxed);
+        if hl_on && highlight::take_trigger() && self.hl_at.is_none() {
+            self.hl_at = Some(Instant::now());
+            self.toasts.push(("Highlight erkannt …".to_string(), 0, self.now));
+        }
+        if let Some(t) = self.hl_at {
+            if t.elapsed() > Duration::from_secs(4) {
+                self.hl_at = None;
+                self.replay_req = true;
+            }
+        }
+        // Replay-Clip: F8 oder Knopf speichert die letzten Sekunden (im Hintergrund, damit das Spiel nicht stockt)
+        let want_replay = (ctx.input(|i| i.key_pressed(Key::F8)) && !ctx.wants_keyboard_input()) || self.replay_req;
+        self.replay_req = false;
+        if want_replay && self.settings.module_on("replay") {
+            if self.settings.replay_secs <= 0 {
+                self.toasts.push(("Replay-Clips sind ausgeschaltet (Einstellungen > Aufnahmen).".to_string(), 1, self.now));
+            } else if self.replay_busy {
+                self.toasts.push(("Der letzte Clip wird noch gespeichert.".to_string(), 0, self.now));
+            } else if let Some(s) = self.session.as_ref() {
+                match recording_path() {
+                    Ok((full, name)) => {
+                        let full = full.replace("OVERLIME-", "OVERLIME-Replay-");
+                        let name = name.replace("OVERLIME-", "OVERLIME-Replay-");
+                        self.replay_busy = true;
+                        let stream = s.stream.clone();
+                        let tx = self.tx.clone();
+                        std::thread::spawn(move || {
+                            let m = Msg::ReplayDone(stream.replay_save(&full).map(|_| name));
+                            let _ = tx.send(m);
+                        });
+                    }
+                    Err(e) => self.toasts.push((format!("Replay nicht möglich: {e}"), 1, self.now)),
+                }
+            }
+        }
         // Aufnahme: F9 oder Knopf
         let want_rec = ctx.input(|i| i.key_pressed(Key::F9)) && !ctx.wants_keyboard_input() || self.rec_toggle;
         self.rec_toggle = false;
@@ -4064,6 +4236,23 @@ impl App {
         }
         if o_stop {
             stop = true;
+        }
+        if self.standby_req {
+            self.standby_req = false;
+            if let Some(s) = self.session.as_ref() {
+                if s.stream.standby() {
+                    self.toasts.push(("Die Konsole geht in den Ruhemodus …".to_string(), 2, self.now));
+                    self.standby_at = Some(Instant::now());
+                } else {
+                    self.toasts.push(("Die Konsole konnte nicht ausgeschaltet werden.".to_string(), 1, self.now));
+                }
+            }
+        }
+        if let Some(t) = self.standby_at {
+            if t.elapsed() > Duration::from_millis(900) {
+                self.standby_at = None;
+                stop = true;
+            }
         }
         if o_quit {
             self.allow_close = true;
@@ -4667,6 +4856,9 @@ impl eframe::App for App {
         if let Some(p) = self.open_req.take() {
             self.open_viewer(ctx, p);
         }
+        if self.viewer.is_some() && self.trim.is_none() && std::env::args().any(|a| a == "--demo-trim") && self.player.is_some() {
+            self.trim = Some((1500, 4500));
+        }
         if self.viewer.is_some() && std::env::args().any(|a| a == "--demo-share") {
             self.share_open = true;
         }
@@ -4911,6 +5103,79 @@ Gefunden: {}
             let _ = image_dump(&p, &ic.rgba, ic.width, ic.height);
         }
         return Ok(());
+    }
+    if let Some(i) = std::env::args().position(|a| a == "--hook-test") {
+        // overlime --hook-test <url> <datei>: Hochladen testen (mit OL_WEBHOOK_TEST=1 auch gegen einen lokalen Testserver)
+        let a: Vec<String> = std::env::args().collect();
+        let r = hook::send_file(&a[i + 1], std::path::Path::new(&a[i + 2]), "Test");
+        println!("{:?}", r);
+        std::process::exit(if r.is_ok() { 0 } else { 1 });
+    }
+    if let Some(i) = std::env::args().position(|a| a == "--trim-test") {
+        // overlime --trim-test <eingabe.mp4> <ausgabe.mp4> <start_ms> <ende_ms>
+        let a: Vec<String> = std::env::args().collect();
+        let r = player::trim(std::path::Path::new(&a[i + 1]), std::path::Path::new(&a[i + 2]), a[i + 3].parse().unwrap_or(0), a[i + 4].parse().unwrap_or(2000));
+        println!("{:?}", r);
+        std::process::exit(if r.is_ok() { 0 } else { 1 });
+    }
+    if std::env::args().any(|a| a == "--highlight-test") {
+        // Synthetischer Ton: ruhig, Knall, ruhig, Knall nach Ablauf der Sperre, dauerhaft laut
+        let mut d = highlight::Detector::new();
+        let mut seed = 1u32;
+        let mut noise = |amp: f32| -> Vec<i16> {
+            (0..1920).map(|_| { seed = seed.wrapping_mul(1664525).wrapping_add(1013904223); (((seed >> 16) as f32 / 65535.0 - 0.5) * 2.0 * amp * 32767.0) as i16 }).collect()
+        };
+        let mut t = 0.0f32;
+        let mut hits: Vec<f32> = Vec::new();
+        let mut run = |secs: f32, amp: f32, d: &mut highlight::Detector, t: &mut f32, hits: &mut Vec<f32>| {
+            let n = (secs / 0.02) as usize;
+            for _ in 0..n {
+                if d.feed(&noise(amp), 1) {
+                    hits.push(*t);
+                }
+                *t += 0.02;
+            }
+        };
+        run(20.0, 0.03, &mut d, &mut t, &mut hits);
+        run(0.6, 0.5, &mut d, &mut t, &mut hits);   // Knall bei ~20 s
+        run(10.0, 0.03, &mut d, &mut t, &mut hits);
+        run(0.6, 0.5, &mut d, &mut t, &mut hits);   // Knall bei ~31 s, noch gesperrt
+        run(30.0, 0.03, &mut d, &mut t, &mut hits);
+        run(0.6, 0.5, &mut d, &mut t, &mut hits);   // Knall bei ~62 s, wieder erlaubt
+        run(30.0, 0.03, &mut d, &mut t, &mut hits);
+        let quiet_hits = hits.len();
+        println!("Treffer bei (Sekunden): {:?}  (erwartet: etwa 20 und 62)", hits);
+        // dauerhaft laute Musik: sollte nach der Anlaufzeit kaum auslösen
+        let mut d2 = highlight::Detector::new();
+        let mut t2 = 0.0f32;
+        let mut hits2: Vec<f32> = Vec::new();
+        run(90.0, 0.25, &mut d2, &mut t2, &mut hits2);
+        println!("Dauerhaft laut (90 s): {} Treffer bei {:?}", hits2.len(), hits2);
+        std::process::exit(if quiet_hits == 2 { 0 } else { 1 });
+    }
+    if std::env::args().any(|a| a == "--light-test") {
+        // Lichtleiste kurz durch Rot, Grün, Blau, Weiß und Aus laufen lassen
+        let mut pad = pad::Pad::new();
+        std::thread::sleep(std::time::Duration::from_millis(1500));
+        pad.poll();
+        println!("Controller erkannt: {}  Name: {}", pad.connected(), pad.name());
+        for (n, c) in [("Rot", (255u8, 0u8, 0u8)), ("Grün", (0, 255, 0)), ("Blau", (0, 0, 255)), ("Weiß", (255, 255, 255))] {
+            pad.set_led(c.0, c.1, c.2);
+            println!("Licht: {n}");
+            std::thread::sleep(std::time::Duration::from_millis(900));
+            pad.poll();
+        }
+        pad.set_led(0, 0, 255);
+        std::process::exit(0);
+    }
+    if let Some(i) = std::env::args().position(|a| a == "--replay-selftest") {
+        // overlime --replay-selftest <eingabe.h264> <ausgabe.mp4> <hevc 0/1> <breite> <hoehe> <sekunden>
+        let a: Vec<String> = std::env::args().collect();
+        let (inp, out) = (std::ffi::CString::new(a[i + 1].clone()).unwrap(), std::ffi::CString::new(a[i + 2].clone()).unwrap());
+        let mut err = [0 as std::ffi::c_char; 160];
+        let r = unsafe { ffi::ol_replay_selftest(inp.as_ptr(), out.as_ptr(), a[i + 3].parse().unwrap_or(0), a[i + 4].parse().unwrap_or(1280), a[i + 5].parse().unwrap_or(720), a[i + 6].parse().unwrap_or(2), err.as_mut_ptr(), err.len()) };
+        println!("Ergebnis {r} {}", ffi::cstr(&err));
+        std::process::exit(r);
     }
     if let Some(i) = std::env::args().position(|a| a == "--denoise-test") {
         // overlime --denoise-test <sprache.wav> [Rauschstärke]: Sprache plus Lüfter-Rauschen, was bleibt nach dem Filter?

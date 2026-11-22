@@ -373,6 +373,7 @@ impl App {
     }
 
     pub fn close_viewer(&mut self) {
+        self.trim = None;
         self.viewer = None;
         self.viewer_tex = None;
         self.player = None;
@@ -403,6 +404,13 @@ impl App {
         let mut vol_rel: f32 = 0.0;
         let mut do_share = false;
         let mut do_delete = false;
+        let mut speed_set: Option<f32> = None;
+        let mut step: i64 = 0;
+        let mut trim_toggle = false;
+        let mut trim_start = false;
+        let mut trim_end = false;
+        let mut trim_save = false;
+        let mut trim_cancel = false;
         ctx.input(|i| {
             if i.key_pressed(Key::Escape) && !self.share_open {
                 close = true;
@@ -428,6 +436,18 @@ impl App {
                 }
                 if i.key_pressed(Key::PageUp) {
                     nav = -1;
+                }
+                if i.key_pressed(Key::Comma) {
+                    step = -1;
+                }
+                if i.key_pressed(Key::Period) {
+                    step = 1;
+                }
+                if i.key_pressed(Key::I) {
+                    trim_start = true;
+                }
+                if i.key_pressed(Key::O) {
+                    trim_end = true;
                 }
             } else {
                 if i.key_pressed(Key::ArrowLeft) || i.key_pressed(Key::PageUp) {
@@ -493,6 +513,7 @@ impl App {
         let mut copy_file = false;
         let mut copy_image = false;
         let mut copy_path = false;
+        let mut send_discord = false;
         let mut show_folder = false;
         egui::Area::new(egui::Id::new("media_viewer")).order(egui::Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
             let (rect, resp) = ui.allocate_exact_size(screen.size(), egui::Sense::click());
@@ -561,6 +582,12 @@ impl App {
                     p.rect_filled(line, Rounding::same(3.0), Color32::from_white_alpha((50.0 * a) as u8));
                     let fill = Rect::from_min_size(line.min, Vec2::new(line.width() * frac, th_h));
                     p.rect_filled(fill, Rounding::same(3.0), th_blue().gamma_multiply(a));
+                    if let Some((ts, te)) = self.trim {
+                        let (x0, x1) = (tl.left() + tl.width() * (ts as f32 / dur as f32), tl.left() + tl.width() * (te as f32 / dur as f32));
+                        p.rect_filled(Rect::from_min_max(Pos2::new(x0, tl.center().y - 8.0), Pos2::new(x1.max(x0 + 2.0), tl.center().y + 8.0)), Rounding::same(3.0), YELLOW.gamma_multiply(0.45 * a));
+                        p.rect_filled(Rect::from_center_size(Pos2::new(x0, tl.center().y), Vec2::new(3.0, 18.0)), Rounding::same(1.0), YELLOW.gamma_multiply(a));
+                        p.rect_filled(Rect::from_center_size(Pos2::new(x1, tl.center().y), Vec2::new(3.0, 18.0)), Rounding::same(1.0), YELLOW.gamma_multiply(a));
+                    }
                     if hov || a > 0.5 {
                         p.circle_filled(Pos2::new(fill.right(), tl.center().y), if hov { 8.0 } else { 6.0 }, Color32::WHITE.gamma_multiply(a));
                     }
@@ -594,8 +621,62 @@ impl App {
                             new_vol = Some(((pp.x - vl.left()) / vl.width()).clamp(0.0, 1.0) * 1.5);
                         }
                     }
+                    // Einzelbild, Geschwindigkeit, Zuschneiden
+                    let sx = vx + 150.0;
+                    if round_btn(ui, ic::CARET_LEFT, Pos2::new(sx, by), 15.0, "stepb", a) {
+                        step = -1;
+                    }
+                    if round_btn(ui, ic::CARET_RIGHT, Pos2::new(sx + 36.0, by), 15.0, "stepf", a) {
+                        step = 1;
+                    }
+                    for (k, (label, v)) in [("0.25×", 0.25f32), ("0.5×", 0.5), ("1×", 1.0), ("2×", 2.0)].iter().enumerate() {
+                        let r = Rect::from_center_size(Pos2::new(sx + 90.0 + k as f32 * 48.0, by), Vec2::new(44.0, 28.0));
+                        let rr = ui.interact(r, egui::Id::new(("vspeed", k)), egui::Sense::click());
+                        let on = (pl.speed - v).abs() < 0.01;
+                        p.rect_filled(r, Rounding::same(8.0), if on { th_blue().gamma_multiply(a) } else { Color32::from_white_alpha(((if rr.hovered() { 34.0 } else { 16.0 }) * a) as u8) });
+                        p.text(r.center(), Align2::CENTER_CENTER, *label, FontId::proportional(12.5), Color32::WHITE.gamma_multiply(a));
+                        if rr.clicked() && a > 0.2 {
+                            speed_set = Some(*v);
+                        }
+                    }
+                    if round_btn(ui, ic::SCISSORS, Pos2::new(sx + 90.0 + 4.0 * 48.0 + 10.0, by), 16.0, "trim", a) {
+                        trim_toggle = true;
+                    }
                 } else if !self.viewer_err.is_empty() {
                     // Fehlertext steht schon in der Mitte
+                }
+            }
+            // Zuschneiden: kleines Fenster über der Leiste
+            if let (true, Some((ts, te))) = (video, self.trim) {
+                let w = 600.0f32.min(rect.width() - 40.0);
+                let tr = Rect::from_center_size(Pos2::new(rect.center().x, bar.top() - 44.0), Vec2::new(w, 64.0));
+                p.rect_filled(tr, Rounding::same(14.0), th_card().gamma_multiply(0.97));
+                p.rect_stroke(tr, Rounding::same(14.0), Stroke::new(1.0, YELLOW.gamma_multiply(0.6)));
+                p.text(Pos2::new(tr.left() + 16.0, tr.top() + 18.0), Align2::LEFT_CENTER, format!("{}  {} – {}  ({} s)", ic::SCISSORS, fmt_time(ts), fmt_time(te), ((te - ts).max(0) / 1000)), FontId::proportional(13.5), Color32::WHITE);
+                p.text(Pos2::new(tr.left() + 16.0, tr.top() + 42.0), Align2::LEFT_CENTER, lang::tr("I = Anfang hier, O = Ende hier. Der Anfang rutscht auf das Schlüsselbild davor."), FontId::proportional(11.0), TEXT_DIM);
+                let mk = |ui: &mut egui::Ui, label: String, x: f32, wd: f32, id: &str, fill: Color32| -> bool {
+                    let r = Rect::from_min_size(Pos2::new(x, tr.top() + 10.0), Vec2::new(wd, 28.0));
+                    let rr = ui.interact(r, egui::Id::new(("trimb", id)), egui::Sense::click());
+                    ui.painter().rect_filled(r, Rounding::same(8.0), if rr.hovered() { fill.gamma_multiply(1.15) } else { fill });
+                    ui.painter().text(r.center(), Align2::CENTER_CENTER, label, FontId::proportional(12.5), Color32::WHITE);
+                    rr.clicked()
+                };
+                let mut x = tr.right() - 12.0;
+                x -= 96.0;
+                if mk(ui, lang::tr("Abbrechen"), x, 96.0, "c", Color32::from_white_alpha(26)) {
+                    trim_cancel = true;
+                }
+                x -= 142.0;
+                if !self.trim_busy && mk(ui, lang::tr("Clip speichern"), x, 134.0, "s", GREEN.gamma_multiply(0.8)) {
+                    trim_save = true;
+                }
+                x -= 92.0;
+                if mk(ui, lang::tr("Ende (O)"), x, 84.0, "e", Color32::from_white_alpha(26)) {
+                    trim_end = true;
+                }
+                x -= 100.0;
+                if mk(ui, lang::tr("Anfang (I)"), x, 92.0, "b", Color32::from_white_alpha(26)) {
+                    trim_start = true;
                 }
             }
             // Aktionen rechts: Teilen, Im Ordner, Löschen
@@ -618,7 +699,7 @@ impl App {
             // Teilen-Menü
             if self.share_open {
                 let menu_w = 372.0;
-                let n_entries = if video { 2.0 } else { 3.0 };
+                let n_entries = (if video { 2.0 } else { 3.0 }) + if self.settings.module_on("discordsend") { 1.0 } else { 0.0 };
                 let mh = 52.0 + n_entries * 50.0;
                 let mr = Rect::from_min_size(Pos2::new((share_c.x + 30.0 - menu_w).max(rect.left() + 10.0), bar.top() - 10.0 - mh), Vec2::new(menu_w, mh));
                 p.rect_filled(mr.expand(1.0), Rounding::same(17.0), Color32::from_black_alpha(120));
@@ -633,6 +714,9 @@ impl App {
                     entries.push((ic::IMAGES, "Bild kopieren", "Als Bild einfügen, zum Beispiel in Chat oder Bildbearbeitung", 1));
                 }
                 entries.push((ic::CLIPBOARD_TEXT, "Pfad kopieren", "Speicherort der Datei als Text", 2));
+                if self.settings.module_on("discordsend") {
+                    entries.push((ic::PAPER_PLANE_TILT, "An Discord senden", "In deinen eigenen Kanal (Webhook aus den Einstellungen)", 3));
+                }
                 for (icon, title, sub, kind) in entries {
                     let er = Rect::from_min_size(Pos2::new(mr.left() + 8.0, ry), Vec2::new(menu_w - 16.0, 46.0));
                     let rr = ui.interact(er, egui::Id::new(("share_e", kind)), egui::Sense::click());
@@ -646,6 +730,7 @@ impl App {
                         match kind {
                             0 => copy_file = true,
                             1 => copy_image = true,
+                            3 => send_discord = true,
                             _ => copy_path = true,
                         }
                     }
@@ -659,6 +744,57 @@ impl App {
             }
         });
 
+        if let Some(pl) = self.player.as_mut() {
+            if let Some(v) = speed_set {
+                pl.set_speed(v);
+            }
+            if step != 0 {
+                pl.step_frame(step as i64);
+                self.vp_ctrl_t = now;
+            }
+        }
+        if trim_toggle {
+            self.trim = if self.trim.is_some() { None } else { self.player.as_ref().map(|p| (p.position_ms(), p.duration_ms)) };
+        }
+        if let (Some((ts, te)), Some(pl)) = (self.trim, self.player.as_ref()) {
+            let pos = pl.position_ms();
+            if trim_start {
+                self.trim = Some((pos.min(te - 500).max(0), te));
+            }
+            if trim_end {
+                self.trim = Some((ts, pos.max(ts + 500).min(pl.duration_ms)));
+            }
+        }
+        if trim_cancel {
+            self.trim = None;
+        }
+        if trim_save {
+            if let Some((ts, te)) = self.trim {
+                let inp = cur.clone();
+                let stem = inp.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "clip".into());
+                let dir = inp.parent().map(|p| p.to_path_buf()).unwrap_or_default();
+                let mut out = dir.join(format!("{stem}-Clip.mp4"));
+                let mut n = 2;
+                while out.exists() {
+                    out = dir.join(format!("{stem}-Clip{n}.mp4"));
+                    n += 1;
+                }
+                self.trim_busy = true;
+                let tx = self.tx.clone();
+                self.toasts.push(("Clip wird gespeichert …".to_string(), 0, now));
+                std::thread::spawn(move || {
+                    let name = out.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                    let m = match crate::player::trim(&inp, &out, ts, te) {
+                        Ok(()) => Msg::Notice(format!("Clip gespeichert: {name}"), 2),
+                        Err(e) => Msg::Notice(format!("Zuschneiden nicht möglich: {e}"), 1),
+                    };
+                    let _ = tx.send(m);
+                });
+                self.trim = None;
+                self.gal_t = -100.0;
+                self.media_t = -100.0;
+            }
+        }
         if click_toggle {
             if let Some(pl) = self.player.as_mut() {
                 if pl.ended() {
@@ -693,6 +829,24 @@ impl App {
             );
             self.toasts.push(("Bild kopiert. Jetzt mit Strg+V einfügen.".to_string(), 2, now));
             self.share_open = false;
+        }
+        if send_discord {
+            self.share_open = false;
+            if self.settings.discord_webhook.trim().is_empty() {
+                self.toasts.push(("Trage zuerst in den Einstellungen unter Discord deine Webhook-Adresse ein.".to_string(), 1, now));
+            } else {
+                let hookurl = self.settings.discord_webhook.clone();
+                let path = cur.clone();
+                let tx = self.tx.clone();
+                self.toasts.push(("Wird an Discord gesendet …".to_string(), 0, now));
+                std::thread::spawn(move || {
+                    let m = match crate::hook::send_file(&hookurl, &path, "") {
+                        Ok(()) => Msg::Notice("An Discord gesendet.".to_string(), 2),
+                        Err(e) => Msg::Notice(e, 1),
+                    };
+                    let _ = tx.send(m);
+                });
+            }
         }
         if copy_path {
             ctx.copy_text(pth.clone());

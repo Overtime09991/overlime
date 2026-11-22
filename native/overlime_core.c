@@ -163,6 +163,9 @@ int ol_register(const char *host, const char *system_version, int ps5,
 // ------------------------------------------------------------------ Stream
 #define AUDIO_RING_SAMPLES (48000 * 2 * 2) // ca. 2 Sekunden Stereo
 
+struct RpAu { uint8_t *d; size_t n; uint64_t t; int key; };
+struct RpAud { int16_t *d; size_t frames; uint32_t ch; uint64_t t; };
+
 struct OlStream {
 	ChiakiLog log;
 	ChiakiSession session;
@@ -234,6 +237,17 @@ struct OlStream {
 	size_t vhdr_len;
 	uint64_t rec_bytes;
 	char rec_path[600];
+	int rec_use_ts;       // Zeitstempel von aussen (fuer Replay-Clips)
+	uint64_t rec_ts_us;
+
+	// Replay-Puffer: die letzten Sekunden Video und Ton im Speicher
+	ChiakiMutex rp_mtx;
+	int rp_secs;
+	struct RpAu *rp_au;
+	int rp_au_cap, rp_au_head, rp_au_cnt;
+	struct RpAud *rp_aud;
+	int rp_aud_cap, rp_aud_head, rp_aud_cnt;
+	uint64_t rp_bytes;
 };
 
 // ------------------------------------------------------------------ Aufnahme
@@ -363,7 +377,7 @@ static void rec_video(OlStream *s, const uint8_t *buf, size_t size)
 			chiaki_mutex_unlock(&s->rec_mtx);
 			return;
 		}
-		s->rec_t0_us = now_us();
+		s->rec_t0_us = s->rec_use_ts ? s->rec_ts_us : now_us();
 		s->rec_last_vpts = -1;
 		s->rec_state = 2;
 	}
@@ -371,7 +385,7 @@ static void rec_video(OlStream *s, const uint8_t *buf, size_t size)
 	if(pkt && av_new_packet(pkt, (int)size) == 0)
 	{
 		memcpy(pkt->data, buf, size);
-		int64_t pts = av_rescale_q((int64_t)(now_us() - s->rec_t0_us), (AVRational){1, 1000000}, s->rec_vs->time_base);
+		int64_t pts = av_rescale_q((int64_t)((s->rec_use_ts ? s->rec_ts_us : now_us()) - s->rec_t0_us), (AVRational){1, 1000000}, s->rec_vs->time_base);
 		if(pts <= s->rec_last_vpts) pts = s->rec_last_vpts + 1;
 		s->rec_last_vpts = pts;
 		pkt->pts = pkt->dts = pts;
@@ -552,12 +566,110 @@ uint64_t ol_record_bytes(OlStream *s)
 	return r;
 }
 
+// ------------------------------------------------------------------ Replay-Puffer
+static void rp_free_au(struct RpAu *a) { free(a->d); a->d = NULL; }
+static void rp_free_aud(struct RpAud *a) { free(a->d); a->d = NULL; }
+
+static void rp_trim_locked(OlStream *s, uint64_t now)
+{
+	uint64_t keep = (uint64_t)(s->rp_secs + 8) * 1000000ULL;
+	while(s->rp_au_cnt > 0)
+	{
+		struct RpAu *a = &s->rp_au[s->rp_au_head];
+		if(now - a->t <= keep && s->rp_bytes < 300ULL * 1024 * 1024)
+			break;
+		s->rp_bytes -= a->n;
+		rp_free_au(a);
+		s->rp_au_head = (s->rp_au_head + 1) % s->rp_au_cap;
+		s->rp_au_cnt--;
+	}
+	while(s->rp_aud_cnt > 0)
+	{
+		struct RpAud *a = &s->rp_aud[s->rp_aud_head];
+		if(now - a->t <= keep)
+			break;
+		rp_free_aud(a);
+		s->rp_aud_head = (s->rp_aud_head + 1) % s->rp_aud_cap;
+		s->rp_aud_cnt--;
+	}
+}
+
+static void rp_push_video(OlStream *s, const uint8_t *buf, size_t size)
+{
+	if(s->rp_secs <= 0 || size < 64)   // kleine Pakete sind Parameter-Sets, die merkt sich rec_video
+		return;
+	chiaki_mutex_lock(&s->rp_mtx);
+	if(s->rp_secs > 0 && s->rp_au)
+	{
+		uint64_t now = now_us();
+		rp_trim_locked(s, now);
+		if(s->rp_au_cnt >= s->rp_au_cap)
+		{
+			struct RpAu *o = &s->rp_au[s->rp_au_head];
+			s->rp_bytes -= o->n;
+			rp_free_au(o);
+			s->rp_au_head = (s->rp_au_head + 1) % s->rp_au_cap;
+			s->rp_au_cnt--;
+		}
+		uint8_t *c = (uint8_t *)malloc(size);
+		if(c)
+		{
+			memcpy(c, buf, size);
+			struct RpAu *a = &s->rp_au[(s->rp_au_head + s->rp_au_cnt) % s->rp_au_cap];
+			a->d = c; a->n = size; a->t = now; a->key = is_keyframe(buf, size, s->codec_hevc);
+			s->rp_au_cnt++;
+			s->rp_bytes += size;
+		}
+	}
+	chiaki_mutex_unlock(&s->rp_mtx);
+}
+
+static void rp_push_audio(OlStream *s, const int16_t *buf, size_t frames, uint32_t ch)
+{
+	if(s->rp_secs <= 0 || frames == 0 || ch == 0)
+		return;
+	chiaki_mutex_lock(&s->rp_mtx);
+	if(s->rp_secs > 0 && s->rp_aud)
+	{
+		if(s->rp_aud_cnt >= s->rp_aud_cap)
+		{
+			struct RpAud *o = &s->rp_aud[s->rp_aud_head];
+			rp_free_aud(o);
+			s->rp_aud_head = (s->rp_aud_head + 1) % s->rp_aud_cap;
+			s->rp_aud_cnt--;
+		}
+		size_t bytes = frames * ch * sizeof(int16_t);
+		int16_t *c = (int16_t *)malloc(bytes);
+		if(c)
+		{
+			memcpy(c, buf, bytes);
+			struct RpAud *a = &s->rp_aud[(s->rp_aud_head + s->rp_aud_cnt) % s->rp_aud_cap];
+			a->d = c; a->frames = frames; a->ch = ch; a->t = now_us();
+			s->rp_aud_cnt++;
+		}
+	}
+	chiaki_mutex_unlock(&s->rp_mtx);
+}
+
+static void rp_clear_locked(OlStream *s)
+{
+	for(int i = 0; i < s->rp_au_cnt; i++)
+		rp_free_au(&s->rp_au[(s->rp_au_head + i) % s->rp_au_cap]);
+	for(int i = 0; i < s->rp_aud_cnt; i++)
+		rp_free_aud(&s->rp_aud[(s->rp_aud_head + i) % s->rp_aud_cap]);
+	free(s->rp_au); s->rp_au = NULL;
+	free(s->rp_aud); s->rp_aud = NULL;
+	s->rp_au_cnt = s->rp_au_head = s->rp_aud_cnt = s->rp_aud_head = 0;
+	s->rp_bytes = 0;
+}
+
 static bool video_sample(uint8_t *buf, size_t buf_size, int32_t frames_lost, bool frame_recovered, void *user)
 {
 	OlStream *s = user;
 	s->t_sample_us = now_us();
 	s->bytes_acc += buf_size;
 	rec_video(s, buf, buf_size);
+	rp_push_video(s, buf, buf_size);
 	return chiaki_ffmpeg_decoder_video_sample_cb(buf, buf_size, frames_lost, frame_recovered, &s->decoder);
 }
 
@@ -707,6 +819,7 @@ static void opus_frame_cb(int16_t *buf, size_t samples_count, void *user)
 	OlStream *s = user;
 	size_t total = samples_count * (s->audio_channels ? s->audio_channels : 2);
 	rec_audio(s, buf, samples_count, s->audio_channels ? s->audio_channels : 2);
+	rp_push_audio(s, buf, samples_count, s->audio_channels ? s->audio_channels : 2);
 	chiaki_mutex_lock(&s->mtx);
 	s->audio_total += samples_count;
 	for(size_t i = 0; i < total; i++)
@@ -776,6 +889,7 @@ OlStream *ol_stream_start(const OlStreamParams *p, char *err, size_t err_size)
 	make_log(&s->log);
 	chiaki_mutex_init(&s->mtx, false);
 	chiaki_mutex_init(&s->rec_mtx, false);
+	chiaki_mutex_init(&s->rp_mtx, false);
 	s->audio_channels = 2;
 	s->audio_rate = 48000;
 	snprintf(s->message, sizeof(s->message), "Verbinde ...");
@@ -1054,6 +1168,10 @@ void ol_stream_stop(OlStream *s)
 	free(s->rgba);
 	chiaki_mutex_fini(&s->rec_mtx);
 	chiaki_mutex_fini(&s->mtx);
+	chiaki_mutex_lock(&s->rp_mtx);
+	s->rp_secs = 0;
+	rp_clear_locked(s);
+	chiaki_mutex_unlock(&s->rp_mtx);
 	free(s->vhdr);
 	free(s);
 }
@@ -1081,6 +1199,7 @@ int ol_record_selftest(const char *in_path, const char *out_path, int hevc, int 
 	OlStream *s = calloc(1, sizeof(*s));
 	chiaki_mutex_init(&s->mtx, false);
 	chiaki_mutex_init(&s->rec_mtx, false);
+	chiaki_mutex_init(&s->rp_mtx, false);
 	s->codec_hevc = hevc;
 	s->width = w;
 	s->height = h;
@@ -1468,4 +1587,375 @@ int ol_opus_dec(void *d, const uint8_t *data, int len, int16_t *pcm, int frame)
 void ol_opus_dec_free(void *d)
 {
 	if(d) opus_decoder_destroy((OpusDecoder *)d);
+}
+
+
+// ---------------------------------------------------------------- Replay-Clips
+// secs = 0: aus. Sonst werden die letzten secs Sekunden im Speicher gehalten.
+int ol_replay_enable(OlStream *s, int secs)
+{
+	if(!s) return -1;
+	if(secs > 120) secs = 120;
+	chiaki_mutex_lock(&s->rp_mtx);
+	rp_clear_locked(s);
+	s->rp_secs = secs > 0 ? secs : 0;
+	if(secs > 0)
+	{
+		s->rp_au_cap = (secs + 8) * 130 + 64;
+		s->rp_aud_cap = (secs + 8) * 260 + 64;
+		s->rp_au = (struct RpAu *)calloc((size_t)s->rp_au_cap, sizeof(struct RpAu));
+		s->rp_aud = (struct RpAud *)calloc((size_t)s->rp_aud_cap, sizeof(struct RpAud));
+		if(!s->rp_au || !s->rp_aud)
+		{
+			rp_clear_locked(s);
+			s->rp_secs = 0;
+			chiaki_mutex_unlock(&s->rp_mtx);
+			return -2;
+		}
+	}
+	chiaki_mutex_unlock(&s->rp_mtx);
+	return 0;
+}
+
+// wie viele Millisekunden gerade im Puffer liegen
+int ol_replay_buffered_ms(OlStream *s)
+{
+	if(!s) return 0;
+	chiaki_mutex_lock(&s->rp_mtx);
+	int ms = 0;
+	if(s->rp_au_cnt > 0)
+		ms = (int)((now_us() - s->rp_au[s->rp_au_head].t) / 1000);
+	chiaki_mutex_unlock(&s->rp_mtx);
+	return ms;
+}
+
+// Speichert die letzten Sekunden als MP4. 0 = ok.
+int ol_replay_save(OlStream *s, const char *path, char *err, size_t err_size)
+{
+	if(!s) return -1;
+	err[0] = 0;
+	chiaki_mutex_lock(&s->rp_mtx);
+	if(s->rp_secs <= 0 || s->rp_au_cnt == 0)
+	{
+		chiaki_mutex_unlock(&s->rp_mtx);
+		snprintf(err, err_size, "Der Replay-Puffer ist leer.");
+		return 1;
+	}
+	uint64_t now = now_us();
+	uint64_t want = now - (uint64_t)s->rp_secs * 1000000ULL;
+	// erstes Schluesselbild im Zeitfenster, sonst das aelteste vorhandene
+	int first = -1, oldest_key = -1;
+	for(int i = 0; i < s->rp_au_cnt; i++)
+	{
+		struct RpAu *a = &s->rp_au[(s->rp_au_head + i) % s->rp_au_cap];
+		if(!a->key) continue;
+		if(oldest_key < 0) oldest_key = i;
+		if(a->t >= want) { first = i; break; }
+	}
+	if(first < 0) first = oldest_key;
+	if(first < 0)
+	{
+		chiaki_mutex_unlock(&s->rp_mtx);
+		snprintf(err, err_size, "Noch kein Schluesselbild im Puffer.");
+		return 2;
+	}
+	int n = s->rp_au_cnt - first;
+	struct RpAu *au = (struct RpAu *)calloc((size_t)n, sizeof(struct RpAu));
+	if(!au)
+	{
+		chiaki_mutex_unlock(&s->rp_mtx);
+		return 3;
+	}
+	for(int i = 0; i < n; i++)
+	{
+		struct RpAu *src = &s->rp_au[(s->rp_au_head + first + i) % s->rp_au_cap];
+		au[i] = *src;
+		au[i].d = (uint8_t *)malloc(src->n);
+		if(au[i].d) memcpy(au[i].d, src->d, src->n);
+	}
+	uint64_t t0 = au[0].t;
+	int an = 0;
+	struct RpAud *aud = (struct RpAud *)calloc((size_t)s->rp_aud_cnt + 1, sizeof(struct RpAud));
+	for(int i = 0; i < s->rp_aud_cnt && aud; i++)
+	{
+		struct RpAud *src = &s->rp_aud[(s->rp_aud_head + i) % s->rp_aud_cap];
+		if(src->t < t0) continue;
+		aud[an] = *src;
+		aud[an].d = (int16_t *)malloc(src->frames * src->ch * sizeof(int16_t));
+		if(aud[an].d) memcpy(aud[an].d, src->d, src->frames * src->ch * sizeof(int16_t));
+		an++;
+	}
+	// Daten fuer den Schreiber
+	int hevc = s->codec_hevc, w = s->width, h = s->height;
+	uint8_t *hdr = NULL;
+	size_t hdr_len = s->vhdr_len;
+	if(s->vhdr && hdr_len)
+	{
+		hdr = (uint8_t *)malloc(hdr_len);
+		if(hdr) memcpy(hdr, s->vhdr, hdr_len);
+		else hdr_len = 0;
+	}
+	chiaki_mutex_unlock(&s->rp_mtx);
+
+	// Mit einem eigenen kleinen Aufnahme-Zustand schreiben (gleicher Weg wie die normale Aufnahme)
+	OlStream *t = (OlStream *)calloc(1, sizeof(*t));
+	int rc = 0;
+	if(!t) { rc = 4; goto done; }
+	chiaki_mutex_init(&t->mtx, false);
+	chiaki_mutex_init(&t->rec_mtx, false);
+	chiaki_mutex_init(&t->rp_mtx, false);
+	t->codec_hevc = hevc;
+	t->width = w;
+	t->height = h;
+	t->vhdr = hdr; t->vhdr_len = hdr_len; hdr = NULL;
+	t->rec_use_ts = 1;
+	rc = rec_open(t, path, err, err_size);
+	if(rc != 0) goto done;
+	int ai = 0;
+	for(int i = 0; i < n; i++)
+	{
+		// Ton bis zu diesem Bild zuerst schreiben (nur wenn die Aufnahme schon laeuft)
+		if(i > 0)
+		{
+			while(ai < an && aud[ai].t <= au[i].t)
+			{
+				if(aud[ai].d) rec_audio(t, aud[ai].d, aud[ai].frames, aud[ai].ch);
+				ai++;
+			}
+		}
+		else
+		{
+			while(ai < an && aud[ai].t < au[0].t) ai++;
+		}
+		t->rec_ts_us = au[i].t;
+		if(au[i].d) rec_video(t, au[i].d, au[i].n);
+	}
+	while(ai < an) { if(aud[ai].d) rec_audio(t, aud[ai].d, aud[ai].frames, aud[ai].ch); ai++; }
+	ol_record_stop(t);
+done:
+	if(t)
+	{
+		free(t->vhdr);
+		free(t);
+	}
+	free(hdr);
+	for(int i = 0; i < n; i++) free(au[i].d);
+	free(au);
+	for(int i = 0; i < an; i++) free(aud[i].d);
+	free(aud);
+	return rc;
+}
+
+
+// Selbsttest: Eingabe-Datei (Annex-B mit AUD) im Echtzeit-Takt in den Replay-Puffer geben und die letzten secs Sekunden speichern
+int ol_replay_selftest(const char *in_path, const char *out_path, int hevc, int w, int h, int secs, char *err, size_t err_size)
+{
+	FILE *f = fopen(in_path, "rb");
+	if(!f) { snprintf(err, err_size, "Eingabe fehlt"); return 10; }
+	fseek(f, 0, SEEK_END);
+	long n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	uint8_t *buf = malloc((size_t)n);
+	if(!buf || fread(buf, 1, (size_t)n, f) != (size_t)n) { fclose(f); return 11; }
+	fclose(f);
+	OlStream *s = calloc(1, sizeof(*s));
+	chiaki_mutex_init(&s->mtx, false);
+	chiaki_mutex_init(&s->rec_mtx, false);
+	chiaki_mutex_init(&s->rp_mtx, false);
+	s->codec_hevc = hevc;
+	s->width = w;
+	s->height = h;
+	ol_replay_enable(s, secs);
+	long *starts = malloc(sizeof(long) * 100001);
+	int cnt = 0;
+	for(long i = 0; i + 4 < n && cnt < 99999; i++)
+	{
+		if(buf[i] == 0 && buf[i + 1] == 0 && buf[i + 2] == 1)
+		{
+			int t = hevc ? ((buf[i + 3] >> 1) & 0x3f) : (buf[i + 3] & 0x1f);
+			if(t == (hevc ? 35 : 9))
+				starts[cnt++] = (i > 0 && buf[i - 1] == 0) ? i - 1 : i;
+		}
+	}
+	starts[cnt] = n;
+	int16_t tone[2 * 800];
+	double ph = 0;
+	for(int k = 0; k < cnt; k++)
+	{
+		const uint8_t *au = buf + starts[k];
+		size_t aun = (size_t)(starts[k + 1] - starts[k]);
+		size_t sp = 0;
+		if(k == 0)
+		{
+			for(size_t q = 0; q + 3 < aun; q++)
+			{
+				if(au[q] == 0 && au[q + 1] == 0 && au[q + 2] == 1)
+				{
+					int t = hevc ? ((au[q + 3] >> 1) & 0x3f) : (au[q + 3] & 0x1f);
+					if(hevc ? (t >= 16 && t <= 21) : (t == 5)) { sp = (q > 0 && au[q - 1] == 0) ? q - 1 : q; break; }
+				}
+			}
+		}
+		if(sp > 0)
+		{
+			rec_video(s, au, sp);              // Parameter-Sets merken
+			rp_push_video(s, au + sp, aun - sp);
+		}
+		else
+			rp_push_video(s, au, aun);
+		for(int i = 0; i < 800; i++)
+		{
+			int16_t v = (int16_t)(sin(ph) * 8000);
+			ph += 2.0 * 3.14159265358979 * 440.0 / 48000.0;
+			tone[2 * i] = v; tone[2 * i + 1] = v;
+		}
+		rp_push_audio(s, tone, 800, 2);
+		Sleep(33);
+	}
+	err[0] = 0;
+	int rc = ol_replay_save(s, out_path, err, err_size);
+	free(starts);
+	free(buf);
+	return rc;
+}
+
+
+// Konsole in den Ruhemodus schicken (wie "PS5 ausschalten" im Remote-Play-Menue)
+int ol_stream_standby(OlStream *s)
+{
+	if(!s) return -1;
+	return chiaki_session_goto_bed(&s->session) == CHIAKI_ERR_SUCCESS ? 0 : -1;
+}
+
+
+// ---------------------------------------------------------------- Video zuschneiden (ohne neu zu kodieren)
+// Schneidet [start_ms, end_ms] aus einer MP4 und schreibt eine neue. Der Anfang rutscht auf das davorliegende Schluesselbild.
+int ol_trim(const char *in_path, const char *out_path, int64_t start_ms, int64_t end_ms, char *err, size_t err_size)
+{
+	AVFormatContext *ic = NULL, *oc = NULL;
+	int *map = NULL;
+	AVPacket *pkt = NULL;
+	int rc = 1;
+	err[0] = 0;
+	if(avformat_open_input(&ic, in_path, NULL, NULL) < 0)
+	{
+		snprintf(err, err_size, "Die Datei laesst sich nicht oeffnen.");
+		return 1;
+	}
+	if(avformat_find_stream_info(ic, NULL) < 0)
+	{
+		snprintf(err, err_size, "Die Datei ist beschaedigt.");
+		goto done;
+	}
+	if(avformat_alloc_output_context2(&oc, NULL, "mp4", out_path) < 0 || !oc)
+	{
+		snprintf(err, err_size, "MP4 nicht moeglich.");
+		goto done;
+	}
+	map = (int *)calloc(ic->nb_streams, sizeof(int));
+	int n_out = 0, vi = -1;
+	for(unsigned int i = 0; i < ic->nb_streams; i++)
+	{
+		AVStream *st = ic->streams[i];
+		map[i] = -1;
+		if(st->codecpar->codec_type != AVMEDIA_TYPE_VIDEO && st->codecpar->codec_type != AVMEDIA_TYPE_AUDIO)
+			continue;
+		AVStream *os = avformat_new_stream(oc, NULL);
+		if(!os || avcodec_parameters_copy(os->codecpar, st->codecpar) < 0)
+		{
+			snprintf(err, err_size, "Stream nicht moeglich.");
+			goto done;
+		}
+		os->codecpar->codec_tag = 0;
+		os->time_base = st->time_base;
+		map[i] = n_out++;
+		if(st->codecpar->codec_type == AVMEDIA_TYPE_VIDEO && vi < 0) vi = (int)i;
+	}
+	if(vi < 0)
+	{
+		snprintf(err, err_size, "Kein Videobild.");
+		goto done;
+	}
+	if(avio_open(&oc->pb, out_path, AVIO_FLAG_WRITE) < 0)
+	{
+		snprintf(err, err_size, "Datei kann nicht geschrieben werden.");
+		goto done;
+	}
+	AVDictionary *opts = NULL;
+	av_dict_set(&opts, "movflags", "frag_keyframe+empty_moov+default_base_moof", 0);
+	int hr = avformat_write_header(oc, &opts);
+	av_dict_free(&opts);
+	if(hr < 0)
+	{
+		snprintf(err, err_size, "Kopfdaten nicht moeglich.");
+		goto done;
+	}
+	if(start_ms < 0) start_ms = 0;
+	if(ic->duration > 0 && start_ms * 1000 >= ic->duration)
+	{
+		snprintf(err, err_size, "Der Anfang liegt hinter dem Ende des Videos.");
+		goto done;
+	}
+	av_seek_frame(ic, -1, start_ms * 1000, AVSEEK_FLAG_BACKWARD);
+	int *fin = (int *)calloc(ic->nb_streams, sizeof(int));
+	pkt = av_packet_alloc();
+	int64_t base_ms = -1;
+	int wrote = 0;
+	while(av_read_frame(ic, pkt) >= 0)
+	{
+		int idx = pkt->stream_index;
+		if(idx < 0 || map[idx] < 0) { av_packet_unref(pkt); continue; }
+		AVStream *st = ic->streams[idx];
+		int64_t ts = pkt->pts != AV_NOPTS_VALUE ? pkt->pts : pkt->dts;
+		int64_t t_ms = ts == AV_NOPTS_VALUE ? -1 : av_rescale_q(ts, st->time_base, (AVRational){1, 1000});
+		if(idx == vi)
+		{
+			if(base_ms < 0)
+			{
+				if(!(pkt->flags & AV_PKT_FLAG_KEY) || t_ms < 0) { av_packet_unref(pkt); continue; }
+				base_ms = t_ms;
+			}
+			if(t_ms > end_ms) { fin[idx] = 1; av_packet_unref(pkt); goto check_done; }
+		}
+		else
+		{
+			if(base_ms >= 0 && t_ms > end_ms) { fin[idx] = 1; av_packet_unref(pkt); goto check_done; }
+			if(base_ms < 0 || t_ms < base_ms) { av_packet_unref(pkt); continue; }
+		}
+		int64_t off = av_rescale_q(base_ms, (AVRational){1, 1000}, st->time_base);
+		if(pkt->pts != AV_NOPTS_VALUE) pkt->pts -= off;
+		if(pkt->dts != AV_NOPTS_VALUE) pkt->dts -= off;
+		pkt->stream_index = map[idx];
+		pkt->pos = -1;
+		if(av_interleaved_write_frame(oc, pkt) < 0) { av_packet_unref(pkt); break; }
+		wrote++;
+		av_packet_unref(pkt);
+		continue;
+check_done:
+		{
+			int all = 1;
+			for(unsigned int q = 0; q < ic->nb_streams; q++)
+				if(map[q] >= 0 && !fin[q]) all = 0;
+			if(all) break;
+		}
+	}
+	free(fin);
+	av_write_trailer(oc);
+	if(wrote == 0)
+	{
+		snprintf(err, err_size, "Im gewaehlten Bereich ist nichts.");
+		goto done;
+	}
+	rc = 0;
+done:
+	if(pkt) av_packet_free(&pkt);
+	free(map);
+	if(oc)
+	{
+		if(oc->pb) avio_closep(&oc->pb);
+		avformat_free_context(oc);
+	}
+	if(ic) avformat_close_input(&ic);
+	if(rc != 0) remove(out_path);
+	return rc;
 }

@@ -702,3 +702,47 @@ pub fn shift_nv12(src: &[u8], w: usize, h: usize, dx: usize) -> Vec<u8> {
     }
     out
 }
+
+
+/// Durchschnittsfarbe eines NV12-Bildes (grobes Raster, sehr schnell), Werte 0..1.
+pub fn nv12_avg_color(nv12: &[u8], w: usize, h: usize) -> Option<[f32; 3]> {
+    if w < 16 || h < 16 || nv12.len() < w * h * 3 / 2 {
+        return None;
+    }
+    let (gx, gy) = (48usize, 27usize);
+    let (mut sr, mut sg, mut sb, mut n) = (0f32, 0f32, 0f32, 0f32);
+    for j in 0..gy {
+        let y = (j * h / gy + h / (2 * gy)).min(h - 1);
+        for i in 0..gx {
+            let x = (i * w / gx + w / (2 * gx)).min(w - 1);
+            let yy = nv12[y * w + x] as f32;
+            let uv = w * h + (y / 2) * w + (x / 2) * 2;
+            let (u, v) = (nv12[uv] as f32 - 128.0, nv12[uv + 1] as f32 - 128.0);
+            let yv = 1.164 * (yy - 16.0);
+            sr += (yv + 1.793 * v).clamp(0.0, 255.0);
+            sg += (yv - 0.213 * u - 0.533 * v).clamp(0.0, 255.0);
+            sb += (yv + 2.112 * u).clamp(0.0, 255.0);
+            n += 1.0;
+        }
+    }
+    Some([sr / n / 255.0, sg / n / 255.0, sb / n / 255.0])
+}
+
+/// Macht aus der Durchschnittsfarbe eine Farbe für die Lichtleiste: kräftiger, nie ganz dunkel.
+pub fn ambilight_color(c: [f32; 3], bright: f32) -> [f32; 3] {
+    let max = c[0].max(c[1]).max(c[2]);
+    let min = c[0].min(c[1]).min(c[2]);
+    let sat = if max > 0.001 { (max - min) / max } else { 0.0 };
+    let sat2 = (sat * 1.5 + 0.1).min(1.0);
+    // auf volle Helligkeit hochskalieren und dann mit Wunschhelligkeit und Bildhelligkeit mischen
+    let lum = (0.2 + 0.8 * max.sqrt()).min(1.0) * bright;
+    let base = if max > 0.001 { [c[0] / max, c[1] / max, c[2] / max] } else { [1.0, 1.0, 1.0] };
+    let mut out = [0f32; 3];
+    for i in 0..3 {
+        // Sättigung erhöhen: Abstand zum Grau vergrößern
+        let grey = 1.0 - sat;
+        let v = grey + (base[i] - grey) * (sat2 / sat.max(0.001)).min(4.0);
+        out[i] = (v.clamp(0.0, 1.0)) * lum;
+    }
+    out
+}

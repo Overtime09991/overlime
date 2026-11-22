@@ -20,6 +20,7 @@ extern "C" {
     fn ol_play_step(p: *mut OlPlayer, rgba: *mut u8, rgba_cap: usize, vpts_ms: *mut i64, aud: *mut i16, aud_cap: usize, aud_n: *mut usize, apts_ms: *mut i64) -> c_int;
     fn ol_play_seek(p: *mut OlPlayer, ms: i64) -> c_int;
     fn ol_play_close(p: *mut OlPlayer);
+    fn ol_trim(inp: *const c_char, out: *const c_char, start_ms: i64, end_ms: i64, err: *mut c_char, err_size: usize) -> c_int;
     fn ol_play_thumb(path: *const c_char, max_w: c_int, rgba: *mut u8, cap: usize, w: *mut c_int, h: *mut c_int, duration_ms: *mut i64) -> c_int;
 }
 
@@ -29,6 +30,15 @@ pub struct Thumb {
     pub h: usize,
     pub rgba: Vec<u8>,
     pub duration_ms: i64,
+}
+
+/// Schneidet einen Bereich aus einer Videodatei, ohne neu zu kodieren. Der Anfang rutscht auf das davorliegende Schlüsselbild.
+pub fn trim(path_in: &std::path::Path, path_out: &std::path::Path, start_ms: i64, end_ms: i64) -> Result<(), String> {
+    let a = CString::new(path_in.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    let b = CString::new(path_out.to_string_lossy().as_bytes()).map_err(|e| e.to_string())?;
+    let mut err = [0 as c_char; 160];
+    let r = unsafe { ol_trim(a.as_ptr(), b.as_ptr(), start_ms, end_ms, err.as_mut_ptr(), err.len()) };
+    if r == 0 { Ok(()) } else { Err(crate::ffi::cstr(&err)) }
 }
 
 pub fn thumbnail(path: &std::path::Path, max_w: i32) -> Option<Thumb> {
@@ -53,6 +63,7 @@ struct Shared {
     frames: Mutex<VecDeque<Frame>>,
     audio: Mutex<VecDeque<i16>>,
     paused: AtomicBool,
+    silent: AtomicBool,
     stop: AtomicBool,
     ended: AtomicBool,
     seek_v: AtomicI64,
@@ -77,6 +88,11 @@ pub struct Player {
     /// Wiedergabeposition für Dateien ohne Ton (vom Bildschirm-Takt getrieben)
     soft_pos: f64,
     last_pos: i64,
+    pub speed: f32,
+    use_soft: bool,
+    show_next: bool,
+    frame_ms: i64,
+    prev_pts: i64,
 }
 
 impl Player {
@@ -101,6 +117,7 @@ impl Player {
             frames: Mutex::new(VecDeque::new()),
             audio: Mutex::new(VecDeque::new()),
             paused: AtomicBool::new(false),
+            silent: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             ended: AtomicBool::new(false),
             seek_v: AtomicI64::new(-1),
@@ -214,7 +231,7 @@ impl Player {
         let audio_out = if has_audio {
             let sh = shared.clone();
             let pull: audio::Pull = Arc::new(move |buf: &mut [i16]| {
-                if sh.paused.load(Ordering::Relaxed) || sh.seeking.load(Ordering::Relaxed) {
+                if sh.paused.load(Ordering::Relaxed) || sh.seeking.load(Ordering::Relaxed) || sh.silent.load(Ordering::Relaxed) {
                     buf.iter_mut().for_each(|v| *v = 0);
                     return buf.len();
                 }
@@ -249,6 +266,11 @@ impl Player {
             has_audio,
             soft_pos: 0.0,
             last_pos: 0,
+            speed: 1.0,
+            use_soft: false,
+            show_next: false,
+            frame_ms: 33,
+            prev_pts: -1,
         })
     }
 
@@ -269,6 +291,43 @@ impl Player {
 
     pub fn set_paused(&mut self, p: bool) {
         self.shared.paused.store(p, Ordering::Relaxed);
+        // Nach Einzelbild-Schritten wieder normal (mit Ton) weiterspielen
+        if !p && self.use_soft && self.speed == 1.0 && self.has_audio {
+            self.use_soft = false;
+            self.shared.silent.store(false, Ordering::Relaxed);
+            let pos = self.last_pos;
+            self.seek(pos);
+        }
+    }
+
+    /// Wiedergabegeschwindigkeit (0.25, 0.5, 1.0, 2.0). Außer bei 1.0 ist der Ton stumm.
+    pub fn set_speed(&mut self, v: f32) {
+        if (v - self.speed).abs() < 0.001 {
+            return;
+        }
+        self.speed = v;
+        if v == 1.0 {
+            if self.has_audio {
+                self.use_soft = false;
+                self.shared.silent.store(false, Ordering::Relaxed);
+                let pos = self.last_pos;
+                self.seek(pos);
+            }
+        } else {
+            self.use_soft = true;
+            self.soft_pos = self.last_pos as f64;
+            self.shared.silent.store(true, Ordering::Relaxed);
+        }
+    }
+
+    /// Ein Bild vor (+1) oder zurück (-1). Pausiert dabei.
+    pub fn step_frame(&mut self, dir: i64) {
+        self.shared.paused.store(true, Ordering::Relaxed);
+        self.use_soft = true;
+        self.shared.silent.store(true, Ordering::Relaxed);
+        let target = (self.last_pos + dir * self.frame_ms).max(0);
+        self.seek(target);
+        self.show_next = true;
     }
 
     pub fn set_volume(&mut self, v: f32) {
@@ -308,14 +367,25 @@ impl Player {
     /// Ruft der Bildschirm einmal pro Bild auf. Gibt das aktuell fällige Videobild zurück, falls es ein neues gibt.
     pub fn poll(&mut self, dt: f32) -> Option<(usize, usize, Vec<u8>)> {
         let paused = self.paused();
+        // Einzelbild-Schritt: das erste Bild nach dem Sprung zeigen, egal wie die Uhr steht
+        if paused && self.show_next {
+            let f = self.shared.frames.lock().unwrap().pop_front();
+            if let Some(f) = f {
+                self.show_next = false;
+                self.last_pos = f.pts_ms.max(0);
+                self.soft_pos = self.last_pos as f64;
+                return Some((self.w, self.h, f.rgba));
+            }
+            return None;
+        }
         let drained = self.shared.ended.load(Ordering::Relaxed) && (!self.has_audio || self.shared.audio.lock().unwrap().is_empty());
         let pos = if drained && !paused {
             i64::MAX / 4
-        } else if self.has_audio {
+        } else if self.has_audio && !self.use_soft {
             self.shared.base_ms.load(Ordering::Acquire) + (self.shared.consumed.load(Ordering::Relaxed) / 2 * 1000 / 48000) as i64
         } else {
             if !paused && !self.shared.frames.lock().unwrap().is_empty() {
-                self.soft_pos += dt as f64 * 1000.0;
+                self.soft_pos += dt as f64 * 1000.0 * self.speed as f64;
             }
             self.soft_pos as i64
         };
@@ -331,6 +401,15 @@ impl Player {
             }
         }
         self.last_pos = if pos >= i64::MAX / 8 { self.duration_ms } else { pos.min(self.duration_ms.max(pos)) };
+        if let Some(f) = &newest {
+            if self.prev_pts >= 0 {
+                let d = f.pts_ms - self.prev_pts;
+                if (5..=100).contains(&d) {
+                    self.frame_ms = d;
+                }
+            }
+            self.prev_pts = f.pts_ms;
+        }
         newest.map(|f| (self.w, self.h, f.rgba))
     }
 }

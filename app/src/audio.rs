@@ -63,7 +63,13 @@ pub fn default_device_name() -> String {
 pub type Pull = Arc<dyn Fn(&mut [i16]) -> usize + Send + Sync>;
 
 pub fn start(stream: Arc<Stream>, device_name: &str, gain: f32) -> Result<Audio, String> {
-    let pull: Pull = Arc::new(move |buf: &mut [i16]| stream.take_audio(buf));
+    let pull: Pull = Arc::new(move |buf: &mut [i16]| {
+        let n = stream.take_audio(buf);
+        if n >= 2 {
+            crate::highlight::feed(&buf[..n]);
+        }
+        n
+    });
     start_with(pull, device_name, gain)
 }
 
