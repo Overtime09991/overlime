@@ -26,6 +26,8 @@ struct GlState {
     u_uv: Option<glow::UniformLocation>,
     u_out: Option<glow::UniformLocation>,
     u_sharp: Option<glow::UniformLocation>,
+    u_src: Option<glow::UniformLocation>,
+    u_cubic: Option<glow::UniformLocation>,
 }
 
 pub struct VideoGpu {
@@ -40,6 +42,8 @@ uniform sampler2D u_y;
 uniform sampler2D u_uv;
 uniform vec2 u_out;
 uniform float u_sharp;
+uniform vec2 u_src;
+uniform float u_cubic;
 in vec2 v_uv;
 out vec4 o_color;
 
@@ -51,9 +55,44 @@ vec3 yuv(vec2 uv) {
     return clamp(vec3(y + 1.5748 * c.y, y - 0.1873 * c.x - 0.4681 * c.y, y + 1.8556 * c.x), 0.0, 1.0);
 }
 
+// Catmull-Rom (bikubisch) für die Helligkeit: deutlich schärfere Kanten beim Hochskalieren als bilinear.
+float luma_cubic(vec2 uv) {
+    vec2 pos = uv * u_src;
+    vec2 c = floor(pos - 0.5) + 0.5;
+    vec2 f = pos - c;
+    vec2 w0 = f * (-0.5 + f * (1.0 - 0.5 * f));
+    vec2 w1 = 1.0 + f * f * (-2.5 + 1.5 * f);
+    vec2 w2 = f * (0.5 + f * (2.0 - 1.5 * f));
+    vec2 w3 = f * f * (-0.5 + 0.5 * f);
+    vec2 w12 = w1 + w2;
+    vec2 o12 = w2 / w12;
+    vec2 t0 = (c - 1.0) / u_src;
+    vec2 t3 = (c + 2.0) / u_src;
+    vec2 t12 = (c + o12) / u_src;
+    float r = 0.0;
+    r += texture(u_y, vec2(t0.x, t0.y)).r * w0.x * w0.y;
+    r += texture(u_y, vec2(t12.x, t0.y)).r * w12.x * w0.y;
+    r += texture(u_y, vec2(t3.x, t0.y)).r * w3.x * w0.y;
+    r += texture(u_y, vec2(t0.x, t12.y)).r * w0.x * w12.y;
+    r += texture(u_y, vec2(t12.x, t12.y)).r * w12.x * w12.y;
+    r += texture(u_y, vec2(t3.x, t12.y)).r * w3.x * w12.y;
+    r += texture(u_y, vec2(t0.x, t3.y)).r * w0.x * w3.y;
+    r += texture(u_y, vec2(t12.x, t3.y)).r * w12.x * w3.y;
+    r += texture(u_y, vec2(t3.x, t3.y)).r * w3.x * w3.y;
+    return clamp(r, 0.0, 1.0);
+}
+
+vec3 yuv_cubic(vec2 uv) {
+    float y = luma_cubic(uv);
+    vec2 c = texture(u_uv, uv).rg;
+    y = (y - 16.0 / 255.0) * (255.0 / 219.0);
+    c = (c - 128.0 / 255.0) * (255.0 / 224.0);
+    return clamp(vec3(y + 1.5748 * c.y, y - 0.1873 * c.x - 0.4681 * c.y, y + 1.8556 * c.x), 0.0, 1.0);
+}
+
 void main() {
     vec2 d = 1.0 / u_out;
-    vec3 e = yuv(v_uv);
+    vec3 e = u_cubic > 0.5 ? yuv_cubic(v_uv) : yuv(v_uv);
     if (u_sharp > 0.001) {
         vec3 b = yuv(v_uv + vec2(0.0, -d.y));
         vec3 l = yuv(v_uv + vec2(-d.x, 0.0));
@@ -171,6 +210,10 @@ impl VideoGpu {
             gl.uniform_1_i32(s.u_uv.as_ref(), 1);
             gl.uniform_2_f32(s.u_out.as_ref(), out_w.max(1.0), out_h.max(1.0));
             gl.uniform_1_f32(s.u_sharp.as_ref(), if f.nearest { 0.0 } else { f.sharp });
+            gl.uniform_2_f32(s.u_src.as_ref(), f.w as f32, f.h as f32);
+            // Bikubisch nur beim Hochskalieren mit Schärfe (Scharf/Ultra)
+            let cubic = !f.nearest && f.sharp > 0.001 && out_w > f.w as f32 * 1.02;
+            gl.uniform_1_f32(s.u_cubic.as_ref(), if cubic { 1.0 } else { 0.0 });
             gl.draw_arrays(glow::TRIANGLES, 0, 3);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_vertex_array(None);
@@ -225,6 +268,8 @@ impl GlState {
             u_uv: gl.get_uniform_location(program, "u_uv"),
             u_out: gl.get_uniform_location(program, "u_out"),
             u_sharp: gl.get_uniform_location(program, "u_sharp"),
+            u_src: gl.get_uniform_location(program, "u_src"),
+            u_cubic: gl.get_uniform_location(program, "u_cubic"),
         })
     }
 }

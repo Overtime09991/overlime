@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Update-Fehler mit dem Symbol neben der Uhr behoben",
-    "Netzwerk-Test mit Empfehlung für die Qualität",
-    "Eigene Qualität pro Konsole und Zeitplan zum Aufwecken",
-    "Klangregler für Bass, Mitten und Höhen",
+    "Automatisch neu verbinden, wenn die Verbindung abbricht",
+    "Schärferes Bild beim Hochskalieren (Scharf und Ultra)",
+    "Kleine Verbesserungen an Stabilität und Update",
+    "Weiterhin: Netzwerk-Test, Zeitplan und Klangregler",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

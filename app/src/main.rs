@@ -34,7 +34,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.25";
+const VERSION: &str = "0.26";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -220,6 +220,8 @@ struct App {
     last_connect: Option<(Console, Paired, (usize, usize, i32, usize))>,
     pending_reconnect: Option<(Console, Paired, Instant)>,
     reconnecting: bool,
+    reconnect_msg: String,
+    auto_retries: u32,
     update_click: bool,
     news: Vec<update::NewsItem>,
     news_loading: bool,
@@ -339,6 +341,8 @@ impl App {
             last_connect: None,
             pending_reconnect: None,
             reconnecting: false,
+            reconnect_msg: String::new(),
+            auto_retries: 0,
             update_click: false,
             news: Vec::new(),
             news_loading: false,
@@ -2574,6 +2578,9 @@ impl App {
         s.message = msg;
         s.size = (w, h);
         s.lost = lost;
+        // Verbindung mitten im Spiel verloren: bis zu dreimal automatisch neu verbinden
+        let auto_retry = state == 2 && err && s.has_video && s.started.elapsed().as_secs() >= 20;
+        let healthy = state == 1 && s.started.elapsed().as_secs() >= 60;
         if frames != s.frames_total {
             s.frames_total = frames;
         }
@@ -2841,12 +2848,28 @@ impl App {
             self.allow_close = true;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
+        if healthy {
+            self.auto_retries = 0;
+        }
+        if auto_retry && !stop && self.auto_retries < 3 {
+            if let Some((c, p, _)) = self.last_connect.clone() {
+                self.auto_retries += 1;
+                let n = self.auto_retries;
+                self.stop_stream(ctx);
+                self.feedback = None;
+                self.reconnecting = true;
+                self.reconnect_msg = format!("Verbindung verloren, verbinde neu ({n} von 3) …");
+                self.pending_reconnect = Some((c, p, Instant::now()));
+                return;
+            }
+        }
         if apply_quality {
             if let Some((c, p, _)) = self.last_connect.clone() {
                 self.quick = false;
                 self.stop_stream(ctx);
                 self.feedback = None;
                 self.reconnecting = true;
+                self.reconnect_msg = "Neue Qualität wird angewendet …".to_string();
                 self.pending_reconnect = Some((c, p, Instant::now()));
             }
         }
@@ -2962,9 +2985,11 @@ impl eframe::App for App {
                 let g = video::VideoGpu::new();
                 {
                     let mut f = g.frame.lock().unwrap();
-                    f.w = 1280;
-                    f.h = 720;
-                    f.nv12 = video::test_pattern_nv12(1280, 720);
+                    let sw: usize = std::env::args().find_map(|a| a.strip_prefix("--demo-src=").and_then(|v| v.parse().ok())).unwrap_or(1280);
+                    let sh = sw * 9 / 16 / 2 * 2;
+                    f.w = sw;
+                    f.h = sh;
+                    f.nv12 = video::test_pattern_nv12(sw, sh);
                     f.dirty = true;
                 }
                 g
@@ -3025,7 +3050,7 @@ impl eframe::App for App {
             egui::CentralPanel::default().frame(egui::Frame::none().fill(Color32::BLACK)).show(ctx, |ui| {
                 let r = ui.max_rect();
                 let c = r.center();
-                ui.painter().text(c + Vec2::new(0.0, 40.0), Align2::CENTER_CENTER, "Neue Qualität wird angewendet …", FontId::proportional(20.0), Color32::WHITE);
+                ui.painter().text(c + Vec2::new(0.0, 40.0), Align2::CENTER_CENTER, if self.reconnect_msg.is_empty() { "Verbinde neu …" } else { &self.reconnect_msg }, FontId::proportional(20.0), Color32::WHITE);
                 ui.painter().text(c + Vec2::new(0.0, 72.0), Align2::CENTER_CENTER, "OVERLIME verbindet kurz neu", FontId::proportional(13.0), TEXT_DIM);
                 ui.put(Rect::from_center_size(c - Vec2::new(0.0, 20.0), Vec2::splat(44.0)), egui::Spinner::new().size(44.0));
             });
