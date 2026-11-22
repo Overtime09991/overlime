@@ -83,7 +83,8 @@ impl App {
                     if pad_ok { "Gamepad aktiv" } else { "Tastatur möglich" },
                     if pad_ok { GREEN } else { YELLOW },
                 );
-                tile(ui, tw, "DEIN PC", &self.local_ip, "im lokalen Netzwerk", BLUE_LIGHT);
+                let online = self.local_ip != "?";
+                tile(ui, tw, "NETZWERK", if online { "Online" } else { "Offline" }, "lokales Netzwerk", if online { GREEN } else { RED });
             });
 
             ui.add_space(14.0);

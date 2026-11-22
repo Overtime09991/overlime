@@ -313,7 +313,7 @@ impl App {
     }
 
     fn pump_log(&mut self) {
-        let l = ffi::take_log();
+        let l = mask_ips(&ffi::take_log());
         if !l.is_empty() {
             self.log.push_str(&l);
             if self.log.len() > 60_000 {
@@ -350,7 +350,7 @@ impl App {
                     }
                 }
                 Msg::Error(e) => {
-                    self.status = format!("Fehler: {e}");
+                    self.status = format!("Fehler: {}", mask_ips(&e));
                     self.searching = false;
                 }
                 Msg::Info(s) => self.status = s,
@@ -383,7 +383,7 @@ impl App {
                 Msg::PairErr(e) => {
                     if let Some(d) = self.dialog.as_mut() {
                         d.step = Step::Failed;
-                        d.message = e;
+                        d.message = mask_ips(&e);
                     }
                 }
                 Msg::StreamStarted(stream, name) => {
@@ -419,7 +419,7 @@ impl App {
                 }
                 Msg::StreamErr(e) => {
                     self.starting = None;
-                    self.start_error = Some(e);
+                    self.start_error = Some(mask_ips(&e));
                 }
                 Msg::UpdateAvail(r) => {
                     if self.settings.auto_update && !self.update_busy && self.session.is_none() {
@@ -444,6 +444,64 @@ impl App {
 }
 
 /// Übersetzt chiaki-Fehlertexte in verständliches Deutsch.
+/// Ersetzt IPv4-Adressen (auch mit :Port) durch x.x.x.x, damit nirgends IPs auftauchen.
+fn mask_ips(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_digit() {
+            let mut j = i;
+            let mut groups = 0;
+            let mut ok = true;
+            loop {
+                let st = j;
+                while j < b.len() && b[j].is_ascii_digit() && j - st < 3 {
+                    j += 1;
+                }
+                if j == st {
+                    ok = false;
+                    break;
+                }
+                groups += 1;
+                if groups == 4 {
+                    break;
+                }
+                if j < b.len() && b[j] == b'.' {
+                    j += 1;
+                } else {
+                    ok = false;
+                    break;
+                }
+            }
+            if ok && groups == 4 {
+                out.push_str("x.x.x.x");
+                if j < b.len() && b[j] == b':' {
+                    let mut k = j + 1;
+                    while k < b.len() && b[k].is_ascii_digit() {
+                        k += 1;
+                    }
+                    j = k;
+                }
+                i = j;
+                continue;
+            }
+        }
+        let ch = s[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
+/// "14230000" -> "14.23"
+fn pretty_version(v: &str) -> String {
+    match v.trim().parse::<u32>() {
+        Ok(n) if n > 0 => format!("{}.{:02}", n / 1_000_000, (n / 10_000) % 100),
+        _ => "–".to_string(),
+    }
+}
+
 fn german_reason(msg: &str) -> String {
     let m = msg.to_lowercase();
     let t = if m.contains("unknown session request") || m.contains("ctrl failed to connect") {
@@ -660,8 +718,7 @@ impl App {
                                 ui.add_space(8.0);
                                 ui.label(RichText::new(if c.is_ps5 { "PlayStation 5" } else { "PlayStation 4" }).color(BLUE_LIGHT).size(13.0).strong());
                                 ui.label(RichText::new(&c.name).size(24.0).strong());
-                                let sw = if c.system_version.is_empty() { "–".to_string() } else { c.system_version.clone() };
-                                ui.label(RichText::new(format!("{}  •  Software {}", c.addr, sw)).color(TEXT_DIM).size(13.0));
+                                ui.label(RichText::new(format!("Systemsoftware {}", pretty_version(&c.system_version))).color(TEXT_DIM).size(13.0));
                                 ui.horizontal(|ui| {
                                     match c.state {
                                         State::Ready => pill(ui, "Bereit", GREEN),
@@ -755,7 +812,7 @@ impl App {
             ui.add_space(6.0);
             section(ui, "🌐  Verbindung", |ui| {
                 label(ui, "Konsole per IP hinzufügen", "Nur für Internet/VPN (z. B. Tailscale). Im Heimnetz wird alles automatisch gefunden.");
-                ui.add(egui::TextEdit::singleline(&mut st.manual_ip).hint_text("z. B. 100.64.0.5").desired_width(260.0));
+                ui.add(egui::TextEdit::singleline(&mut st.manual_ip).hint_text("IP-Adresse der Konsole").desired_width(260.0));
                 ui.add_space(6.0);
                 ui.checkbox(&mut st.auto_update, "Updates automatisch installieren");
                 ui.add_space(6.0);
@@ -1022,7 +1079,7 @@ impl App {
                                 } else {
                                     ui.label(RichText::new("Stream beendet").size(20.0).strong());
                                 }
-                                ui.label(RichText::new(german_reason(&s.message)).color(TEXT_DIM));
+                                ui.label(RichText::new(german_reason(&mask_ips(&s.message))).color(TEXT_DIM));
                                 if s.ended_error {
                                     ui.add_space(6.0);
                                     egui::Frame::none().fill(BG).rounding(10.0).inner_margin(egui::Margin::same(10.0)).show(ui, |ui| {
@@ -1179,7 +1236,7 @@ impl eframe::App for App {
                     ui.label(RichText::new(format!("Version {VERSION}")).color(TEXT_DIM).size(12.0));
                     let who = if self.settings.psn_name.is_empty() { "PlayStation-Konto".to_string() } else { self.settings.psn_name.clone() };
                     ui.label(RichText::new(format!("Angemeldet: {who}")).color(GREEN).size(12.0));
-                    ui.label(RichText::new(format!("Dein PC: {}", self.local_ip)).color(TEXT_DIM).size(12.0));
+                    ui.label(RichText::new(if self.local_ip == "?" { "Netzwerk: offline" } else { "Netzwerk: verbunden" }).color(TEXT_DIM).size(12.0));
                     let q = format!("{} • {} FPS", ["540p", "720p", "1080p"][self.settings.resolution], [30, 60][self.settings.fps]);
                     ui.label(RichText::new(q).color(BLUE_LIGHT).size(12.0));
                 });
@@ -1255,8 +1312,9 @@ fn selftest() {
             let _ = writeln!(f, "stream start error: {e}");
         }
     }
+    let _ = writeln!(f, "mask test: {}", mask_ips("Trying 127.0.0.1:9295 und 192.168.178.26, v1.2.3 ok 12.5"));
     let _ = writeln!(f, "--- log ---
-{}", ffi::take_log());
+{}", mask_ips(&ffi::take_log()));
     let _ = writeln!(f, "done");
 }
 
