@@ -4,6 +4,7 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Neue Start-Animation beim Öffnen",
     "Aufnahmen werden jetzt richtig gespeichert und lassen sich abspielen",
     "Neue Galerie: Videos abspielen und Screenshots ansehen",
     "Teilen per Zwischenablage",

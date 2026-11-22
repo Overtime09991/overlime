@@ -19,6 +19,7 @@ pub struct Settings {
     pub hud_size: usize, // 0 klein, 1 normal, 2 groß
     pub hud_box: bool,
     pub tour_done: bool,
+    pub intro: bool,
     pub notify_ready: bool,
     pub eq_bass: f32,
     pub eq_mid: f32,
@@ -68,6 +69,7 @@ impl Default for Settings {
             hud_size: 1,
             hud_box: false,
             tour_done: false,
+            intro: true,
             notify_ready: true,
             eq_bass: 0.0,
             eq_mid: 0.0,
@@ -173,6 +175,7 @@ impl Settings {
                 "hud_size" => s.hud_size = v.trim().parse().unwrap_or(1usize).min(2),
                 "hud_box" => s.hud_box = v.trim() == "true",
                 "tour_done" => s.tour_done = v.trim() == "true",
+                "intro" => s.intro = v.trim() != "false",
                 "notify_ready" => s.notify_ready = v.trim() != "false",
                 "wake_on" => s.wake_on = v.trim() == "true",
                 "wake_hour" => s.wake_hour = v.trim().parse().unwrap_or(19u8).min(23),
@@ -235,6 +238,7 @@ impl Settings {
         text.push_str(&format!("eq_bass={}\neq_mid={}\neq_treble={}\n", self.eq_bass, self.eq_mid, self.eq_treble));
         text.push_str(&format!("notify_ready={}\n", self.notify_ready));
         text.push_str(&format!("tour_done={}\n", self.tour_done));
+        text.push_str(&format!("intro={}\n", self.intro));
         text.push_str(&format!("hud_items={}\nhud_pos={}\nhud_size={}\nhud_box={}\n", self.hud_items, self.hud_pos, self.hud_size, self.hud_box));
         text.push_str(&format!("interp={}\n", self.interp));
         text.push_str(&format!("language={}\n", self.language));

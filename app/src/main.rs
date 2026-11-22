@@ -38,7 +38,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.44";
+const VERSION: &str = "0.45";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -435,7 +435,7 @@ impl App {
             vp_ctrl_t: 0.0,
             share_open: false,
             open_req: None,
-            intro_on: std::env::args().any(|a| a == "--intro"),
+            intro_on: false,
             intro_t0: None,
             gal_items: Vec::new(),
             gal_t: -100.0,
@@ -455,6 +455,8 @@ impl App {
             tx,
             rx,
         };
+        // Start-Animation: bei jedem normalen Start (ohne Startparameter), oder mit --intro
+        app.intro_on = std::env::args().any(|a| a == "--intro") || (app.settings.intro && std::env::args().count() == 1);
         if std::env::args().any(|a| a == "--demo-gallery") {
             app.page = Page::Gallery;
         }
@@ -2163,6 +2165,7 @@ impl App {
                 ui.add_space(6.0);
                 ui.add_space(4.0);
                     ui.checkbox(&mut st.fullscreen, "Vollbild beim Streamen");
+                    ui.checkbox(&mut st.intro, "Start-Animation beim Öffnen von OVERLIME");
                     label(ui, "Größe der Oberfläche", "Kompakt zeigt mehr auf einmal und wirkt aufgeräumter.");
                 segmented(ui, &mut st.ui_scale, &["Kompakt", "Normal", "Groß"]);
             });
