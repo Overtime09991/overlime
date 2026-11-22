@@ -319,7 +319,7 @@ impl App {
                     ui.ctx().copy_text(self.diag_report());
                     let url = format!(
                         "https://github.com/Overtime09991/overlime/issues/new?title={}&body={}",
-                        psn::enc(&format!("Problem mit OVERLIME {VERSION}")),
+                        psn::enc(&lang::tr(&format!("Problem mit OVERLIME {VERSION}"))),
                         psn::enc("Bitte hier den Bericht aus der Zwischenablage einfügen (Strg+V) und kurz beschreiben, was nicht klappt.\n\nWas habe ich getan?\n\nWas ist passiert?\n")
                     );
                     ui.ctx().open_url(egui::OpenUrl::new_tab(url));
@@ -687,6 +687,17 @@ impl App {
             }
         }
         ctx.request_repaint_after(std::time::Duration::from_millis(300));
+        egui::Area::new(egui::Id::new("lang_sw")).order(egui::Order::Foreground).anchor(Align2::RIGHT_TOP, [-16.0, 40.0]).show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                for (i, name) in ["DE", "EN"].iter().enumerate() {
+                    let sel = self.settings.language == i;
+                    let b = egui::Button::new(RichText::new(*name).size(12.5).color(if sel { Color32::WHITE } else { TEXT_DIM })).fill(if sel { th_blue() } else { th_card_hover() }).rounding(10.0).min_size(Vec2::new(36.0, 26.0));
+                    if ui.add(b).clicked() {
+                        self.settings.language = i;
+                    }
+                }
+            });
+        });
         egui::CentralPanel::default().frame(egui::Frame::none().fill(th_bg())).show(ctx, |ui| {
             let r = ui.max_rect();
             let p = ui.painter();

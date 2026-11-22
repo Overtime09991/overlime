@@ -61,7 +61,7 @@ fn check_ready() {
                     let ready = c.state == crate::discovery::State::Ready;
                     let was = prev.insert(c.id.clone(), ready);
                     if ready && was == Some(false) {
-                        toast("OVERLIME", &format!("{} ist bereit. Klick auf das Symbol zum Verbinden.", c.name));
+                        toast("OVERLIME", &crate::lang::tr(&format!("{} ist bereit. Klick auf das Symbol zum Verbinden.", c.name)));
                     }
                 }
             }
@@ -135,6 +135,10 @@ thread_local! {
 
 const IDLE_TIP: &str = "OVERLIME – Klick: Konsole aufwecken und verbinden";
 
+fn idle_tip() -> String {
+    crate::lang::tr(IDLE_TIP)
+}
+
 fn set_status(s: &str) {
     if let Ok(mut g) = STATUS.lock() {
         *g = s.to_string();
@@ -192,7 +196,7 @@ unsafe extern "system" fn timer_proc(_: *mut std::ffi::c_void, _: u32, _: usize,
     check_schedule();
     check_ready();
     let s = STATUS.lock().map(|g| g.clone()).unwrap_or_default();
-    let tip = if s.is_empty() { IDLE_TIP.to_string() } else { format!("OVERLIME – {s}") };
+    let tip = if s.is_empty() { idle_tip() } else { format!("OVERLIME – {}", crate::lang::tr(&s)) };
     TRAY.with(|t| {
         if let Some(tray) = t.borrow().as_ref() {
             let _ = tray.set_tooltip(Some(tip));
@@ -202,6 +206,7 @@ unsafe extern "system" fn timer_proc(_: *mut std::ffi::c_void, _: u32, _: usize,
 
 /// Startet den Tray-Prozess. Kehrt nicht zurück.
 pub fn run() {
+    crate::lang::set(crate::settings::Settings::load().language);
     // nur eine Instanz
     unsafe {
         let name: Vec<u16> = "Local\\OVERLIME_TRAY".encode_utf16().chain(std::iter::once(0)).collect();
@@ -212,9 +217,9 @@ pub fn run() {
     }
 
     let menu = Menu::new();
-    let wake = MenuItem::new("Aufwecken und verbinden", true, None);
-    let open = MenuItem::new("OVERLIME öffnen", true, None);
-    let quit = MenuItem::new("Beenden", true, None);
+    let wake = MenuItem::new(crate::lang::tr("Aufwecken und verbinden"), true, None);
+    let open = MenuItem::new(crate::lang::tr("OVERLIME öffnen"), true, None);
+    let quit = MenuItem::new(crate::lang::tr("Beenden"), true, None);
     let _ = menu.append_items(&[&wake, &open, &PredefinedMenuItem::separator(), &quit]);
     let (id_wake, id_open, id_quit) = (wake.id().clone(), open.id().clone(), quit.id().clone());
 
@@ -235,7 +240,7 @@ pub fn run() {
 
     let ic = crate::winui::app_icon();
     let icon = tray_icon::Icon::from_rgba(ic.rgba, ic.width, ic.height).ok();
-    let mut b = TrayIconBuilder::new().with_menu(Box::new(menu)).with_menu_on_left_click(false).with_tooltip(IDLE_TIP);
+    let mut b = TrayIconBuilder::new().with_menu(Box::new(menu)).with_menu_on_left_click(false).with_tooltip(idle_tip());
     if let Some(i) = icon {
         b = b.with_icon(i);
     }

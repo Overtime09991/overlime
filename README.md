@@ -9,6 +9,8 @@ moderner Oberfläche und einem Start in unter einer Minute.
 
 [**Herunterladen**](https://github.com/Overtime09991/overlime/releases/download/installer/OVERLIME-Setup.exe) &nbsp;•&nbsp; Windows 10/11 &nbsp;•&nbsp; PS4 & PS5 &nbsp;•&nbsp; kostenlos & Open Source
 
+Deutsch · [English](README.en.md)
+
 </div>
 
 > **Hinweis:** OVERLIME ist ein unabhängiges Projekt und nicht mit Sony verbunden. „PlayStation“ ist eine Marke von Sony Interactive Entertainment. Es werden keine Sony-Logos oder -Bilder verwendet.
@@ -21,7 +23,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Deine Konsole wird automatisch gefunden.** Keine IP-Adressen, keine Einstellungen, kein Fachwissen nötig.
 - **Aus dem Ruhemodus aufwecken.** Ein Klick, und die Konsole startet, ohne dass du aufstehen musst.
 - **Bestes Bild, das Sony erlaubt.** Bis 1080p60 mit bis zu 50 Mbit/s und HEVC (H.265) wo die Konsole es kann, Hardware-Decoding auf der Grafikkarte für wenig Verzögerung.
-- **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Die Menüs lassen sich mit dem Controller bedienen. Ohne Controller geht es mit der Tastatur.
+- **Controller oder Tastatur.** PS5-, PS4-, Xbox- und andere Controller werden automatisch erkannt, auch per Bluetooth, inklusive Vibration. Ohne Controller geht es mit der Tastatur.
 - **Aufnehmen, anpassen, einrichten.** Video-Aufnahme per F9, neue Menüs im Stream mit Live-Diagrammen, frei wählbare Statusanzeige, Einrichtungs-Assistent für eigene Controller und optionale Zwischenbilder für 120-Hz-Bildschirme.
 - **Pro Konsole und nach Zeitplan.** Eigene Qualität für jede Konsole, Netzwerk-Test mit Empfehlung, Klangregler und auf Wunsch die Konsole zu einer festen Uhrzeit aufwecken.
 - **Sicherheit.** Updates sind signiert (Ed25519): OVERLIME installiert nur Versionen, die zum eingebauten Schlüssel passen. Die Koppel-Schlüssel der Konsole liegen verschlüsselt (Windows-Benutzerkonto). Probleme lassen sich direkt aus der App melden.
@@ -41,6 +43,7 @@ moderner Oberfläche und einem Start in unter einer Minute.
 - **Dein Look.** Fünf Farbschemata (von Ozean bis reines Schwarz) und eigene Themes als einfache Textdatei, dazu sanfte Animationen.
 - **Sauber im Fenster.** Eigene Kopfleiste mit Status-Chips, die Fensterleiste passt sich deinem Farbschema an.
 - **Discord-Status (optional).** Auf Wunsch zeigt Discord „Spielt OVERLIME“ mit Spiel und Spielzeit. Standardmäßig aus, ohne IP-Adressen oder Konsolennamen.
+- **Deutsch und Englisch.** Die Sprache lässt sich in den Einstellungen wählen (beim ersten Start gilt die Sprache von Windows).
 - **Nichts aus Versehen.** Esc öffnet nur ein Pause-Menü, und das Schließen des Fensters mitten im Stream fragt nach.
 - **Bleibt aktuell, ohne zu stören.** Direkt beim Start installiert OVERLIME Updates selbst, danach zeigt es neue Versionen nur an. Während eines Spiels wird nie installiert, nur ein Hinweis eingeblendet.
 
@@ -80,7 +83,7 @@ Mit **⚡ Maximale Qualität** stellst du alles auf einmal auf das Beste.
 
 ## Steuerung
 
-Controller werden automatisch erkannt (Menüs: Steuerkreuz/Stick = Auswahl, Kreuz = Bestätigen, L1/R1 = Seite wechseln). Ohne Controller geht es mit der Tastatur, alle Tasten sind in den Einstellungen frei belegbar. Standardbelegung:
+Controller werden automatisch erkannt. Ohne Controller geht es mit der Tastatur, alle Tasten sind in den Einstellungen frei belegbar. Standardbelegung:
 
 | Taste | Funktion |
 | --- | --- |
@@ -90,6 +93,7 @@ Controller werden automatisch erkannt (Menüs: Steuerkreuz/Stick = Auswahl, Kreu
 | Z / X | L1 / R1 |
 | Shift / Strg | L2 / R2 |
 | Tab / Rücktaste / F2 | Options / Share / PS-Taste |
+| F9 / F12 | Video aufnehmen / Screenshot |
 | F11 | Vollbild |
 | Esc | Pause-Menü (beendet nichts aus Versehen) |
 | F1 / F10 | Tastenbelegung / Statusanzeige |

@@ -12,6 +12,7 @@ pub struct Profile {
 
 #[derive(Clone, PartialEq, Debug)]
 pub struct Settings {
+    pub language: usize, // 0 Deutsch, 1 English
     pub interp: bool,
     pub hud_items: u32,
     pub hud_pos: usize,  // 0 oben links, 1 oben rechts, 2 unten links, 3 unten rechts
@@ -60,6 +61,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             profiles: vec![],
+            language: if crate::winui::system_is_german() { 0 } else { 1 },
             interp: false,
             hud_items: 0x0FF,
             hud_pos: 0,
@@ -164,6 +166,7 @@ impl Settings {
                 "eq_bass" => s.eq_bass = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
                 "eq_mid" => s.eq_mid = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
                 "eq_treble" => s.eq_treble = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
+                "language" => s.language = v.trim().parse().unwrap_or(0usize).min(1),
                 "interp" => s.interp = v.trim() == "true",
                 "hud_items" => s.hud_items = v.trim().parse().unwrap_or(0x0FFu32) & 0x3FF,
                 "hud_pos" => s.hud_pos = v.trim().parse().unwrap_or(0usize).min(3),
@@ -234,6 +237,7 @@ impl Settings {
         text.push_str(&format!("tour_done={}\n", self.tour_done));
         text.push_str(&format!("hud_items={}\nhud_pos={}\nhud_size={}\nhud_box={}\n", self.hud_items, self.hud_pos, self.hud_size, self.hud_box));
         text.push_str(&format!("interp={}\n", self.interp));
+        text.push_str(&format!("language={}\n", self.language));
         for (id, p) in &self.profiles {
             text.push_str(&format!("profile={}|{}|{}|{}|{}\n", id, p.resolution, p.fps, p.bitrate, p.codec));
         }

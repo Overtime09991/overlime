@@ -4,10 +4,10 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
-    "Hinweise erscheinen jetzt auch während des Spiels",
-    "Update-Hinweis beim Start eines Streams",
-    "Verbinden bricht nicht mehr durch ein Update ab",
-    "Video-Aufnahme, neue Menüs und Controller-Einrichtung",
+    "Englisch als zweite Sprache",
+    "Sprache in den Einstellungen wählbar",
+    "Englische Neuigkeiten und README",
+    "Update-Hinweise und Aufnahmen auch im Spiel",
 ];
 
 fn rnd(i: u32, k: u32) -> f32 {

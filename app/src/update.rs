@@ -289,14 +289,14 @@ pub fn install_ui(rel: &Release, p: Arc<Mutex<Progress>>) -> Result<(), String> 
     r
 }
 
-/// Zieht die Stichpunkte unter "Neu in ..." aus den Release-Notizen (ohne Markdown-Zeichen).
-pub fn highlights(notes: &str) -> Vec<String> {
+/// Sammelt die Stichpunkte unter einer Überschrift, die `key` enthält ("neu" für Deutsch, "new in" für Englisch).
+fn collect(notes: &str, key: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut inside = false;
     for line in notes.lines() {
         let t = line.trim();
         if t.starts_with("###") {
-            inside = t.to_lowercase().contains("neu");
+            inside = t.to_lowercase().contains(key);
             continue;
         }
         if inside {
@@ -305,6 +305,23 @@ pub fn highlights(notes: &str) -> Vec<String> {
             }
         }
     }
+    out
+}
+
+/// Stichpunkte in der eingestellten Sprache (Englisch: Abschnitt "New in ...", sonst Deutsch "Neu in ...").
+pub fn highlights_all(notes: &str) -> Vec<String> {
+    if crate::lang::is_english() {
+        let en = collect(notes, "new in");
+        if !en.is_empty() {
+            return en;
+        }
+    }
+    collect(notes, "neu")
+}
+
+/// Zieht die Stichpunkte unter "Neu in ..." aus den Release-Notizen (ohne Markdown-Zeichen).
+pub fn highlights(notes: &str) -> Vec<String> {
+    let mut out = highlights_all(notes);
     out.truncate(6);
     out
 }
@@ -347,23 +364,4 @@ pub fn fetch_news() -> Result<Vec<NewsItem>, String> {
         }
     }
     Ok(out)
-}
-
-/// Wie `highlights`, aber ohne Begrenzung auf 6 Einträge.
-pub fn highlights_all(notes: &str) -> Vec<String> {
-    let mut out = Vec::new();
-    let mut inside = false;
-    for line in notes.lines() {
-        let t = line.trim();
-        if t.starts_with("###") {
-            inside = t.to_lowercase().contains("neu");
-            continue;
-        }
-        if inside {
-            if let Some(rest) = t.strip_prefix("- ") {
-                out.push(rest.replace("**", "").replace('`', ""));
-            }
-        }
-    }
-    out
 }

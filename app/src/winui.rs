@@ -202,3 +202,19 @@ pub fn display_refresh_hz() -> u32 {
     }
     0
 }
+
+#[cfg(windows)]
+#[link(name = "kernel32")]
+extern "system" {
+    fn GetUserDefaultUILanguage() -> u16;
+}
+
+/// Ist die Windows-Sprache Deutsch?
+pub fn system_is_german() -> bool {
+    #[cfg(windows)]
+    unsafe {
+        return GetUserDefaultUILanguage() & 0x3ff == 0x07;
+    }
+    #[allow(unreachable_code)]
+    true
+}

@@ -11,6 +11,8 @@ mod settings;
 mod splash;
 mod store;
 mod winui;
+mod lang;
+mod lang_en;
 mod theme;
 mod tray;
 mod update;
@@ -34,7 +36,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.28";
+const VERSION: &str = "0.29";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -173,6 +175,7 @@ struct App {
     set_cat: usize,
     help_tab: usize,
     wiz: Option<pad::Wizard>,
+    news_lang: usize,
     report_open: bool,
     crash_pending: bool,
     tour: Option<usize>,
@@ -312,6 +315,7 @@ impl App {
             set_cat: 0,
             help_tab: 0,
             wiz: None,
+            news_lang: usize::MAX,
             net_res: None,
             profile_active: None,
             saved_global: None,
@@ -966,9 +970,9 @@ fn presence_lines(st: &Settings, mode: u8, game: &str, ps5: bool, found: usize) 
     match mode {
         2 => {
             if st.discord_game && !game.is_empty() {
-                (format!("Spielt {game}"), format!("auf {console}"))
+                (lang::tr(&format!("Spielt {game}")), lang::tr(&format!("auf {console}")))
             } else {
-                (format!("Spielt auf {console}"), "OVERLIME Remote Play".to_string())
+                (lang::tr(&format!("Spielt auf {console}")), "OVERLIME Remote Play".to_string())
             }
         }
         1 => ("Verbindet mit der Konsole".to_string(), "OVERLIME Remote Play".to_string()),
@@ -1767,6 +1771,9 @@ impl App {
                 label(ui, "Hochskalierung auf 4K", "Die Konsole sendet max. 1080p. Die Grafikkarte rechnet hoch: „Aus“ = harte Pixel, „Weich“ = glatt, „Scharf“ und „Ultra“ = Schärfefilter (CAS).");
                 segmented(ui, &mut st.upscale, &["Aus", "Weich", "Scharf", "Ultra"]);
                 ui.add_space(4.0);
+                label(ui, "Sprache / Language", "");
+                segmented(ui, &mut st.language, &["Deutsch", "English"]);
+                ui.add_space(6.0);
                 ui.checkbox(&mut st.interp, "Zwischenbilder berechnen (experimentell)");
                 let hz = winui::display_refresh_hz();
                 ui.label(RichText::new(format!("Die Konsole sendet höchstens 60 Bilder pro Sekunde. Mit dieser Option berechnet die Grafikkarte Bilder dazwischen, damit es auf einem Bildschirm mit 120 Hz oder mehr flüssiger wirkt. Das kostet etwa ein Bild (ca. 17 ms) mehr Verzögerung und kann bei schnellen Bewegungen kleine Fehler zeigen. Dein Bildschirm läuft gerade mit {} Hz{}.", if hz > 0 { hz.to_string() } else { "?".to_string() }, if hz > 0 && hz < 100 { " – hier bringt es nichts" } else { "" })).color(TEXT_DIM).size(12.0));
@@ -3425,6 +3432,15 @@ impl eframe::App for App {
 
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
         self.gl_ok = frame.gl().is_some();
+        lang::set(self.settings.language);
+        if self.news_lang != self.settings.language {
+            let first = self.news_lang == usize::MAX;
+            self.news_lang = self.settings.language;
+            if !first {
+                // Sprache gewechselt: Neuigkeiten in der neuen Sprache laden
+                self.load_news();
+            }
+        }
         if self.gl_info.is_empty() {
             if let Some(gl) = frame.gl() {
                 use eframe::glow::HasContext;
@@ -4004,6 +4020,8 @@ fn install_crash_hook() {
 
 fn main() -> eframe::Result<()> {
     install_crash_hook();
+    lang::install();
+    lang::set(Settings::load().language);
     if std::env::args().any(|a| a == "--crash-test") {
         panic!("Absturz-Test");
     }
