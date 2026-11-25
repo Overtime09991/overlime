@@ -169,6 +169,8 @@ impl Default for Settings {
     }
 }
 
+pub const MAX_BITRATE: f32 = 150.0;
+
 impl Settings {
     /// Höchste Qualität, die Sony im Remote Play erlaubt.
     pub fn max_quality(&mut self) {
@@ -201,7 +203,7 @@ impl Settings {
             match k.trim() {
                 "resolution" => s.resolution = v.trim().parse().unwrap_or(s.resolution).min(2),
                 "fps" => s.fps = v.trim().parse().unwrap_or(s.fps).min(1),
-                "bitrate" => s.bitrate = v.trim().parse().unwrap_or(s.bitrate).clamp(2.0, 50.0),
+                "bitrate" => s.bitrate = v.trim().parse().unwrap_or(s.bitrate).clamp(2.0, MAX_BITRATE),
                 "codec" => s.codec = v.trim().parse().unwrap_or(s.codec).min(2),
                 "upscale" => s.upscale = v.trim().parse().unwrap_or(s.upscale).min(3),
                 "fullscreen" => s.fullscreen = v.trim() == "true",
@@ -279,7 +281,7 @@ impl Settings {
                             Profile {
                                 resolution: f[1].parse().unwrap_or(2usize).min(2),
                                 fps: f[2].parse().unwrap_or(1usize).min(1),
-                                bitrate: f[3].parse().unwrap_or(30.0f32).clamp(2.0, 50.0),
+                                bitrate: f[3].parse().unwrap_or(30.0f32).clamp(2.0, MAX_BITRATE),
                                 codec: f[4].parse().unwrap_or(0usize).min(2),
                             },
                         ));

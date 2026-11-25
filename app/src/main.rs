@@ -45,7 +45,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.49";
+const VERSION: &str = "0.50";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -1248,7 +1248,7 @@ fn profile_row(ui: &mut egui::Ui, st: &mut Settings, key: &str, label: &str, id_
             segmented(ui, &mut pr.resolution, &["540p", "720p", "1080p"]);
             segmented(ui, &mut pr.fps, &["30 FPS", "60 FPS"]);
             ui.spacing_mut().slider_width = 220.0;
-            ui.add(egui::Slider::new(&mut pr.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
+            ui.add(egui::Slider::new(&mut pr.bitrate, 2.0..=settings::MAX_BITRATE).logarithmic(true).suffix(" Mbit/s"));
             segmented(ui, &mut pr.codec, &["Auto", "H.264", "HEVC"]);
         });
     }
@@ -2335,7 +2335,7 @@ impl App {
                 fancy_switch(ui, &mut st.interp, "Zwischenbilder für 120 Hz", "Die Konsole sendet höchstens 60 Bilder pro Sekunde. Die Grafikkarte berechnet Bilder dazwischen, damit es auf einem Bildschirm mit 120 Hz oder mehr flüssiger wirkt. Kostet etwa 17 ms Verzögerung.", badge);
                 ui.add_space(6.0);
                     label(ui, "Bitrate", "Höher = schärferes Bild, braucht aber eine schnelle Leitung.");
-                ui.add(egui::Slider::new(&mut st.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
+                ui.add(egui::Slider::new(&mut st.bitrate, 2.0..=settings::MAX_BITRATE).logarithmic(true).suffix(" Mbit/s"));
                     label(ui, "Videocodec", "HEVC (H.265) ist bei gleicher Bitrate schärfer. Automatisch: HEVC bei der PS5, H.264 bei der PS4.");
                 segmented(ui, &mut st.codec, &["Automatisch", "H.264", "HEVC"]);
             });
@@ -3012,6 +3012,19 @@ impl App {
                             }
                         }
                     });
+                    ui.horizontal(|ui| {
+                        let lan = self.settings.resolution == 2 && self.settings.fps == 1 && self.settings.bitrate >= 99.5 && self.settings.interp;
+                        let btn = egui::Button::new(RichText::new(format!("{}  LAN-Modus (144 Hz)", ic::LIGHTNING)).size(12.5).color(Color32::WHITE))
+                            .fill(if lan { th_blue() } else { th_card_hover() })
+                            .rounding(12.0);
+                        if ui.add(btn).on_hover_text(lang::tr("1080p, 60 FPS, 100 Mbit/s, Zwischenbilder an. Für Konsole und PC im selben Netz per Kabel und einen Bildschirm mit 120 Hz oder mehr.")).clicked() {
+                            self.settings.resolution = 2;
+                            self.settings.fps = 1;
+                            self.settings.bitrate = 100.0;
+                            self.settings.codec = 0;
+                            self.settings.interp = true;
+                        }
+                    });
                     ui.add_space(4.0);
                     segmented(ui, &mut self.settings.resolution, &["540p", "720p", "1080p"]);
                     segmented(ui, &mut self.settings.fps, &["30 FPS", "60 FPS"]);
@@ -3021,8 +3034,11 @@ impl App {
                     ui.horizontal(|ui| {
                         ui.label(RichText::new("Bitrate").size(12.5).color(TEXT_DIM));
                         ui.spacing_mut().slider_width = 190.0;
-                        ui.add(egui::Slider::new(&mut self.settings.bitrate, 2.0..=50.0).suffix(" Mbit/s"));
+                        ui.add(egui::Slider::new(&mut self.settings.bitrate, 2.0..=settings::MAX_BITRATE).logarithmic(true).suffix(" Mbit/s"));
                     });
+                    if self.settings.bitrate > 50.0 {
+                        ui.label(RichText::new("Über 50 Mbit/s: nur für LAN-Kabel gedacht. Ob die Konsole so viel liefert, zeigt die Statusanzeige (F10) bei „Datenrate“.").color(TEXT_DIM).size(11.5));
+                    }
                     segmented(ui, &mut self.settings.codec, &["Auto", "H.264", "HEVC"]);
                     ui.add_space(6.0);
                     if differs {
