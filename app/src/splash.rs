@@ -4,6 +4,7 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Weniger Ruckeln bei hoher Bitrate und Anzeige der Programm-Last",
     "LAN-Modus und bis zu 150 Mbit/s Bitrate",
     "Replay-Clips, Auto-Highlights und Videos zuschneiden",
     "Controller-Licht und Clips an Discord senden",

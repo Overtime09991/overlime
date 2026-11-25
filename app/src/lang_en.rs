@@ -794,6 +794,8 @@ pub const EN: &[(&str, &str)] = &[
     (r##"Eigene Qualität für das Spiel"##, r##"Own quality for the game"##),
     (r##"Replay-Clips, Auto-Highlights und Videos zuschneiden"##, r##"Replay clips, auto highlights and trimming videos"##),
     (r##"LAN-Modus und bis zu 150 Mbit/s Bitrate"##, r##"LAN mode and up to 150 Mbit/s bitrate"##),
+    (r##"Programm-Last"##, r##"Program load"##),
+    (r##"Weniger Ruckeln bei hoher Bitrate und Anzeige der Programm-Last"##, r##"Less stutter at high bitrate and display of the program load"##),
     (r##"LAN-Modus (144 Hz)"##, r##"LAN mode (144 Hz)"##),
     (r##"1080p, 60 FPS, 100 Mbit/s, Zwischenbilder an. Für Konsole und PC im selben Netz per Kabel und einen Bildschirm mit 120 Hz oder mehr."##, r##"1080p, 60 FPS, 100 Mbit/s, interpolated frames on. For console and PC on the same network via cable and a screen with 120 Hz or more."##),
     (r##"Über 50 Mbit/s: nur für LAN-Kabel gedacht. Ob die Konsole so viel liefert, zeigt die Statusanzeige (F10) bei „Datenrate“."##, r##"Above 50 Mbit/s: meant for LAN cable only. Whether the console delivers that much is shown by the status display (F10) under “Data rate”."##),

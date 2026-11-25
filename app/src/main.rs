@@ -4,6 +4,7 @@ mod friends;
 mod gallery;
 mod highlight;
 mod hook;
+mod perf;
 mod mic;
 mod modules;
 mod discord;
@@ -45,7 +46,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.50";
+const VERSION: &str = "0.51";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -765,7 +766,7 @@ impl App {
             gpu.paint(ui.painter(), r);
         });
         let top = ctx.layer_painter(egui::LayerId::new(egui::Order::Foreground, egui::Id::new("demo_hud")));
-        let parts = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll"];
+        let parts = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll", "CPU 4 % • RAM 210 MB"];
         let hud: Vec<String> = parts.iter().enumerate().filter(|(i, _)| self.settings.hud_items & (1 << i) != 0).map(|(_, p)| lang::tr(p)).collect();
         paint_hud(&top, ctx.screen_rect(), hud.join("  •  "), &self.settings, 0.0);
         let sc = ctx.screen_rect();
@@ -873,10 +874,14 @@ impl App {
         };
         let tx = self.tx.clone();
         let name = c.name.clone();
+        perf::boost(true);
         std::thread::spawn(move || {
             let m = match Stream::start(&params) {
                 Ok(s) => Msg::StreamStarted(s, name),
-                Err(e) => Msg::StreamErr(e),
+                Err(e) => {
+                    perf::boost(false);
+                    Msg::StreamErr(e)
+                }
             };
             let _ = tx.send(m);
         });
@@ -913,6 +918,7 @@ impl App {
     }
 
     fn stop_stream(&mut self, ctx: &egui::Context) {
+        perf::boost(false);
         let info = self.session.as_ref().map(|s| (s.state, s.ended_error, s.started.elapsed().as_secs()));
         if let Some(s) = self.session.as_ref() {
             let secs = s.started.elapsed().as_secs();
@@ -1674,7 +1680,7 @@ fn pill(ui: &mut egui::Ui, text: &str, color: Color32) {
     ui.painter().galley(Pos2::new(rect.min.x + 22.0, rect.center().y - galley.size().y / 2.0), galley, color);
 }
 
-pub const HUD_ITEMS: [&str; 10] = ["Auflösung", "FPS", "Ping", "Dekodierzeit", "Datenrate", "Paketverlust", "Controller", "Ton-Status", "Uhrzeit", "Akku"];
+pub const HUD_ITEMS: [&str; 11] = ["Auflösung", "FPS", "Ping", "Dekodierzeit", "Datenrate", "Paketverlust", "Controller", "Ton-Status", "Uhrzeit", "Akku", "Programm-Last"];
 
 /// Auswahl, was die Statusanzeige im Stream zeigt, und wo sie steht.
 fn hud_config_ui(ui: &mut egui::Ui, st: &mut Settings) {
@@ -1942,7 +1948,7 @@ fn hud_preview(ui: &mut egui::Ui, st: &Settings) {
     p.rect_stroke(rect, Rounding::ZERO, Stroke::new(1.0, Color32::from_white_alpha(22)));
     p.text(rect.center(), Align2::CENTER_CENTER, lang::tr("Spielbild"), FontId::proportional(13.0), Color32::from_white_alpha(40));
 
-    let demo = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll"];
+    let demo = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll", "CPU 4 % • RAM 210 MB"];
     let parts: Vec<String> = demo.iter().enumerate().filter(|(i, _)| st.hud_items & (1 << i) != 0).map(|(_, s)| lang::tr(s)).collect();
     if parts.is_empty() {
         p.text(rect.center() + Vec2::new(0.0, 22.0), Align2::CENTER_CENTER, lang::tr("Nichts ausgewählt"), FontId::proportional(13.0), Color32::from_white_alpha(120));
@@ -4010,6 +4016,7 @@ impl App {
                 }
                 let hud = parts.join("  •  ");
                 if show_hud && !hud.is_empty() {
+                    let hud = if items & (1 << 10) != 0 { format!("{hud}  •  {}", perf::load_text()) } else { hud };
                     let bar_shift = 52.0 * ctx.animate_bool_with_time(egui::Id::new("bar_anim"), show_ui, 0.25);
                     paint_hud(ui.painter(), full, hud, &self.settings, bar_shift);
                 }
@@ -4528,7 +4535,7 @@ impl eframe::App for App {
             }
             if std::env::args().any(|a| a == "--demo-hud") {
                 let mask = self.settings.hud_items;
-                let demo_parts = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll"];
+                let demo_parts = ["1920x1080", "60 FPS", "Ping 11 ms", "Dek. 3.2 ms", "27.4 Mbit/s", "4 Pakete verloren", "Controller", "Ton ok", "21:45", "Akku voll", "CPU 4 % • RAM 210 MB"];
                 let hud: Vec<&str> = demo_parts.iter().enumerate().filter(|(i, _)| mask & (1 << i) != 0).map(|(_, s)| *s).collect();
                 paint_hud(&ctx.layer_painter(egui::LayerId::background()), ctx.screen_rect(), hud.join("  •  "), &self.settings, 0.0);
             }
@@ -5019,6 +5026,20 @@ fn main() -> eframe::Result<()> {
     lang::set(Settings::load().language);
     if std::env::args().any(|a| a == "--crash-test") {
         panic!("Absturz-Test");
+    }
+    if std::env::args().any(|a| a == "--load-test") {
+        // Prüft die Anzeige der Programm-Last: erst Leerlauf, dann eine Sekunde volle Last auf einem Kern
+        let _ = perf::load_text();
+        std::thread::sleep(Duration::from_millis(1100));
+        println!("Leerlauf: {}", perf::load_text());
+        let t0 = Instant::now();
+        let mut x = 0u64;
+        while t0.elapsed() < Duration::from_millis(1100) {
+            x = x.wrapping_add(1).wrapping_mul(3);
+        }
+        println!("Last ({x}): {}", perf::load_text());
+        println!("Kerne: {}", std::thread::available_parallelism().map(|n| n.get()).unwrap_or(0));
+        return Ok(());
     }
     if let Some(i) = std::env::args().position(|a| a == "--rec-selftest") {
         // overlime --rec-selftest <eingabe.h264> <ausgabe.mp4> <hevc 0/1> <breite> <hoehe>

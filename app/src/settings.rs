@@ -232,7 +232,7 @@ impl Settings {
                 "eq_treble" => s.eq_treble = v.trim().parse().unwrap_or(0.0f32).clamp(-8.0, 8.0),
                 "language" => s.language = v.trim().parse().unwrap_or(0usize).min(1),
                 "interp" => s.interp = v.trim() == "true",
-                "hud_items" => s.hud_items = v.trim().parse().unwrap_or(0x0FFu32) & 0x3FF,
+                "hud_items" => s.hud_items = v.trim().parse().unwrap_or(0x0FFu32) & 0x7FF,
                 "hud_pos" => s.hud_pos = v.trim().parse().unwrap_or(0usize).min(3),
                 "hud_size" => s.hud_size = v.trim().parse().unwrap_or(1usize).min(2),
                 "hud_box" => s.hud_box = v.trim() == "true",
