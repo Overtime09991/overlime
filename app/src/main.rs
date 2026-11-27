@@ -48,7 +48,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.52";
+const VERSION: &str = "0.53";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -194,6 +194,8 @@ struct App {
     remote_busy: bool,
     remote_error: String,
     login_pasted: String,
+    /// Inhalt der Zwischenablage beim Öffnen des Browsers bzw. die zuletzt abgelehnte Adresse (wird nicht übernommen)
+    login_old_clip: String,
     login_step: usize,
     set_cat: usize,
     help_tab: usize,
@@ -394,6 +396,7 @@ impl App {
             remote_busy: false,
             remote_error: String::new(),
             login_pasted: String::new(),
+            login_old_clip: String::new(),
             set_cat: std::env::args().find_map(|a| a.strip_prefix("--set-cat=").and_then(|v| v.parse().ok())).unwrap_or(0),
             help_tab: 0,
             wiz: None,
@@ -1059,6 +1062,10 @@ impl App {
                 }
                 Msg::PsnErr(e) => {
                     self.login_busy = false;
+                    // Jeder Code gilt nur einmal: abgelehnte Adresse entfernen, die nächste neue wird wieder übernommen
+                    if !self.login_pasted.is_empty() {
+                        self.login_old_clip = std::mem::take(&mut self.login_pasted).trim().to_string();
+                    }
                     self.login_error = e.clone();
                     if let Some(d) = self.dialog.as_mut() {
                         d.step = Step::Psn;
@@ -5092,6 +5099,9 @@ fn main() -> eframe::Result<()> {
             }
         }
         println!("{}", ffi::take_log());
+        if let Err(e) = psn::account_id_from_code("ungueltig") {
+            println!("Liste (Anmelde-Code): {e}");
+        }
         println!("Ende ohne Absturz");
         return Ok(());
     }

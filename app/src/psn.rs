@@ -59,7 +59,7 @@ pub fn login_url() -> String {
 
 fn base_login_url() -> String {
     format!(
-        "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?service_entity=urn:service-entity:psn&response_type=code&client_id={}&redirect_uri={}&scope={}&request_locale=de_DE&ui=pr&service_logo=ps&layout_type=popup&smcid=remoteplay&prompt=always&PlatformPrivacyWs1=minimal&",
+        "https://auth.api.sonyentertainmentnetwork.com/2.0/oauth/authorize?service_entity=urn:service-entity:psn&response_type=code&client_id={}&redirect_uri={}&scope={}&request_locale=de_DE&ui=pr&service_logo=ps&layout_type=popup&smcid=remoteplay&PlatformPrivacyWs1=minimal&",
         CLIENT_ID,
         enc(REDIRECT),
         enc(SCOPE)
@@ -101,7 +101,14 @@ pub fn account_id_from_code(code: &str) -> Result<([u8; 8], String, Option<Token
         .set("Authorization", &basic())
         .set("Content-Type", "application/x-www-form-urlencoded")
         .send_string(&body)
-        .map_err(|e| format!("Anmeldung fehlgeschlagen (Code abgelaufen?): {e}"))?
+        .map_err(|e| match e {
+            ureq::Error::Status(code, resp) => {
+                let v: serde_json::Value = resp.into_json().unwrap_or_default();
+                let why = v["error_description"].as_str().or_else(|| v["error"].as_str()).unwrap_or("ohne Angabe");
+                format!("Sony hat die Adresse abgelehnt. Jede Adresse gilt nur einmal und nur kurz: auf „Browser erneut öffnen“ klicken und die neue Adresse kopieren. (Fehler {code}: {why})")
+            }
+            other => format!("PSN nicht erreichbar: {other}"),
+        })?
         .into_json()
         .map_err(|e| e.to_string())?;
     let token = resp["access_token"].as_str().ok_or("Kein Zugriffstoken erhalten")?.to_string();

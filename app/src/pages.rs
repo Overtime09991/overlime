@@ -702,13 +702,21 @@ impl App {
 }
 
 impl App {
+    /// Öffnet Sonys Anmeldeseite und vergisst alte Adressen, damit kein verbrauchter Code eingefügt wird.
+    fn open_psn_login(&mut self, ctx: &egui::Context) {
+        self.login_old_clip = winui::clipboard_text().trim().to_string();
+        self.login_pasted.clear();
+        self.login_error.clear();
+        ctx.open_url(egui::OpenUrl::new_tab(psn::login_url()));
+    }
+
     /// Erster Start: geführter Assistent (Willkommen, Konto verbinden, Adresse einfügen).
     pub fn login_screen(&mut self, ctx: &egui::Context, t: f64) {
         // Zwischenablage beobachten: Sony-Adresse wird automatisch erkannt
         if self.login_step == 2 && self.login_pasted.is_empty() && t - self.clip_seen > 0.6 {
             self.clip_seen = t;
             let c = winui::clipboard_text();
-            if c.contains("code=") && psn::parse_code(&c).is_some() {
+            if c.contains("code=") && c.trim() != self.login_old_clip && psn::parse_code(&c).is_some() {
                 self.login_pasted = c.trim().to_string();
             }
         }
@@ -792,7 +800,7 @@ impl App {
                                 ui.label(RichText::new("Die App braucht deine PlayStation-Konto-Nummer, damit die Konsole dich erkennt. Du meldest dich dafür auf der Seite von Sony an.").color(TEXT_DIM).size(14.5));
                                 ui.add_space(14.0);
                                 if ui.add(big_button("Bei PlayStation anmelden", th_blue()).min_size(Vec2::new(440.0, 50.0))).clicked() {
-                                    ctx.open_url(egui::OpenUrl::new_tab(psn::login_url()));
+                                    self.open_psn_login(ctx);
                                     self.login_step = 2;
                                     self.clip_seen = 0.0;
                                 }
@@ -855,7 +863,7 @@ impl App {
                                 }
                                 ui.add_space(4.0);
                                 if ui.add(egui::Button::new(RichText::new("Browser erneut öffnen").color(TEXT_DIM).size(12.5)).frame(false)).clicked() {
-                                    ctx.open_url(egui::OpenUrl::new_tab(psn::login_url()));
+                                    self.open_psn_login(ctx);
                                 }
                             }
                         }

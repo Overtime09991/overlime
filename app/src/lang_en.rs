@@ -807,6 +807,8 @@ pub const EN: &[(&str, &str)] = &[
     (r##"Die PSN-Anmeldung ist abgelaufen. Bitte unter „Von unterwegs“ neu anmelden."##, r##"The PSN sign-in has expired. Please sign in again under “Play away from home”."##),
     (r##"Bitte zuerst unter „Von unterwegs“ bei PSN anmelden."##, r##"Please sign in to PSN under “Play away from home” first."##),
     (r##"Von unterwegs spielen und bessere Controller-Erkennung"##, r##"Play away from home and better controller detection"##),
+    (r##"Sony hat die Adresse abgelehnt. Jede Adresse gilt nur einmal und nur kurz: auf „Browser erneut öffnen“ klicken und die neue Adresse kopieren. (Fehler {}: {})"##, r##"Sony rejected the address. Each address works only once and only briefly: click “Open browser again” and copy the new address. (Error {}: {})"##),
+    (r##"PSN-Anmeldung repariert"##, r##"PSN sign-in fixed"##),
     (r##"Programm-Last"##, r##"Program load"##),
     (r##"Weniger Ruckeln bei hoher Bitrate und Anzeige der Programm-Last"##, r##"Less stutter at high bitrate and display of the program load"##),
     (r##"LAN-Modus (144 Hz)"##, r##"LAN mode (144 Hz)"##),
