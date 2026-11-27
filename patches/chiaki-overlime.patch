@@ -29,3 +29,142 @@
  
  	if(hw_decoder_name)
  	{
+--- a/lib/src/remote/holepunch.c
++++ b/lib/src/remote/holepunch.c
+@@ -74,6 +74,18 @@
+ #include "../utils.h"
+ #include "stun.h"
+ 
++/* OVERLIME: unter Windows findet OpenSSL keine Stammzertifikate. Deshalb den Zertifikatsspeicher von Windows nutzen.
++ * Die Zertifikatspruefung bleibt eingeschaltet. */
++static CURL *ol_curl_init(void)
++{
++    CURL *c = curl_easy_init();
++#ifdef _WIN32
++    if(c)
++        curl_easy_setopt(c, CURLOPT_SSL_OPTIONS, (long)CURLSSLOPT_NATIVE_CA);
++#endif
++    return c;
++}
++
+ #define UUIDV4_STR_LEN 37
+ #define SECOND_US 1000000L
+ #define MILLISECONDS_US 1000L
+@@ -464,7 +476,7 @@
+     ChiakiHolepunchDeviceInfo **devices, size_t *device_count,
+     ChiakiLog *log)
+ {
+-    CURL *curl = curl_easy_init();
++    CURL *curl = ol_curl_init();
+     if(!curl)
+     {
+         CHIAKI_LOGE(log, "Curl could not init");
+@@ -1291,7 +1303,7 @@
+         .size = 0,
+     };
+ 
+-    CURL *curl = curl_easy_init();
++    CURL *curl = ol_curl_init();
+     if(!curl)
+     {
+         CHIAKI_LOGE(session->log, "Curl could not init");
+@@ -1440,7 +1452,7 @@
+         data2_base64,
+         session->session_id);
+ 
+-    curl = curl_easy_init();
++    curl = ol_curl_init();
+     if(!curl)
+     {
+         CHIAKI_LOGE(session->log, "Curl could not init");
+@@ -1974,7 +1986,7 @@
+         .size = 0,
+     };
+ 
+-    CURL *curl = curl_easy_init();
++    CURL *curl = ol_curl_init();
+     if(!curl)
+     {
+         CHIAKI_LOGE(session->log, "Curl could not init");
+@@ -2169,7 +2181,7 @@
+     char ws_url[128] = {0};
+     snprintf(ws_url, sizeof(ws_url), "wss://%s/np/pushNotification", session->ws_fqdn);
+ 
+-    CURL* curl = curl_easy_init();
++    CURL* curl = ol_curl_init();
+     if(!curl)
+     {
+         CHIAKI_LOGE(session->log, "Curl could not init");
+@@ -2269,6 +2281,9 @@
+             ca_blob.flags = CURL_BLOB_COPY;
+             // Cached intermediates must not terminate verification before a root.
+             long ssl_options = CURLSSLOPT_NO_PARTIALCHAIN;
++#ifdef _WIN32
++            ssl_options |= CURLSSLOPT_NATIVE_CA; /* OVERLIME */
++#endif
+ #ifdef CHIAKI_CURL_SCHANNEL_AIA
+             if(schannel_aia)
+                 ssl_options |= CURLSSLOPT_SCHANNEL_AIA;
+@@ -3185,7 +3200,7 @@
+         .size = 0,
+     };
+ 
+-    CURL* curl = curl_easy_init();
++    CURL* curl = ol_curl_init();
+     if(!curl)
+     {
+         free(response_data.data);
+@@ -3311,7 +3326,7 @@
+         .size = 0,
+     };
+ 
+-    CURL* curl = curl_easy_init();
++    CURL* curl = ol_curl_init();
+     if(!curl)
+     {
+         free(response_data.data);
+@@ -3430,7 +3445,7 @@
+         .size = 0,
+     };
+ 
+-    CURL *curl = curl_easy_init();
++    CURL *curl = ol_curl_init();
+     if(!curl)
+     {
+         free(response_data.data);
+@@ -3551,7 +3566,7 @@
+         session->console_type == CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS4 ? "PS4" : "PS5"
+     );
+     CHIAKI_LOGV(session->log, "Message to send: %s", msg_buf);
+-    CURL *curl = curl_easy_init();
++    CURL *curl = ol_curl_init();
+     if(!curl)
+     {
+         free(payload_str);
+@@ -3632,7 +3647,7 @@
+     char url[128] = {0};
+     snprintf(url, sizeof(url), delete_messsage_url_fmt, session->session_id);
+ 
+-    CURL *curl = curl_easy_init();
++    CURL *curl = ol_curl_init();
+     if(!curl)
+     {
+         free(response_data.data);
+@@ -5986,7 +6001,7 @@
+ {
+     ChiakiErrorCode err = CHIAKI_ERR_SUCCESS;
+     const char STUN_HOSTS_URL[] = "https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_hosts.txt";
+-    CURL *curl = curl_easy_init();
++    CURL *curl = ol_curl_init();
+     if(!curl)
+     {
+         CHIAKI_LOGE(session->log, "Curl could not init");
+@@ -6080,7 +6095,7 @@
+     curl_easy_cleanup(curl);
+     curl = NULL;
+     const char STUN_HOSTS_URL_IPV6[] = "https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_ipv6s.txt";
+-    curl = curl_easy_init();
++    curl = ol_curl_init();
+     if(!curl)
+     {
+         CHIAKI_LOGE(session->log, "Curl could not init");

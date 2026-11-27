@@ -274,6 +274,7 @@ pub struct Extra {
 const SDL_INIT_JOYSTICK: u32 = 0x0000_0200;
 const SDL_INIT_GAMECONTROLLER: u32 = 0x0000_2000;
 const SDL_INIT_EVENTS: u32 = 0x0000_4000;
+const EV_BUTTON_DOWN: u32 = 0x651;
 const EV_ADDED: u32 = 0x653;
 const EV_REMOVED: u32 = 0x654;
 
@@ -310,6 +311,8 @@ pub struct Pad {
     ok: bool,
     ctrl: *mut c_void,
     instance: i32,
+    /// Alle geöffneten Controller (Instanz-Nummer, Zeiger). `ctrl` ist davon der gerade benutzte.
+    all: Vec<(i32, *mut c_void)>,
     pub ds_intensity: u8,
     init_rx: Option<std::sync::mpsc::Receiver<bool>>,
 }
@@ -347,7 +350,7 @@ impl Pad {
             }
             let _ = tx.send(ok);
         });
-        Self { ok: false, ctrl: std::ptr::null_mut(), instance: -1, ds_intensity: 0, init_rx: Some(rx) }
+        Self { ok: false, ctrl: std::ptr::null_mut(), instance: -1, all: Vec::new(), ds_intensity: 0, init_rx: Some(rx) }
     }
 
     /// Prüft, ob der Hintergrundstart fertig ist.
@@ -366,17 +369,15 @@ impl Pad {
         }
     }
 
+    /// Öffnet alle angeschlossenen Controller. Der erste wird benutzt, bis auf einem anderen eine Taste gedrückt wird.
     fn open_any(&mut self) {
-        if !self.ok || !self.ctrl.is_null() {
+        if !self.ok {
             return;
         }
         unsafe {
             for i in 0..SDL_NumJoysticks() {
                 if SDL_IsGameController(i) != 0 {
                     self.open(i);
-                    if !self.ctrl.is_null() {
-                        return;
-                    }
                 }
             }
         }
@@ -385,17 +386,43 @@ impl Pad {
     fn open(&mut self, idx: c_int) {
         unsafe {
             let c = SDL_GameControllerOpen(idx);
-            if !c.is_null() {
-                self.ctrl = c;
-                self.instance = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c));
-                // Bewegungssensoren (Beschleunigung = 1, Gyro = 2), falls vorhanden
-                for t in [1, 2] {
-                    if SDL_GameControllerHasSensor(c, t) != 0 {
-                        SDL_GameControllerSetSensorEnabled(c, t, 1);
-                    }
+            if c.is_null() {
+                return;
+            }
+            let id = SDL_JoystickInstanceID(SDL_GameControllerGetJoystick(c));
+            if self.all.iter().any(|(i, _)| *i == id) {
+                // schon offen: den zusätzlichen Zähler von SDL wieder freigeben
+                SDL_GameControllerClose(c);
+                return;
+            }
+            // Bewegungssensoren (Beschleunigung = 1, Gyro = 2), falls vorhanden
+            for t in [1, 2] {
+                if SDL_GameControllerHasSensor(c, t) != 0 {
+                    SDL_GameControllerSetSensorEnabled(c, t, 1);
                 }
             }
+            self.all.push((id, c));
+            if self.ctrl.is_null() {
+                self.ctrl = c;
+                self.instance = id;
+            }
         }
+    }
+
+    /// Wechselt zu dem Controller mit dieser Instanz-Nummer.
+    fn use_instance(&mut self, id: i32) {
+        if let Some((i, c)) = self.all.iter().find(|(i, _)| *i == id).copied() {
+            self.ctrl = c;
+            self.instance = i;
+        }
+    }
+
+    fn close_all(&mut self) {
+        for (_, c) in self.all.drain(..) {
+            unsafe { SDL_GameControllerClose(c) };
+        }
+        self.ctrl = std::ptr::null_mut();
+        self.instance = -1;
     }
 
     fn pump(&mut self) {
@@ -406,19 +433,29 @@ impl Pad {
         let mut ev = [0u64; 8];
         unsafe {
             while SDL_PollEvent(ev.as_mut_ptr()) != 0 {
+                // Aufbau eines SDL-Ereignisses: Art (4 Byte), Zeitstempel (4 Byte), dann die Geräte-Nummer
                 let ty = (ev[0] & 0xffff_ffff) as u32;
-                let which = (ev[0] >> 32) as u32 as i32;
-                if ty == EV_JOY_ADDED && self.ctrl.is_null() {
+                let which = (ev[1] & 0xffff_ffff) as u32 as i32;
+                if ty == EV_JOY_ADDED {
                     if automap(which) {
                         self.open(which);
                     }
-                } else if ty == EV_ADDED && self.ctrl.is_null() {
+                } else if ty == EV_ADDED {
                     self.open(which);
-                } else if ty == EV_REMOVED && which == self.instance {
-                    SDL_GameControllerClose(self.ctrl);
-                    self.ctrl = std::ptr::null_mut();
-                    self.instance = -1;
-                    self.open_any();
+                } else if ty == EV_REMOVED {
+                    if let Some(pos) = self.all.iter().position(|(i, _)| *i == which) {
+                        let (_, c) = self.all.remove(pos);
+                        SDL_GameControllerClose(c);
+                        if self.instance == which {
+                            self.ctrl = std::ptr::null_mut();
+                            self.instance = -1;
+                            if let Some(next) = self.all.first().map(|(i, _)| *i) {
+                                self.use_instance(next);
+                            }
+                        }
+                    }
+                } else if ty == EV_BUTTON_DOWN && which != self.instance {
+                    self.use_instance(which);
                 }
             }
         }
@@ -634,13 +671,7 @@ impl Pad {
 
     /// Controller neu suchen (nach dem Koppeln per Bluetooth).
     pub fn rescan(&mut self) {
-        if !self.ctrl.is_null() {
-            unsafe {
-                SDL_GameControllerClose(self.ctrl);
-            }
-            self.ctrl = std::ptr::null_mut();
-            self.instance = -1;
-        }
+        self.close_all();
         setup_mappings();
         self.pump();
         self.open_any();

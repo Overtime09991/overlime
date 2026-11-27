@@ -846,7 +846,7 @@ impl App {
                                         let tx = self.tx.clone();
                                         std::thread::spawn(move || {
                                             let m = match psn::account_id_from_code(&code) {
-                                                Ok((id, name)) => Msg::PsnOk(id, name),
+                                                Ok((id, name, tokens)) => Msg::PsnOk(id, name, tokens),
                                                 Err(e) => Msg::PsnErr(e),
                                             };
                                             let _ = tx.send(m);
@@ -870,6 +870,7 @@ impl App {
                     }
                     if ui.add(egui::Button::new(RichText::new("Später anmelden").color(TEXT_DIM)).frame(false)).clicked() {
                         self.skip_login = true;
+                        self.relogin = false;
                     }
                     if ui.add(egui::Button::new(RichText::new("Demo ausprobieren").color(th_blue_light())).frame(false)).clicked() {
                         self.skip_login = true;

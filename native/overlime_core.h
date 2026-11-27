@@ -28,7 +28,22 @@ typedef struct {
 	int codec;                // 0 = H.264, 1 = HEVC
 	int hw_decode;            // 1 = D3D11VA versuchen
 	int enable_dualsense;     // 1 = DualSense-Funktionen (Touchpad, Bewegung, Trigger) anfordern
+	// Verbindung von unterwegs ueber PSN (psn_token == NULL: normale Verbindung ueber die IP-Adresse)
+	const char *psn_token;
+	uint8_t psn_uid[32];
+	uint8_t psn_account_id[8];
 } OlStreamParams;
+
+typedef struct {
+	int ps5;
+	char name[32];
+	uint8_t uid[32];
+} OlPsnDevice;
+
+// Geraete-Kennung dieses PCs fuer die PSN-Anmeldung (48 Zeichen + Null). 0 = Erfolg.
+int ol_psn_duid(char *out, size_t out_size);
+// Blockierend. Konsolen des PSN-Kontos mit eingeschaltetem Remote Play. Rueckgabe: Anzahl, -1 = Fehler.
+int ol_psn_list(const char *token, OlPsnDevice *out, int max, char *err, size_t err_size);
 
 typedef struct {
 	int state;                // 0 verbindet, 1 verbunden, 2 beendet

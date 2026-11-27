@@ -8,7 +8,7 @@ Diese Hinweise sind für Entwickler. Die normale Nutzung steht in der [README](R
 | --- | --- |
 | `app/` | Rust-Anwendung (Oberfläche, Discovery, PSN-Login, Audio, Eingabe, Updater) |
 | `native/` | Dünne C-Schnittstelle (`overlime_core`) um die chiaki-Bibliothek |
-| `patches/` | Kleine Änderung an `gf-complete` (fehlender `#include <intrin.h>`) für clang-cl, dazu `chiaki-overlime.patch` (größerer Empfangspuffer und Decoder mit geringster Verzögerung, mit `git apply` auf chiaki-ng anwenden) |
+| `patches/` | Kleine Änderung an `gf-complete` (fehlender `#include <intrin.h>`) für clang-cl, dazu `chiaki-overlime.patch` (größerer Empfangspuffer, Decoder mit geringster Verzögerung und Windows-Zertifikatsspeicher für die PSN-Verbindung, mit `git apply` auf chiaki-ng anwenden) |
 
 Der Stream-Kern (Protokoll, Takion, FEC, Video-/Audio-Empfang) stammt aus
 [chiaki-ng](https://github.com/streetpea/chiaki-ng) und wird beim Bauen separat geholt.

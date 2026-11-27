@@ -1,5 +1,6 @@
 #include "overlime_core.h"
 
+#include <chiaki/remote/holepunch.h>
 #include <chiaki/session.h>
 #include <chiaki/regist.h>
 #include <chiaki/discovery.h>
@@ -880,6 +881,81 @@ static void event_cb(ChiakiEvent *ev, void *user)
 	chiaki_mutex_unlock(&s->mtx);
 }
 
+int ol_psn_duid(char *out, size_t out_size)
+{
+	ol_init();
+	if(out_size < CHIAKI_DUID_STR_SIZE)
+		return 1;
+	size_t n = out_size;
+	return chiaki_holepunch_generate_client_device_uid(out, &n) == CHIAKI_ERR_SUCCESS ? 0 : 1;
+}
+
+int ol_psn_list(const char *token, OlPsnDevice *out, int max, char *err, size_t err_size)
+{
+	ol_init();
+	static ChiakiLog log;
+	make_log(&log);
+	ChiakiHolepunchDeviceInfo *dev = NULL;
+	size_t count = 0;
+	ChiakiErrorCode e = chiaki_holepunch_list_devices(token, CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS5, &dev, &count, &log);
+	if(e != CHIAKI_ERR_SUCCESS)
+	{
+		snprintf(err, err_size, "PSN-Konsolenliste nicht erreichbar: %s", chiaki_error_string(e));
+		return -1;
+	}
+	int n = 0;
+	for(size_t i = 0; i < count && n < max; i++)
+	{
+		if(!dev[i].remoteplay_enabled)
+			continue;
+		memset(&out[n], 0, sizeof(out[n]));
+		out[n].ps5 = 1;
+		memcpy(out[n].name, dev[i].device_name, sizeof(out[n].name) - 1);
+		memcpy(out[n].uid, dev[i].device_uid, 32);
+		n++;
+	}
+	if(dev)
+		chiaki_holepunch_free_device_list(&dev);
+	return n;
+}
+
+// Baut die Verbindung ueber PSN auf (Steuer-Kanal). Der Daten-Kanal folgt in der Sitzung selbst.
+static ChiakiHolepunchSession psn_connect(OlStream *s, const OlStreamParams *p, char *err, size_t err_size)
+{
+	ChiakiHolepunchSession hp = chiaki_holepunch_session_init(p->psn_token, &s->log);
+	if(!hp)
+	{
+		snprintf(err, err_size, "PSN-Verbindung konnte nicht vorbereitet werden");
+		return NULL;
+	}
+	// Ohne UPnP im Router geht es trotzdem weiter
+	chiaki_holepunch_upnp_discover(hp);
+	const char *step = "Anmeldung bei PSN (eventuell unter Von unterwegs neu anmelden)";
+	ChiakiErrorCode e = chiaki_holepunch_session_create(hp);
+	if(e == CHIAKI_ERR_SUCCESS)
+	{
+		step = "Verbindungsangebot";
+		e = holepunch_session_create_offer(hp);
+	}
+	if(e == CHIAKI_ERR_SUCCESS)
+	{
+		step = "Konsole erreichen (ist sie an oder im Ruhemodus und mit dem Internet verbunden?)";
+		e = chiaki_holepunch_session_start(hp, p->psn_uid, p->ps5 ? CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS5 : CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS4);
+	}
+	if(e == CHIAKI_ERR_SUCCESS)
+	{
+		step = "Direkte Verbindung durch die Router (bei Mobilfunk oder DS-Lite oft nicht moeglich, dann VPN nutzen)";
+		e = chiaki_holepunch_session_punch_hole(hp, CHIAKI_HOLEPUNCH_PORT_TYPE_CTRL);
+	}
+	if(e != CHIAKI_ERR_SUCCESS)
+	{
+		snprintf(err, err_size, "Fehlgeschlagen bei: %s. (%s)", step, chiaki_error_string(e));
+		chiaki_holepunch_session_fini(hp);
+		return NULL;
+	}
+	return hp;
+}
+
 OlStream *ol_stream_start(const OlStreamParams *p, char *err, size_t err_size)
 {
 	ol_init();
@@ -911,6 +987,14 @@ OlStream *ol_stream_start(const OlStreamParams *p, char *err, size_t err_size)
 	ci.enable_dualsense = p->enable_dualsense ? true : false;
 	ci.packet_loss_max = 0.05;
 	ci.enable_idr_on_fec_failure = true;
+
+	if(p->psn_token && p->psn_token[0])
+	{
+		ci.holepunch_session = psn_connect(s, p, err, err_size);
+		if(!ci.holepunch_session)
+			goto fail;
+		memcpy(ci.psn_account_id, p->psn_account_id, 8);
+	}
 
 	ChiakiErrorCode e = chiaki_session_init(&s->session, &ci, &s->log);
 	if(e != CHIAKI_ERR_SUCCESS)

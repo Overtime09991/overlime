@@ -25,6 +25,25 @@ pub struct OlStreamParams {
     pub codec: c_int,
     pub hw_decode: c_int,
     pub enable_dualsense: c_int,
+    /// Nur für Verbindungen über PSN, sonst Null
+    pub psn_token: *const c_char,
+    pub psn_uid: [u8; 32],
+    pub psn_account_id: [u8; 8],
+}
+
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub struct OlPsnDevice {
+    pub ps5: c_int,
+    pub name: [c_char; 32],
+    pub uid: [u8; 32],
+}
+
+/// Daten für eine Verbindung von unterwegs.
+pub struct PsnLink {
+    pub token: String,
+    pub uid: [u8; 32],
+    pub account_id: [u8; 8],
 }
 
 #[repr(C)]
@@ -85,6 +104,8 @@ pub struct OlStream {
 }
 
 extern "C" {
+    fn ol_psn_duid(out: *mut c_char, out_size: usize) -> c_int;
+    fn ol_psn_list(token: *const c_char, out: *mut OlPsnDevice, max: c_int, err: *mut c_char, err_size: usize) -> c_int;
     pub fn chiaki_lib_init() -> c_int;
     pub fn ol_init();
     pub fn ol_log_take(buf: *mut c_char, size: usize) -> usize;
@@ -212,6 +233,25 @@ pub struct StreamParams {
     pub hevc: bool,
     pub hw_decode: bool,
     pub dualsense: bool,
+    pub psn: Option<PsnLink>,
+}
+
+/// Geräte-Kennung für die PSN-Anmeldung.
+pub fn psn_duid() -> Option<String> {
+    let mut buf = [0 as c_char; 64];
+    (unsafe { ol_psn_duid(buf.as_mut_ptr(), buf.len()) } == 0).then(|| cstr(&buf))
+}
+
+/// PS5-Konsolen des PSN-Kontos. Blockierend.
+pub fn psn_list(token: &str) -> Result<Vec<crate::remote::Device>, String> {
+    let token = std::ffi::CString::new(token).map_err(|_| "Ungültige Anmeldung".to_string())?;
+    let mut out = [OlPsnDevice { ps5: 0, name: [0; 32], uid: [0; 32] }; 16];
+    let mut err = [0 as c_char; 200];
+    let n = unsafe { ol_psn_list(token.as_ptr(), out.as_mut_ptr(), out.len() as c_int, err.as_mut_ptr(), err.len()) };
+    if n < 0 {
+        return Err(cstr(&err));
+    }
+    Ok(out[..(n as usize).min(out.len())].iter().map(|d| crate::remote::Device { name: cstr(&d.name), ps5: d.ps5 != 0, uid: d.uid }).collect())
 }
 
 impl Stream {
@@ -230,6 +270,13 @@ impl Stream {
         params.codec = p.hevc as c_int;
         params.hw_decode = p.hw_decode as c_int;
         params.enable_dualsense = p.dualsense as c_int;
+        // muss bis nach dem Aufruf von ol_stream_start leben
+        let token = p.psn.as_ref().and_then(|l| std::ffi::CString::new(l.token.as_str()).ok());
+        if let (Some(t), Some(l)) = (token.as_ref(), p.psn.as_ref()) {
+            params.psn_token = t.as_ptr();
+            params.psn_uid = l.uid;
+            params.psn_account_id = l.account_id;
+        }
         let mut err = vec![0 as c_char; 256];
         let ptr = unsafe { ol_stream_start(&params, err.as_mut_ptr(), err.len()) };
         if ptr.is_null() {

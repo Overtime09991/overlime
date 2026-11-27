@@ -15,6 +15,8 @@ mod pad;
 mod player;
 mod pages;
 mod psn;
+mod remote;
+mod remote_ui;
 mod settings;
 mod splash;
 mod store;
@@ -46,7 +48,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.51";
+const VERSION: &str = "0.52";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -93,7 +95,8 @@ enum Msg {
     Found(Vec<Console>),
     Error(String),
     Info(String),
-    PsnOk([u8; 8], String),
+    PsnOk([u8; 8], String, Option<psn::Tokens>),
+    RemoteList(Result<Vec<remote::Device>, String>),
     PsnErr(String),
     PairOk(Paired),
     PairErr(String),
@@ -185,6 +188,11 @@ struct App {
     update_msg: String,
     update_err: String,
     skip_login: bool,
+    /// Anmelde-Assistent noch einmal zeigen (für „Von unterwegs“)
+    relogin: bool,
+    remote_devices: Option<Vec<remote::Device>>,
+    remote_busy: bool,
+    remote_error: String,
     login_pasted: String,
     login_step: usize,
     set_cat: usize,
@@ -381,6 +389,10 @@ impl App {
             update_msg: String::new(),
             update_err: String::new(),
             skip_login: false,
+            relogin: false,
+            remote_devices: None,
+            remote_busy: false,
+            remote_error: String::new(),
             login_pasted: String::new(),
             set_cat: std::env::args().find_map(|a| a.strip_prefix("--set-cat=").and_then(|v| v.parse().ok())).unwrap_or(0),
             help_tab: 0,
@@ -601,6 +613,11 @@ impl App {
                 app.feedback = Some(true);
             }
             app.load_news();
+            if std::env::args().any(|a| a == "--demo-remote") {
+                app.page = Page::Consoles;
+                app.skip_login = true;
+                app.remote_search(); app.consoles.truncate(1);
+            }
             if std::env::args().any(|a| a == "--news-page") {
                 app.page = Page::News;
             }
@@ -861,8 +878,11 @@ impl App {
             1 => false,
             _ => true,
         };
-        let params = StreamParams {
-            host: c.addr.clone(),
+        // „Von unterwegs“: Verbindung über PSN statt über die IP-Adresse
+        let via_psn = c.addr.starts_with(remote::PREFIX);
+        let mut params = StreamParams {
+            psn: None,
+            host: if via_psn { String::new() } else { c.addr.clone() },
             paired: p.clone(),
             width: w,
             height: h,
@@ -875,8 +895,17 @@ impl App {
         let tx = self.tx.clone();
         let name = c.name.clone();
         perf::boost(true);
+        let addr = c.addr.clone();
         std::thread::spawn(move || {
-            let m = match Stream::start(&params) {
+            let started = if via_psn {
+                remote::link_for(&addr).and_then(|l| {
+                    params.psn = Some(l);
+                    Stream::start(&params)
+                })
+            } else {
+                Stream::start(&params)
+            };
+            let m = match started {
                 Ok(s) => Msg::StreamStarted(s, name),
                 Err(e) => {
                     perf::boost(false);
@@ -1005,7 +1034,19 @@ impl App {
                     self.toasts.push((s.clone(), 0, self.now));
                     self.status = s;
                 }
-                Msg::PsnOk(id, name) => {
+                Msg::RemoteList(r) => {
+                    self.remote_busy = false;
+                    match r {
+                        Ok(l) => self.remote_devices = Some(l),
+                        Err(e) => self.remote_error = mask_ips(&e),
+                    }
+                }
+                Msg::PsnOk(id, name, tokens) => {
+                    if let Some(t) = tokens {
+                        remote::save(&t, &psn::id_to_b64(id));
+                    }
+                    self.relogin = false;
+                    self.login_step = 0;
                     self.toasts.push(("Bei PlayStation angemeldet".to_string(), 2, self.now));
                     self.settings.psn_account = psn::id_to_b64(id);
                     self.settings.psn_name = name;
@@ -2173,6 +2214,7 @@ impl App {
                 });
                 ui.add_space(4.0);
             }
+            self.remote_card(ui);
             if !self.status.is_empty() {
                 ui.add_space(6.0);
                 ui.label(RichText::new(&self.status).color(TEXT_DIM));
@@ -2836,7 +2878,7 @@ impl App {
                                 let tx = self.tx.clone();
                                 std::thread::spawn(move || {
                                     let m = match psn::account_id_from_code(&code) {
-                                        Ok((id, name)) => Msg::PsnOk(id, name),
+                                        Ok((id, name, tokens)) => Msg::PsnOk(id, name, tokens),
                                         Err(e) => Msg::PsnErr(e),
                                     };
                                     let _ = tx.send(m);
@@ -4657,7 +4699,7 @@ impl eframe::App for App {
         }
 
         // Erster Start: erst anmelden
-        if std::env::args().any(|a| a == "--login") || (!self.skip_login && psn::id_from_b64(&self.settings.psn_account).is_none() && !std::env::args().any(|a| a == "--demo")) {
+        if std::env::args().any(|a| a == "--login") || (!self.skip_login && (self.relogin || psn::id_from_b64(&self.settings.psn_account).is_none()) && !std::env::args().any(|a| a == "--demo")) {
             ctx.request_repaint_after(Duration::from_millis(33));
             self.login_screen(ctx, t);
             return;
@@ -4913,7 +4955,7 @@ fn selftest() {
     let r = ffi::register("127.0.0.1", "09000000", true, [1, 2, 3, 4, 5, 6, 7, 8], 12345678, "test");
     let _ = writeln!(f, "register -> {:?}", r.map(|p| p.nickname));
     let paired = Paired { console_id: "x".into(), ps5: true, nickname: "t".into(), rp_regist_key: [b'a'; 16], rp_key: [1; 16] };
-    let params = StreamParams { host: "127.0.0.1".into(), paired, width: 1920, height: 1080, fps: 60, bitrate_kbps: 30000, hevc: true, hw_decode: true, dualsense: false };
+    let params = StreamParams { host: "127.0.0.1".into(), paired, width: 1920, height: 1080, fps: 60, bitrate_kbps: 30000, hevc: true, hw_decode: true, dualsense: false, psn: None };
     match Stream::start(&params) {
         Ok(s) => {
             let _ = writeln!(f, "stream started");
@@ -5026,6 +5068,36 @@ fn main() -> eframe::Result<()> {
     lang::set(Settings::load().language);
     if std::env::args().any(|a| a == "--crash-test") {
         panic!("Absturz-Test");
+    }
+    if std::env::args().any(|a| a == "--remote-selftest") {
+        // Nur mit eigenem APPDATA-Ordner ausführen: schreibt und löscht die gespeicherte Anmeldung
+        if remote::logged_in() {
+            println!("Abgebrochen: hier ist schon eine PSN-Anmeldung gespeichert.");
+            std::process::exit(2);
+        }
+        std::process::exit(if remote::selftest() { 0 } else { 1 });
+    }
+    if std::env::args().any(|a| a == "--remote-errortest") {
+        // Mit absichtlich ungültiger Anmeldung: es muss eine Fehlermeldung kommen, kein Absturz
+        match ffi::psn_list("ungueltig") {
+            Ok(l) => println!("Liste: {} Eintraege", l.len()),
+            Err(e) => println!("Liste: {e}"),
+        }
+        for ps5 in [true, false] {
+            let paired = Paired { console_id: "test".into(), ps5, nickname: "test".into(), rp_regist_key: [0; 16], rp_key: [0; 16] };
+            let params = StreamParams { host: String::new(), paired, width: 1280, height: 720, fps: 60, bitrate_kbps: 15000, hevc: ps5, hw_decode: true, dualsense: false, psn: Some(ffi::PsnLink { token: "ungueltig".into(), uid: [b'A'; 32], account_id: [1; 8] }) };
+            match Stream::start(&params) {
+                Ok(_) => println!("Stream: unerwartet gestartet"),
+                Err(e) => println!("Stream: {e}"),
+            }
+        }
+        println!("{}", ffi::take_log());
+        println!("Ende ohne Absturz");
+        return Ok(());
+    }
+    if std::env::args().any(|a| a == "--demo-remote-url") {
+        println!("{}", psn::login_url());
+        return Ok(());
     }
     if std::env::args().any(|a| a == "--load-test") {
         // Prüft die Anzeige der Programm-Last: erst Leerlauf, dann eine Sekunde volle Last auf einem Kern
