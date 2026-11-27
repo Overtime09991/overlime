@@ -4,6 +4,7 @@ use std::f32::consts::PI;
 
 /// Neuigkeiten, die nach dem Update gezeigt werden.
 pub const NEWS: &[&str] = &[
+    "Verbindung von unterwegs repariert",
     "PSN-Anmeldung repariert",
     "Von unterwegs spielen und bessere Controller-Erkennung",
     "Weniger Ruckeln bei hoher Bitrate und Anzeige der Programm-Last",

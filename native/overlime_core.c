@@ -919,6 +919,20 @@ int ol_psn_list(const char *token, OlPsnDevice *out, int max, char *err, size_t 
 	return n;
 }
 
+// Pruefung ohne Konto: oeffnet nur den Benachrichtigungs-Kanal mit absichtlich ungueltiger Anmeldung.
+void ol_psn_wstest(const char *host)
+{
+	ol_init();
+	static ChiakiLog log;
+	make_log(&log);
+	ChiakiHolepunchSession hp = chiaki_holepunch_session_init("ungueltig", &log);
+	if(!hp)
+		return;
+	chiaki_holepunch_session_set_ws_fqdn_override(hp, host);
+	chiaki_holepunch_session_create(hp);
+	chiaki_holepunch_session_fini(hp);
+}
+
 // Baut die Verbindung ueber PSN auf (Steuer-Kanal). Der Daten-Kanal folgt in der Sitzung selbst.
 static ChiakiHolepunchSession psn_connect(OlStream *s, const OlStreamParams *p, char *err, size_t err_size)
 {

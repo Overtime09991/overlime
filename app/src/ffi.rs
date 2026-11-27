@@ -105,6 +105,7 @@ pub struct OlStream {
 
 extern "C" {
     fn ol_psn_duid(out: *mut c_char, out_size: usize) -> c_int;
+    fn ol_psn_wstest(host: *const c_char);
     fn ol_psn_list(token: *const c_char, out: *mut OlPsnDevice, max: c_int, err: *mut c_char, err_size: usize) -> c_int;
     pub fn chiaki_lib_init() -> c_int;
     pub fn ol_init();
@@ -234,6 +235,13 @@ pub struct StreamParams {
     pub hw_decode: bool,
     pub dualsense: bool,
     pub psn: Option<PsnLink>,
+}
+
+/// Nur für den Selbsttest: öffnet den PSN-Benachrichtigungskanal mit ungültiger Anmeldung.
+pub fn psn_wstest(host: &str) {
+    if let Ok(h) = std::ffi::CString::new(host) {
+        unsafe { ol_psn_wstest(h.as_ptr()) };
+    }
 }
 
 /// Geräte-Kennung für die PSN-Anmeldung.

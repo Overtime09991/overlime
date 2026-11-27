@@ -48,7 +48,7 @@ const GREEN: Color32 = Color32::from_rgb(52, 211, 153);
 const YELLOW: Color32 = Color32::from_rgb(251, 191, 36);
 const RED: Color32 = Color32::from_rgb(248, 113, 113);
 const TEXT_DIM: Color32 = Color32::from_rgb(128, 141, 170);
-const VERSION: &str = "0.53";
+const VERSION: &str = "0.54";
 
 #[derive(PartialEq, Clone, Copy)]
 enum Page {
@@ -5084,6 +5084,16 @@ fn main() -> eframe::Result<()> {
         }
         std::process::exit(if remote::selftest() { 0 } else { 1 });
     }
+    if let Some(host) = std::env::args().find_map(|a| a.strip_prefix("--remote-wstest=").map(|v| v.to_string())) {
+        // Nur Adressen von Sony zulassen
+        if !host.ends_with(".np.communication.playstation.net") {
+            std::process::exit(2);
+        }
+        ffi::init();
+        ffi::psn_wstest(&host);
+        println!("{}", ffi::take_log());
+        return Ok(());
+    }
     if std::env::args().any(|a| a == "--remote-errortest") {
         // Mit absichtlich ungültiger Anmeldung: es muss eine Fehlermeldung kommen, kein Absturz
         match ffi::psn_list("ungueltig") {
@@ -5102,6 +5112,8 @@ fn main() -> eframe::Result<()> {
         if let Err(e) = psn::account_id_from_code("ungueltig") {
             println!("Liste (Anmelde-Code): {e}");
         }
+        extern "C" { fn curl_version() -> *const std::ffi::c_char; }
+        println!("Liste (curl): {}", unsafe { std::ffi::CStr::from_ptr(curl_version()) }.to_string_lossy());
         println!("Ende ohne Absturz");
         return Ok(());
     }

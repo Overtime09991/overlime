@@ -95,7 +95,18 @@
      if(!curl)
      {
          CHIAKI_LOGE(session->log, "Curl could not init");
-@@ -2269,6 +2281,9 @@
+@@ -2215,7 +2227,9 @@
+         curl_easy_setopt(curl, CURLOPT_CAINFO_BLOB, NULL) == CURLE_OK;
+     const curl_version_info_data *curl_version = curl_version_info(CURLVERSION_NOW);
+     bool schannel_aia = false;
+-    if(curl_version && curl_version->ssl_version && strstr(curl_version->ssl_version, "Schannel"))
++    /* OVERLIME: nur wenn Schannel wirklich aktiv ist. Bei mehreren eingebauten Bibliotheken stehen die inaktiven in Klammern,
++     * z. B. "OpenSSL/3.6.5 (Schannel)". */
++    if(curl_version && curl_version->ssl_version && strncmp(curl_version->ssl_version, "Schannel", 8) == 0)
+     {
+ #ifdef CHIAKI_CURL_SCHANNEL_AIA
+         schannel_aia = true;
+@@ -2269,6 +2283,9 @@
              ca_blob.flags = CURL_BLOB_COPY;
              // Cached intermediates must not terminate verification before a root.
              long ssl_options = CURLSSLOPT_NO_PARTIALCHAIN;
@@ -105,7 +116,7 @@
  #ifdef CHIAKI_CURL_SCHANNEL_AIA
              if(schannel_aia)
                  ssl_options |= CURLSSLOPT_SCHANNEL_AIA;
-@@ -3185,7 +3200,7 @@
+@@ -3185,7 +3202,7 @@
          .size = 0,
      };
  
@@ -114,7 +125,7 @@
      if(!curl)
      {
          free(response_data.data);
-@@ -3311,7 +3326,7 @@
+@@ -3311,7 +3328,7 @@
          .size = 0,
      };
  
@@ -123,7 +134,7 @@
      if(!curl)
      {
          free(response_data.data);
-@@ -3430,7 +3445,7 @@
+@@ -3430,7 +3447,7 @@
          .size = 0,
      };
  
@@ -132,7 +143,7 @@
      if(!curl)
      {
          free(response_data.data);
-@@ -3551,7 +3566,7 @@
+@@ -3551,7 +3568,7 @@
          session->console_type == CHIAKI_HOLEPUNCH_CONSOLE_TYPE_PS4 ? "PS4" : "PS5"
      );
      CHIAKI_LOGV(session->log, "Message to send: %s", msg_buf);
@@ -141,7 +152,7 @@
      if(!curl)
      {
          free(payload_str);
-@@ -3632,7 +3647,7 @@
+@@ -3632,7 +3649,7 @@
      char url[128] = {0};
      snprintf(url, sizeof(url), delete_messsage_url_fmt, session->session_id);
  
@@ -150,7 +161,7 @@
      if(!curl)
      {
          free(response_data.data);
-@@ -5986,7 +6001,7 @@
+@@ -5986,7 +6003,7 @@
  {
      ChiakiErrorCode err = CHIAKI_ERR_SUCCESS;
      const char STUN_HOSTS_URL[] = "https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_hosts.txt";
@@ -159,7 +170,7 @@
      if(!curl)
      {
          CHIAKI_LOGE(session->log, "Curl could not init");
-@@ -6080,7 +6095,7 @@
+@@ -6080,7 +6097,7 @@
      curl_easy_cleanup(curl);
      curl = NULL;
      const char STUN_HOSTS_URL_IPV6[] = "https://raw.githubusercontent.com/pradt2/always-online-stun/master/valid_ipv6s.txt";

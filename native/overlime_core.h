@@ -42,6 +42,7 @@ typedef struct {
 
 // Geraete-Kennung dieses PCs fuer die PSN-Anmeldung (48 Zeichen + Null). 0 = Erfolg.
 int ol_psn_duid(char *out, size_t out_size);
+void ol_psn_wstest(const char *host);
 // Blockierend. Konsolen des PSN-Kontos mit eingeschaltetem Remote Play. Rueckgabe: Anzahl, -1 = Fehler.
 int ol_psn_list(const char *token, OlPsnDevice *out, int max, char *err, size_t err_size);
 
